@@ -4,7 +4,8 @@
 // map center in double, stored as float.
 //
 // Controls: drag = pan, wheel = zoom at cursor, Q/E = rotate, 1-9 = toggle
-// road classes, O = oneway highlight, V = vertices, R = reset, Esc = quit.
+// road classes, O = oneway highlight, V = vertices, R = default point,
+// F = fit map, Esc = quit.
 // The same settings are in the Dear ImGui panel.
 
 #include <glad/glad.h>
@@ -30,26 +31,31 @@ using namespace nav;
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
-constexpr double kEarthRadius = 6378137.0;
+constexpr Vrst_float64 kPi = 3.14159265358979323846;
+constexpr Vrst_float64 kEarthRadius = 6378137.0;
 
-struct Vec2d {
-  double x, y;
+// Start view and R: this point at street zoom. Falls back to fit-map when the
+// point is outside the loaded data.
+constexpr Vrst_coord kDefaultPoint{473220000, 50410000};  // 47.322, 5.041
+constexpr Vrst_float64 kDefaultMetresPerPoint = 5.0;        // ground metres per window point
+
+struct Vrst_vec2d {
+  Vrst_float64 x, y;
 };
 
-Vec2d mercator(Coord c) {
-  const double lon = c.lon_e7 * 1e-7 * kPi / 180.0;
-  const double lat = c.lat_e7 * 1e-7 * kPi / 180.0;
+Vrst_vec2d mercator(Vrst_coord c) {
+  const Vrst_float64 lon = c.lon_e7 * 1e-7 * kPi / 180.0;
+  const Vrst_float64 lat = c.lat_e7 * 1e-7 * kPi / 180.0;
   return {kEarthRadius * lon, kEarthRadius * std::log(std::tan(kPi / 4 + lat / 2))};
 }
 
-Vec2d inverse_mercator(Vec2d m) {  // -> degrees (lat, lon)
+Vrst_vec2d inverse_mercator(Vrst_vec2d m) {  // -> degrees (lat, lon)
   return {(2 * std::atan(std::exp(m.y / kEarthRadius)) - kPi / 2) * 180.0 / kPi, m.x / kEarthRadius * 180.0 / kPi};
 }
 
 // Key 1..9 -> classes toggled together.
-constexpr uint32_t bit(RoadClass c) { return 1u << static_cast<int>(c); }
-constexpr uint32_t kClassGroups[9] = {
+constexpr Vrst_uint32 bit(RoadClass c) { return 1u << static_cast<int>(c); }
+constexpr Vrst_uint32 kClassGroups[9] = {
     bit(RoadClass::Motorway) | bit(RoadClass::MotorwayLink),
     bit(RoadClass::Trunk) | bit(RoadClass::TrunkLink),
     bit(RoadClass::Primary) | bit(RoadClass::PrimaryLink),
@@ -64,7 +70,7 @@ constexpr const char* kGroupNames[9] = {"motorway", "trunk",       "primary", "s
                                         "unclassified", "residential", "service", "ferry"};
 
 // Indexed by RoadClass.
-constexpr float kClassColors[kRoadClassCount][3] = {
+constexpr Vrst_float32 kClassColors[kRoadClassCount][3] = {
     {0.91f, 0.36f, 0.42f}, {0.91f, 0.50f, 0.55f},  // motorway
     {0.98f, 0.58f, 0.36f}, {0.98f, 0.68f, 0.50f},  // trunk
     {0.99f, 0.80f, 0.40f}, {0.99f, 0.85f, 0.55f},  // primary
@@ -77,83 +83,98 @@ constexpr float kClassColors[kRoadClassCount][3] = {
     {0.35f, 0.60f, 0.95f},                         // ferry
 };
 
-struct GpuPoint {
-  float x, y;
-  uint32_t attr;
+struct Vrst_gpu_point {
+  Vrst_float32 x, y;
+  Vrst_uint32 attr;
 };
-static_assert(sizeof(GpuPoint) == 12);
+static_assert(sizeof(Vrst_gpu_point) == 12);
 
-struct View {
-  Vec2d center{0, 0};  // world metres relative to map center
-  double scale = 1;    // framebuffer pixels per metre
-  double angle = 0;    // radians, counter-clockwise
+struct Vrst_view {
+  Vrst_vec2d center{0, 0};  // world metres relative to map center
+  Vrst_float64 scale = 1;    // framebuffer pixels per metre
+  Vrst_float64 angle = 0;    // radians, counter-clockwise
 };
 
-struct App {
-  NavData data;
-  Vec2d map_center{};    // mercator metres, subtracted from every point
-  Vec2d half_extent{};   // of the points, metres
-  View view;
+struct Vrst_app {
+  Vrst_nav_data data;
+  Vrst_vec2d map_center{};    // mercator metres, subtracted from every point
+  Vrst_vec2d half_extent{};   // of the points, metres
+  Vrst_view view;
   int fb_w = 1, fb_h = 1;
-  double px_ratio = 1;   // framebuffer px per window coordinate
-  uint32_t class_mask = (1u << kRoadClassCount) - 1;
+  Vrst_float64 px_ratio = 1;   // framebuffer px per window coordinate
+  Vrst_uint32 class_mask = (1u << kRoadClassCount) - 1;
   bool oneway = false;
   bool show_vertices = true;
-  float point_px = 2.5f;  // vertex dot size, window points
+  Vrst_float32 point_px = 2.5f;  // vertex dot size, window points
   bool dragging = false;
-  double last_x = 0, last_y = 0;  // cursor, framebuffer px
-  double initial_scale = 1;
-  uint32_t dead_ends = 0;
+  Vrst_float64 last_x = 0, last_y = 0;  // cursor, framebuffer px
+  Vrst_float64 initial_scale = 1;
+  Vrst_uint32 dead_ends = 0;
 };
 
 // World -> NDC as a column-major mat3, computed in double.
-void view_matrix(const App& app, float out[9]) {
-  const View& v = app.view;
-  const double c = std::cos(v.angle) * v.scale, s = std::sin(v.angle) * v.scale;
-  const double sx = 2.0 / app.fb_w, sy = 2.0 / app.fb_h;
+void view_matrix(const Vrst_app& app, Vrst_float32 out[9]) {
+  const Vrst_view& v = app.view;
+  const Vrst_float64 c = std::cos(v.angle) * v.scale, s = std::sin(v.angle) * v.scale;
+  const Vrst_float64 sx = 2.0 / app.fb_w, sy = 2.0 / app.fb_h;
   // p' = D * S*R * (p - center)
-  const double tx = -(c * v.center.x - s * v.center.y), ty = -(s * v.center.x + c * v.center.y);
-  const double m[9] = {c * sx, s * sy, 0, -s * sx, c * sy, 0, tx * sx, ty * sy, 1};
-  for (int i = 0; i < 9; ++i) out[i] = static_cast<float>(m[i]);
+  const Vrst_float64 tx = -(c * v.center.x - s * v.center.y), ty = -(s * v.center.x + c * v.center.y);
+  const Vrst_float64 m[9] = {c * sx, s * sy, 0, -s * sx, c * sy, 0, tx * sx, ty * sy, 1};
+  for (int i = 0; i < 9; ++i) out[i] = static_cast<Vrst_float32>(m[i]);
 }
 
 // Cursor in framebuffer px (origin top-left) -> pixel offset from screen center, y up.
-Vec2d screen_offset(const App& app, double x, double y) { return {x - app.fb_w / 2.0, app.fb_h / 2.0 - y}; }
+Vrst_vec2d screen_offset(const Vrst_app& app, Vrst_float64 x, Vrst_float64 y) { return {x - app.fb_w / 2.0, app.fb_h / 2.0 - y}; }
 
 // Screen offset (px) -> world delta (metres).
-Vec2d unproject_delta(const View& v, Vec2d d) {
-  const double c = std::cos(-v.angle), s = std::sin(-v.angle);
+Vrst_vec2d unproject_delta(const Vrst_view& v, Vrst_vec2d d) {
+  const Vrst_float64 c = std::cos(-v.angle), s = std::sin(-v.angle);
   return {(c * d.x - s * d.y) / v.scale, (s * d.x + c * d.y) / v.scale};
 }
 
-Vec2d cursor_world(const App& app, double x, double y) {
-  const Vec2d d = unproject_delta(app.view, screen_offset(app, x, y));
+Vrst_vec2d cursor_world(const Vrst_app& app, Vrst_float64 x, Vrst_float64 y) {
+  const Vrst_vec2d d = unproject_delta(app.view, screen_offset(app, x, y));
   return {app.view.center.x + d.x, app.view.center.y + d.y};
 }
 
-void reset_view(App& app) {
-  app.view.center = {0, 0};
-  app.view.angle = 0;
-  const double sx = app.fb_w / (2 * std::max(app.half_extent.x, 1.0));
-  const double sy = app.fb_h / (2 * std::max(app.half_extent.y, 1.0));
-  app.view.scale = 0.95 * std::min(sx, sy);
-  app.initial_scale = app.view.scale;
+Vrst_float64 fit_scale(const Vrst_app& app) {
+  const Vrst_float64 sx = app.fb_w / (2 * std::max(app.half_extent.x, 1.0));
+  const Vrst_float64 sy = app.fb_h / (2 * std::max(app.half_extent.y, 1.0));
+  return 0.95 * std::min(sx, sy);
 }
 
-App* app_of(GLFWwindow* w) { return static_cast<App*>(glfwGetWindowUserPointer(w)); }
+void fit_view(Vrst_app& app) {
+  app.view = {{0, 0}, fit_scale(app), 0};
+}
 
-void update_size(GLFWwindow* win, App& app) {
+void reset_view(Vrst_app& app) {
+  const Vrst_bbox& bb = app.data.graph.bbox;
+  const Vrst_coord p = kDefaultPoint;
+  if (p.lat_e7 < bb.min.lat_e7 || p.lat_e7 > bb.max.lat_e7 || p.lon_e7 < bb.min.lon_e7 || p.lon_e7 > bb.max.lon_e7) {
+    fit_view(app);
+    return;
+  }
+  const Vrst_vec2d m = mercator(p);
+  const Vrst_float64 lat = p.lat_e7 * 1e-7 * kPi / 180;
+  // Mercator metres are 1/cos(lat) ground metres; scale is framebuffer px per Mercator metre.
+  app.view = {{m.x - app.map_center.x, m.y - app.map_center.y},
+              app.px_ratio * std::cos(lat) / kDefaultMetresPerPoint, 0};
+}
+
+Vrst_app* app_of(GLFWwindow* w) { return static_cast<Vrst_app*>(glfwGetWindowUserPointer(w)); }
+
+void update_size(GLFWwindow* win, Vrst_app& app) {
   int ww, wh;
   glfwGetWindowSize(win, &ww, &wh);
   glfwGetFramebufferSize(win, &app.fb_w, &app.fb_h);
   app.fb_w = std::max(app.fb_w, 1);
   app.fb_h = std::max(app.fb_h, 1);
-  app.px_ratio = ww > 0 ? double(app.fb_w) / ww : 1.0;
+  app.px_ratio = ww > 0 ? Vrst_float64(app.fb_w) / ww : 1.0;
 }
 
 void on_key(GLFWwindow* win, int key, int, int action, int) {
   if (action == GLFW_RELEASE || ImGui::GetIO().WantCaptureKeyboard) return;
-  App& app = *app_of(win);
+  Vrst_app& app = *app_of(win);
   if (key >= GLFW_KEY_1 && key <= GLFW_KEY_9 && action == GLFW_PRESS) {
     const int g = key - GLFW_KEY_1;
     app.class_mask ^= kClassGroups[g];
@@ -167,6 +188,7 @@ void on_key(GLFWwindow* win, int key, int, int action, int) {
     case GLFW_KEY_O: if (action == GLFW_PRESS) app.oneway = !app.oneway; break;
     case GLFW_KEY_V: if (action == GLFW_PRESS) app.show_vertices = !app.show_vertices; break;
     case GLFW_KEY_R: reset_view(app); break;
+    case GLFW_KEY_F: fit_view(app); break;
     default: break;
   }
 }
@@ -177,12 +199,12 @@ void on_mouse_button(GLFWwindow* win, int button, int action, int) {
   app_of(win)->dragging = action == GLFW_PRESS && !ImGui::GetIO().WantCaptureMouse;
 }
 
-void on_cursor(GLFWwindow* win, double x, double y) {
-  App& app = *app_of(win);
+void on_cursor(GLFWwindow* win, Vrst_float64 x, Vrst_float64 y) {
+  Vrst_app& app = *app_of(win);
   x *= app.px_ratio;
   y *= app.px_ratio;
   if (app.dragging) {
-    const Vec2d d = unproject_delta(app.view, {x - app.last_x, -(y - app.last_y)});
+    const Vrst_vec2d d = unproject_delta(app.view, {x - app.last_x, -(y - app.last_y)});
     app.view.center.x -= d.x;
     app.view.center.y -= d.y;
   }
@@ -190,17 +212,17 @@ void on_cursor(GLFWwindow* win, double x, double y) {
   app.last_y = y;
 }
 
-void on_scroll(GLFWwindow* win, double, double yoff) {
+void on_scroll(GLFWwindow* win, Vrst_float64, Vrst_float64 yoff) {
   if (ImGui::GetIO().WantCaptureMouse) return;
-  App& app = *app_of(win);
-  const Vec2d before = cursor_world(app, app.last_x, app.last_y);
+  Vrst_app& app = *app_of(win);
+  const Vrst_vec2d before = cursor_world(app, app.last_x, app.last_y);
   app.view.scale = std::clamp(app.view.scale * std::pow(1.25, yoff), app.initial_scale * 0.1, 2000.0);
-  const Vec2d d = unproject_delta(app.view, screen_offset(app, app.last_x, app.last_y));
+  const Vrst_vec2d d = unproject_delta(app.view, screen_offset(app, app.last_x, app.last_y));
   app.view.center = {before.x - d.x, before.y - d.y};
 }
 
 void on_framebuffer_size(GLFWwindow* win, int, int) {
-  App& app = *app_of(win);
+  Vrst_app& app = *app_of(win);
   update_size(win, app);
 }
 
@@ -241,43 +263,43 @@ void check_gl(const char* where) {
                                                                              std::to_string(e) + " at " + where);
 }
 
-GLuint make_vao(const std::vector<GpuPoint>& verts, GLuint* vbo) {
+GLuint make_vao(const std::vector<Vrst_gpu_point>& verts, GLuint* vbo) {
   GLuint vao;
   glGenVertexArrays(1, &vao);
   glBindVertexArray(vao);
   glGenBuffers(1, vbo);
   glBindBuffer(GL_ARRAY_BUFFER, *vbo);
-  glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(verts.size() * sizeof(GpuPoint)), verts.data(), GL_STATIC_DRAW);
+  glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(verts.size() * sizeof(Vrst_gpu_point)), verts.data(), GL_STATIC_DRAW);
   glEnableVertexAttribArray(0);
-  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(GpuPoint), reinterpret_cast<void*>(0));
+  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Vrst_gpu_point), reinterpret_cast<void*>(0));
   glEnableVertexAttribArray(1);
-  glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, sizeof(GpuPoint), reinterpret_cast<void*>(8));
+  glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, sizeof(Vrst_gpu_point), reinterpret_cast<void*>(8));
   return vao;
 }
 
-Vec2d cursor_latlon(const App& app) {
-  const Vec2d w = cursor_world(app, app.last_x, app.last_y);
+Vrst_vec2d cursor_latlon(const Vrst_app& app) {
+  const Vrst_vec2d w = cursor_world(app, app.last_x, app.last_y);
   return inverse_mercator({w.x + app.map_center.x, w.y + app.map_center.y});
 }
 
-void draw_panel(App& app) {
-  const Graph& g = app.data.graph;
+void draw_panel(Vrst_app& app) {
+  const Vrst_graph& g = app.data.graph;
   ImGui::SetNextWindowPos({10, 10}, ImGuiCond_FirstUseEver);
   ImGui::Begin("navview", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
   ImGui::Text("V %u   S %u   A %u   P %zu", g.num_vertices(), app.data.edges.num_segments(), g.num_arcs(),
               app.data.geom.points.size());
   ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
-  const Vec2d ll = cursor_latlon(app);
+  const Vrst_vec2d ll = cursor_latlon(app);
   ImGui::Text("cursor  %.6f, %.6f", ll.x, ll.y);
-  const double center_lat = inverse_mercator(app.map_center).x * kPi / 180;
+  const Vrst_float64 center_lat = inverse_mercator(app.map_center).x * kPi / 180;
   ImGui::Text("zoom    %.2fx   %.2f m/px", app.view.scale / app.initial_scale,
               app.px_ratio * std::cos(center_lat) / app.view.scale);
 
   ImGui::SeparatorText("Road classes");
   for (int i = 0; i < 9; ++i) {
     const int cls = std::countr_zero(kClassGroups[i]);
-    const float* c = kClassColors[cls];
+    const Vrst_float32* c = kClassColors[cls];
     ImGui::ColorButton("##swatch", ImVec4(c[0], c[1], c[2], 1), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
     ImGui::SameLine();
     bool on = (app.class_mask & kClassGroups[i]) != 0;
@@ -293,27 +315,29 @@ void draw_panel(App& app) {
     ImGui::SliderFloat("Dot size", &app.point_px, 1.0f, 8.0f, "%.1f");
     ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1), "dead ends: %u", app.dead_ends);
   }
-  float deg = static_cast<float>(app.view.angle * 180 / kPi);
+  Vrst_float32 deg = static_cast<Vrst_float32>(app.view.angle * 180 / kPi);
   deg = std::remainder(deg, 360.0f);
   if (ImGui::SliderFloat("Rotation", &deg, -180.0f, 180.0f, "%.0f deg")) app.view.angle = deg * kPi / 180;
-  if (ImGui::Button("Reset view (R)")) reset_view(app);
+  if (ImGui::Button("Default point (R)")) reset_view(app);
+  ImGui::SameLine();
+  if (ImGui::Button("Fit map (F)")) fit_view(app);
 
   ImGui::End();
 }
 
 void save_bmp(const std::string& path, int w, int h) {
-  std::vector<uint8_t> px(size_t(w) * h * 3);
+  std::vector<Vrst_uint8> px(Vrst_size(w) * h * 3);
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
   glReadBuffer(GL_BACK);
   glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, px.data());
-  const uint32_t row = (uint32_t(w) * 3 + 3) & ~3u, img = row * uint32_t(h);
-  uint8_t hdr[54] = {'B', 'M'};
-  auto put32 = [&](int at, uint32_t v) { std::memcpy(hdr + at, &v, 4); };
+  const Vrst_uint32 row = (Vrst_uint32(w) * 3 + 3) & ~3u, img = row * Vrst_uint32(h);
+  Vrst_uint8 hdr[54] = {'B', 'M'};
+  auto put32 = [&](int at, Vrst_uint32 v) { std::memcpy(hdr + at, &v, 4); };
   put32(2, 54 + img);
   put32(10, 54);
   put32(14, 40);
-  put32(18, uint32_t(w));
-  put32(22, uint32_t(h));  // bottom-up, like glReadPixels
+  put32(18, Vrst_uint32(w));
+  put32(22, Vrst_uint32(h));  // bottom-up, like glReadPixels
   hdr[26] = 1;
   hdr[28] = 24;
   put32(34, img);
@@ -321,24 +345,24 @@ void save_bmp(const std::string& path, int w, int h) {
   f.write(reinterpret_cast<char*>(hdr), 54);
   const char pad[3] = {};
   for (int y = 0; y < h; ++y) {
-    f.write(reinterpret_cast<char*>(px.data() + size_t(y) * w * 3), w * 3);
-    f.write(pad, row - uint32_t(w) * 3);
+    f.write(reinterpret_cast<char*>(px.data() + Vrst_size(y) * w * 3), w * 3);
+    f.write(pad, row - Vrst_uint32(w) * 3);
   }
 }
 
 int run(const std::string& dir, const std::string& screenshot) {
-  App app;
+  Vrst_app app;
   app.data.open(dir);
-  const Graph& g = app.data.graph;
-  const Edges& e = app.data.edges;
-  const Geom& geo = app.data.geom;
-  const uint32_t V = g.num_vertices(), S = e.num_segments();
-  const size_t P = geo.points.size();
+  const Vrst_graph& g = app.data.graph;
+  const Vrst_edges& e = app.data.edges;
+  const Vrst_geom& geo = app.data.geom;
+  const Vrst_uint32 V = g.num_vertices(), S = e.num_segments();
+  const Vrst_size P = geo.points.size();
 
   // --- projection: double, relative to map center --------------------------
-  Vec2d lo{1e300, 1e300}, hi{-1e300, -1e300};
-  std::vector<Vec2d> merc(P);
-  for (size_t i = 0; i < P; ++i) {
+  Vrst_vec2d lo{1e300, 1e300}, hi{-1e300, -1e300};
+  std::vector<Vrst_vec2d> merc(P);
+  for (Vrst_size i = 0; i < P; ++i) {
     merc[i] = mercator(geo.points[i]);
     lo = {std::min(lo.x, merc[i].x), std::min(lo.y, merc[i].y)};
     hi = {std::max(hi.x, merc[i].x), std::max(hi.y, merc[i].y)};
@@ -347,37 +371,37 @@ int run(const std::string& dir, const std::string& screenshot) {
   app.map_center = {(lo.x + hi.x) / 2, (lo.y + hi.y) / 2};
   app.half_extent = {(hi.x - lo.x) / 2, (hi.y - lo.y) / 2};
 
-  std::vector<GpuPoint> line_verts(P);
-  for (uint32_t s = 0; s < S; ++s) {
-    const uint32_t attr = e.attr[s].road_class | uint32_t(e.attr[s].flags) << 16;
-    for (uint32_t i = geo.seg_first_point[s]; i < geo.seg_first_point[s + 1]; ++i)
-      line_verts[i] = {float(merc[i].x - app.map_center.x), float(merc[i].y - app.map_center.y), attr};
+  std::vector<Vrst_gpu_point> line_verts(P);
+  for (Vrst_uint32 s = 0; s < S; ++s) {
+    const Vrst_uint32 attr = e.attr[s].road_class | Vrst_uint32(e.attr[s].flags) << 16;
+    for (Vrst_uint32 i = geo.seg_first_point[s]; i < geo.seg_first_point[s + 1]; ++i)
+      line_verts[i] = {Vrst_float32(merc[i].x - app.map_center.x), Vrst_float32(merc[i].y - app.map_center.y), attr};
   }
-  std::vector<Vec2d>().swap(merc);
+  std::vector<Vrst_vec2d>().swap(merc);
 
   // Line pairs only inside a segment; minor classes first so major roads draw on top.
-  std::vector<uint32_t> indices;
+  std::vector<Vrst_uint32> indices;
   indices.reserve((P - S) * 2);
   for (int cls = kRoadClassCount - 1; cls >= 0; --cls)
-    for (uint32_t s = 0; s < S; ++s) {
+    for (Vrst_uint32 s = 0; s < S; ++s) {
       if (e.attr[s].road_class != cls) continue;
-      for (uint32_t i = geo.seg_first_point[s]; i + 1 < geo.seg_first_point[s + 1]; ++i) {
+      for (Vrst_uint32 i = geo.seg_first_point[s]; i + 1 < geo.seg_first_point[s + 1]; ++i) {
         indices.push_back(i);
         indices.push_back(i + 1);
       }
     }
 
-  std::vector<uint32_t> degree(V, 0);
-  for (const SegVertices& sv : e.vertices) ++degree[sv.a], ++degree[sv.b];
-  std::vector<GpuPoint> vertex_verts;
+  std::vector<Vrst_uint32> degree(V, 0);
+  for (const Vrst_seg_vertices& sv : e.vertices) ++degree[sv.a], ++degree[sv.b];
+  std::vector<Vrst_gpu_point> vertex_verts;
   vertex_verts.reserve(V);
   for (int pass = 0; pass < 2; ++pass)  // dead ends last, on top
-    for (uint32_t v = 0; v < V; ++v) {
-      const uint32_t dead = degree[v] == 1;
-      if (dead != uint32_t(pass)) continue;
+    for (Vrst_uint32 v = 0; v < V; ++v) {
+      const Vrst_uint32 dead = degree[v] == 1;
+      if (dead != Vrst_uint32(pass)) continue;
       app.dead_ends += dead;
-      const Vec2d m = mercator(g.vertex_coord[v]);
-      vertex_verts.push_back({float(m.x - app.map_center.x), float(m.y - app.map_center.y), dead});
+      const Vrst_vec2d m = mercator(g.vertex_coord[v]);
+      vertex_verts.push_back({Vrst_float32(m.x - app.map_center.x), Vrst_float32(m.y - app.map_center.y), dead});
     }
 
   // --- window --------------------------------------------------------------
@@ -403,6 +427,7 @@ int run(const std::string& dir, const std::string& screenshot) {
   glfwSetScrollCallback(win, on_scroll);
   glfwSetFramebufferSizeCallback(win, on_framebuffer_size);
   update_size(win, app);
+  app.initial_scale = fit_scale(app);  // zoom 1x = whole map
   reset_view(app);
   std::printf("GL %s | %s\n", glGetString(GL_VERSION), glGetString(GL_RENDERER));
 
@@ -438,13 +463,13 @@ int run(const std::string& dir, const std::string& screenshot) {
   check_gl("setup");
 
   // --- loop ----------------------------------------------------------------
-  double fps_t0 = glfwGetTime(), fps = 0;
+  Vrst_float64 fps_t0 = glfwGetTime(), fps = 0;
   int frames = 0, shot_frame = 0;
   while (!glfwWindowShouldClose(win)) {
     glViewport(0, 0, app.fb_w, app.fb_h);
     glClearColor(0.105f, 0.115f, 0.135f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    float m[9];
+    Vrst_float32 m[9];
     view_matrix(app, m);
 
     glUseProgram(line_prog);
@@ -457,7 +482,7 @@ int run(const std::string& dir, const std::string& screenshot) {
     if (app.show_vertices) {
       glUseProgram(point_prog);
       glUniformMatrix3fv(u_point_view, 1, GL_FALSE, m);
-      glUniform1f(u_point_px, float(app.point_px * app.px_ratio));
+      glUniform1f(u_point_px, Vrst_float32(app.point_px * app.px_ratio));
       glBindVertexArray(point_vao);
       glDrawArrays(GL_POINTS, 0, GLsizei(vertex_verts.size()));
     }
@@ -479,12 +504,12 @@ int run(const std::string& dir, const std::string& screenshot) {
     glfwPollEvents();
 
     ++frames;
-    const double now = glfwGetTime();
+    const Vrst_float64 now = glfwGetTime();
     if (now - fps_t0 >= 0.25) {
       fps = frames / (now - fps_t0);
       frames = 0;
       fps_t0 = now;
-      const Vec2d ll = cursor_latlon(app);
+      const Vrst_vec2d ll = cursor_latlon(app);
       char title[256];
       std::snprintf(title, sizeof title, "navview  V %u  S %u  P %zu  |  %.0f fps  |  %.6f, %.6f  |  zoom %.2fx%s",
                     V, S, P, fps, ll.x, ll.y, app.view.scale / app.initial_scale, app.oneway ? "  | oneway" : "");

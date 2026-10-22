@@ -1,20 +1,21 @@
 // Binary layout shared by osm2nav, navcheck and navview.
 //
-// Every file: FileHeader, SectionEntry[section_count], then sections.
+// Every file: Vrst_file_header, Vrst_section_entry[section_count], then sections.
 // Sections start at 64-byte aligned offsets. Little-endian, no pointers.
 #pragma once
 
 #include <bit>
-#include <cstdint>
+
+#include "vrst_types.h"
 
 static_assert(std::endian::native == std::endian::little, "nav files are little-endian only");
 
 namespace nav {
 
-inline constexpr uint32_t kFormatVersion = 1;
-inline constexpr uint64_t kSectionAlign = 64;
+inline constexpr Vrst_uint32 kFormatVersion = 1;
+inline constexpr Vrst_uint64 kSectionAlign = 64;
 
-enum class FileType : uint32_t { Graph = 1, Edges = 2, Geom = 3, Names = 4 };
+enum class FileType : Vrst_uint32 { Graph = 1, Edges = 2, Geom = 3, Names = 4 };
 
 inline constexpr char kMagicGraph[8] = {'N', 'A', 'V', 'G', 'R', 'A', 'P', 'H'};
 inline constexpr char kMagicEdges[8] = {'N', 'A', 'V', 'E', 'D', 'G', 'E', 'S'};
@@ -41,74 +42,74 @@ inline const char* file_name_for(FileType t) {
   return nullptr;
 }
 
-enum class SectionId : uint32_t {
+enum class SectionId : Vrst_uint32 {
   // graph.dat
-  VertexCoord = 1,    // Coord[V]
+  VertexCoord = 1,    // Vrst_coord[V]
   FwdFirstOut = 2,    // uint32[V+1]
-  FwdArcs = 3,        // FwdArc[A]
+  FwdArcs = 3,        // Vrst_fwd_arc[A]
   BwdFirstIn = 4,     // uint32[V+1]
-  BwdArcs = 5,        // BwdArc[A]
-  Bbox = 6,           // BBox[1]  extent of all nodes in the source file
+  BwdArcs = 5,        // Vrst_bwd_arc[A]
+  Bbox = 6,           // Vrst_bbox[1]  extent of all nodes in the source file
   // edges.dat
-  SegAttr = 16,       // SegAttr[S]
-  SegVertices = 17,   // SegVertices[S]
+  SegAttr = 16,       // Vrst_seg_attr[S]
+  SegVertices = 17,   // Vrst_seg_vertices[S]
   SegOsmWay = 18,     // uint64[S]
   // geom.dat
   SegFirstPoint = 32, // uint32[S+1]
-  Points = 33,        // Coord[P]
+  Points = 33,        // Vrst_coord[P]
   // names.dat
   StrOffsets = 48,    // uint32[N+1]
   StrData = 49,       // char[]
 };
 
-struct FileHeader {  // 64 B
+struct Vrst_file_header {  // 64 B
   char magic[8];
-  uint32_t format_version;
-  uint32_t file_type;  // FileType
-  uint64_t build_id;
-  uint32_t section_count;
-  uint32_t flags;
-  uint8_t reserved[32];
+  Vrst_uint32 format_version;
+  Vrst_uint32 file_type;  // FileType
+  Vrst_uint64 build_id;
+  Vrst_uint32 section_count;
+  Vrst_uint32 flags;
+  Vrst_uint8 reserved[32];
 };
 
-struct SectionEntry {  // 24 B
-  uint32_t id;         // SectionId
-  uint32_t elem_size;
-  uint64_t offset;     // from file start, 64-aligned
-  uint64_t count;
+struct Vrst_section_entry {  // 24 B
+  Vrst_uint32 id;         // SectionId
+  Vrst_uint32 elem_size;
+  Vrst_uint64 offset;     // from file start, 64-aligned
+  Vrst_uint64 count;
 };
 
-struct Coord {  // 8 B, 1e-7 degrees
-  int32_t lat_e7;
-  int32_t lon_e7;
-  friend bool operator==(const Coord&, const Coord&) = default;
+struct Vrst_coord {  // 8 B, 1e-7 degrees
+  Vrst_int32 lat_e7;
+  Vrst_int32 lon_e7;
+  friend bool operator==(const Vrst_coord&, const Vrst_coord&) = default;
 };
 
-struct BBox {  // 16 B
-  Coord min;
-  Coord max;
+struct Vrst_bbox {  // 16 B
+  Vrst_coord min;
+  Vrst_coord max;
 };
 
 // --- graph.dat -------------------------------------------------------------
 
-inline constexpr uint32_t kSegReversed = 0x8000'0000u;  // FwdArc::seg bit31
-inline constexpr uint32_t kSegIdMask = 0x7FFF'FFFFu;
+inline constexpr Vrst_uint32 kSegReversed = 0x8000'0000u;  // Vrst_fwd_arc::seg bit31
+inline constexpr Vrst_uint32 kSegIdMask = 0x7FFF'FFFFu;
 
-struct FwdArc {     // 12 B
-  uint32_t head;
-  uint32_t weight;  // deciseconds
-  uint32_t seg;     // segment id | kSegReversed
+struct Vrst_fwd_arc {     // 12 B
+  Vrst_uint32 head;
+  Vrst_uint32 weight;  // deciseconds
+  Vrst_uint32 seg;     // segment id | kSegReversed
 };
 
-struct BwdArc {      // 12 B
-  uint32_t tail;
-  uint32_t weight;
-  uint32_t fwd_arc;  // index into FwdArc
+struct Vrst_bwd_arc {      // 12 B
+  Vrst_uint32 tail;
+  Vrst_uint32 weight;
+  Vrst_uint32 fwd_arc;  // index into Vrst_fwd_arc
 };
 
 // --- edges.dat -------------------------------------------------------------
 
-enum class RoadClass : uint8_t {
+enum class RoadClass : Vrst_uint8 {
   Motorway, MotorwayLink,
   Trunk, TrunkLink,
   Primary, PrimaryLink,
@@ -123,7 +124,7 @@ enum class RoadClass : uint8_t {
 };
 inline constexpr int kRoadClassCount = static_cast<int>(RoadClass::Count);
 
-enum SegFlags : uint16_t {
+enum SegFlags : Vrst_uint16 {
   kSegOneway = 1u << 0,         // exactly one arc exists
   kSegRoundabout = 1u << 1,
   kSegLink = 1u << 2,
@@ -134,27 +135,27 @@ enum SegFlags : uint16_t {
   kSegOnewayReverse = 1u << 7,  // with kSegOneway: allowed direction is b -> a
 };
 
-struct SegAttr {  // 16 B
-  uint32_t length_dm;
-  uint32_t name_id;  // 0 = none
-  uint32_t ref_id;   // 0 = none
-  uint8_t road_class;
-  uint8_t maxspeed_kmh;  // 0 = unknown
-  uint16_t flags;        // SegFlags
+struct Vrst_seg_attr {  // 16 B
+  Vrst_uint32 length_dm;
+  Vrst_uint32 name_id;  // 0 = none
+  Vrst_uint32 ref_id;   // 0 = none
+  Vrst_uint8 road_class;
+  Vrst_uint8 maxspeed_kmh;  // 0 = unknown
+  Vrst_uint16 flags;        // SegFlags
 };
 
-struct SegVertices {  // 8 B
-  uint32_t a;
-  uint32_t b;
+struct Vrst_seg_vertices {  // 8 B
+  Vrst_uint32 a;
+  Vrst_uint32 b;
 };
 
-static_assert(sizeof(FileHeader) == 64);
-static_assert(sizeof(SectionEntry) == 24);
-static_assert(sizeof(Coord) == 8);
-static_assert(sizeof(BBox) == 16);
-static_assert(sizeof(FwdArc) == 12);
-static_assert(sizeof(BwdArc) == 12);
-static_assert(sizeof(SegAttr) == 16);
-static_assert(sizeof(SegVertices) == 8);
+static_assert(sizeof(Vrst_file_header) == 64);
+static_assert(sizeof(Vrst_section_entry) == 24);
+static_assert(sizeof(Vrst_coord) == 8);
+static_assert(sizeof(Vrst_bbox) == 16);
+static_assert(sizeof(Vrst_fwd_arc) == 12);
+static_assert(sizeof(Vrst_bwd_arc) == 12);
+static_assert(sizeof(Vrst_seg_attr) == 16);
+static_assert(sizeof(Vrst_seg_vertices) == 8);
 
 }  // namespace nav

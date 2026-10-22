@@ -1,11 +1,11 @@
 // Read-only memory-mapped file (POSIX + Windows). Throws std::runtime_error.
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <utility>
+
+#include "vrst_types.h"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -24,16 +24,16 @@
 
 namespace nav {
 
-class MappedFile {
+class Vrst_mapped_file {
  public:
-  MappedFile() = default;
-  explicit MappedFile(const std::string& path) { open(path); }
-  ~MappedFile() { close(); }
+  Vrst_mapped_file() = default;
+  explicit Vrst_mapped_file(const std::string& path) { open(path); }
+  ~Vrst_mapped_file() { close(); }
 
-  MappedFile(const MappedFile&) = delete;
-  MappedFile& operator=(const MappedFile&) = delete;
-  MappedFile(MappedFile&& o) noexcept { swap(o); }
-  MappedFile& operator=(MappedFile&& o) noexcept {
+  Vrst_mapped_file(const Vrst_mapped_file&) = delete;
+  Vrst_mapped_file& operator=(const Vrst_mapped_file&) = delete;
+  Vrst_mapped_file(Vrst_mapped_file&& o) noexcept { swap(o); }
+  Vrst_mapped_file& operator=(Vrst_mapped_file&& o) noexcept {
     if (this != &o) {
       close();
       swap(o);
@@ -52,12 +52,12 @@ class MappedFile {
       CloseHandle(f);
       throw std::runtime_error("cannot stat " + path);
     }
-    size_ = static_cast<size_t>(sz.QuadPart);
+    size_ = static_cast<Vrst_size>(sz.QuadPart);
     if (size_ > 0) {
       HANDLE m = CreateFileMappingA(f, nullptr, PAGE_READONLY, 0, 0, nullptr);
       CloseHandle(f);
       if (!m) throw std::runtime_error("cannot map " + path);
-      data_ = static_cast<const uint8_t*>(MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0));
+      data_ = static_cast<const Vrst_uint8*>(MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0));
       CloseHandle(m);
       if (!data_) throw std::runtime_error("cannot map " + path);
     } else {
@@ -71,12 +71,12 @@ class MappedFile {
       ::close(fd);
       throw std::runtime_error("cannot stat " + path);
     }
-    size_ = static_cast<size_t>(st.st_size);
+    size_ = static_cast<Vrst_size>(st.st_size);
     if (size_ > 0) {
       void* p = mmap(nullptr, size_, PROT_READ, MAP_SHARED, fd, 0);
       ::close(fd);
       if (p == MAP_FAILED) throw std::runtime_error("cannot map " + path);
-      data_ = static_cast<const uint8_t*>(p);
+      data_ = static_cast<const Vrst_uint8*>(p);
     } else {
       ::close(fd);
     }
@@ -89,7 +89,7 @@ class MappedFile {
 #ifdef _WIN32
       UnmapViewOfFile(data_);
 #else
-      munmap(const_cast<uint8_t*>(data_), size_);
+      munmap(const_cast<Vrst_uint8*>(data_), size_);
 #endif
     }
     data_ = nullptr;
@@ -97,19 +97,19 @@ class MappedFile {
     path_.clear();
   }
 
-  const uint8_t* data() const { return data_; }
-  size_t size() const { return size_; }
+  const Vrst_uint8* data() const { return data_; }
+  Vrst_size size() const { return size_; }
   const std::string& path() const { return path_; }
 
  private:
-  void swap(MappedFile& o) noexcept {
+  void swap(Vrst_mapped_file& o) noexcept {
     std::swap(data_, o.data_);
     std::swap(size_, o.size_);
     std::swap(path_, o.path_);
   }
 
-  const uint8_t* data_ = nullptr;
-  size_t size_ = 0;
+  const Vrst_uint8* data_ = nullptr;
+  Vrst_size size_ = 0;
   std::string path_;
 };
 

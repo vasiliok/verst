@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(nav LANGUAGES C CXX)
+project(verst LANGUAGES C CXX)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -20,6 +20,22 @@ function(nav_warnings target)
   endif()
 endfunction()
 
+# --- scalar types: src/vrst_types.h.in -> <build>/generated/vrst_types.h -------
+set(VRST_TYPE_INT8    "std::int8_t"   CACHE STRING "C++ type for Vrst_int8")
+set(VRST_TYPE_INT16   "std::int16_t"  CACHE STRING "C++ type for Vrst_int16")
+set(VRST_TYPE_INT32   "std::int32_t"  CACHE STRING "C++ type for Vrst_int32")
+set(VRST_TYPE_INT64   "std::int64_t"  CACHE STRING "C++ type for Vrst_int64")
+set(VRST_TYPE_UINT8   "std::uint8_t"  CACHE STRING "C++ type for Vrst_uint8")
+set(VRST_TYPE_UINT16  "std::uint16_t" CACHE STRING "C++ type for Vrst_uint16")
+set(VRST_TYPE_UINT32  "std::uint32_t" CACHE STRING "C++ type for Vrst_uint32")
+set(VRST_TYPE_UINT64  "std::uint64_t" CACHE STRING "C++ type for Vrst_uint64")
+set(VRST_TYPE_FLOAT32 "float"         CACHE STRING "C++ type for Vrst_float32")
+set(VRST_TYPE_FLOAT64 "double"        CACHE STRING "C++ type for Vrst_float64")
+set(VRST_TYPE_SIZE    "std::size_t"   CACHE STRING "C++ type for Vrst_size")
+configure_file(src/vrst_types.h.in "${CMAKE_BINARY_DIR}/generated/vrst_types.h" @ONLY)
+add_library(vrst_types INTERFACE)
+target_include_directories(vrst_types INTERFACE "${CMAKE_BINARY_DIR}/generated")
+
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 
@@ -28,11 +44,12 @@ add_executable(osm2nav src/osm2nav.cpp)
 target_include_directories(osm2nav SYSTEM PRIVATE
   third_party/libosmium/include
   third_party/protozero/include)
-target_link_libraries(osm2nav PRIVATE ZLIB::ZLIB Threads::Threads)
+target_link_libraries(osm2nav PRIVATE vrst_types ZLIB::ZLIB Threads::Threads)
 nav_warnings(osm2nav)
 
 # --- navcheck --------------------------------------------------------------
 add_executable(navcheck src/navcheck.cpp)
+target_link_libraries(navcheck PRIVATE vrst_types)
 nav_warnings(navcheck)
 
 # --- navview ---------------------------------------------------------------
@@ -69,7 +86,7 @@ if(NAV_BUILD_VIEWER)
 
   find_package(OpenGL REQUIRED)
   add_executable(navview src/navview.cpp)
-  target_link_libraries(navview PRIVATE glad imgui OpenGL::GL)
+  target_link_libraries(navview PRIVATE vrst_types glad imgui OpenGL::GL)
   nav_warnings(navview)
 endif()
 

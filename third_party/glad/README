@@ -1,0 +1,2 @@
+Generated with glad 0.1.36:
+  python -m glad --profile core --api gl=3.3 --generator c --spec gl --extensions= --out-path third_party/glad

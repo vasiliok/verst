@@ -1,0 +1,86 @@
+cmake_minimum_required(VERSION 3.20)
+project(nav LANGUAGES C CXX)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(NAV_BUILD_VIEWER "Build navview (fetches GLFW)" ON)
+set(NAV_TEST_PBF "${CMAKE_SOURCE_DIR}/data/andorra.osm.pbf" CACHE FILEPATH "PBF used by the CTest")
+
+function(nav_warnings target)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /W4)
+  else()
+    target_compile_options(${target} PRIVATE -Wall -Wextra)
+  endif()
+endfunction()
+
+find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)
+
+# --- osm2nav ---------------------------------------------------------------
+add_executable(osm2nav src/osm2nav.cpp)
+target_include_directories(osm2nav SYSTEM PRIVATE
+  third_party/libosmium/include
+  third_party/protozero/include)
+target_link_libraries(osm2nav PRIVATE ZLIB::ZLIB Threads::Threads)
+nav_warnings(osm2nav)
+
+# --- navcheck --------------------------------------------------------------
+add_executable(navcheck src/navcheck.cpp)
+nav_warnings(navcheck)
+
+# --- navview ---------------------------------------------------------------
+if(NAV_BUILD_VIEWER)
+  include(FetchContent)
+  set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG 3.4
+    GIT_SHALLOW TRUE)
+  FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG v1.93.0
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(glfw imgui)
+
+  # Pre-generated GL 3.3 core loader (see third_party/glad/README).
+  add_library(glad STATIC third_party/glad/src/glad.c)
+  target_include_directories(glad PUBLIC third_party/glad/include)
+
+  # Dear ImGui has no CMake build: core + GLFW/OpenGL3 backends.
+  add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+  target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+  target_link_libraries(imgui PUBLIC glfw)
+
+  find_package(OpenGL REQUIRED)
+  add_executable(navview src/navview.cpp)
+  target_link_libraries(navview PRIVATE glad imgui OpenGL::GL)
+  nav_warnings(navview)
+endif()
+
+# --- tests -----------------------------------------------------------------
+enable_testing()
+if(EXISTS "${NAV_TEST_PBF}")
+  set(_out "${CMAKE_BINARY_DIR}/test_out")
+  add_test(NAME convert COMMAND osm2nav "${NAV_TEST_PBF}" "${_out}")
+  add_test(NAME check COMMAND navcheck "${_out}")
+  set_tests_properties(convert PROPERTIES FIXTURES_SETUP nav_data)
+  set_tests_properties(check PROPERTIES FIXTURES_REQUIRED nav_data)
+else()
+  message(STATUS "NAV_TEST_PBF not found (${NAV_TEST_PBF}); tests disabled")
+endif()

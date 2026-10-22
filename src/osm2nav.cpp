@@ -49,7 +49,7 @@ struct Vrst_osm_tag {
   /// Views into the reader's buffer: valid only during the callback. No copy per tag,
   /// which matters at tens of millions of ways.
   std::string_view key;
-  std::string_view value;
+  std::string_view value;  ///< Tag value; same lifetime as key.
 };
 
 /// One OSM way as delivered by Vrst_osm_source: id, node refs and tags.
@@ -228,8 +228,9 @@ enum class Dir : Vrst_uint8 { Both, Fwd, Bwd };
 struct Vrst_way_info {
   /// Copied to SEG_OSM_WAY.
   Vrst_uint64 osm_id;
-  /// Interned name and ref; strings are stored once in Vrst_string_pool.
+  /// Interned name; strings are stored once in Vrst_string_pool.
   Vrst_uint32 name_id;
+  /// Interned ref (road number), same pool as name_id.
   Vrst_uint32 ref_id;
   /// Road class from the profile table.
   RoadClass cls;
@@ -321,7 +322,10 @@ class Vrst_string_pool {
   std::vector<std::string> strings_;
 };
 
+/// Coordinate of a road node not found in pass 2 (way refers to a node outside the
+/// extract). Such nodes split the way, so no segment spans the missing point.
 constexpr Vrst_coord kInvalidCoord{std::numeric_limits<Vrst_int32>::min(), std::numeric_limits<Vrst_int32>::min()};
+/// "No index" marker, e.g. a node that is not a graph vertex.
 constexpr Vrst_uint32 kNone = std::numeric_limits<Vrst_uint32>::max();
 
 Vrst_float64 haversine_m(Vrst_coord p, Vrst_coord q) {
@@ -388,10 +392,13 @@ class Vrst_file_writer {
   /// Only a view: the caller keeps the data alive until write(). Lets `add<T>()` keep
   /// type information that write(), which only sees bytes, would otherwise lose.
   struct Vrst_section {
+    /// Section id written to the table.
     SectionId id;
     /// sizeof(T) captured at add() time, where T is still known; write() only has bytes.
     Vrst_uint32 elem_size;
+    /// Number of elements.
     Vrst_uint64 count;
+    /// First element; count * elem_size bytes are written from here.
     const void* data;
   };
   /// Selects magic and file_type in the header.

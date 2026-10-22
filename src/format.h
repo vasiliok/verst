@@ -13,7 +13,10 @@ static_assert(std::endian::native == std::endian::little, "nav files are little-
 
 namespace nav {
 
+/// Layout version written to Vrst_file_header::format_version. Bump on any change to
+/// an on-disk struct or enum value; loaders refuse every other version.
 inline constexpr Vrst_uint32 kFormatVersion = 1;
+/// Section offset alignment in bytes: one cache line, and enough for any element type.
 inline constexpr Vrst_uint64 kSectionAlign = 64;
 
 /// Which of the four nav files a file is; stored in Vrst_file_header::file_type.
@@ -22,10 +25,10 @@ inline constexpr Vrst_uint64 kSectionAlign = 64;
 /// zero-filled header never matches any type.
 enum class FileType : Vrst_uint32 { Graph = 1, Edges = 2, Geom = 3, Names = 4 };
 
-inline constexpr char kMagicGraph[8] = {'N', 'A', 'V', 'G', 'R', 'A', 'P', 'H'};
-inline constexpr char kMagicEdges[8] = {'N', 'A', 'V', 'E', 'D', 'G', 'E', 'S'};
-inline constexpr char kMagicGeom[8] = {'N', 'A', 'V', 'G', 'E', 'O', 'M', '\0'};
-inline constexpr char kMagicNames[8] = {'N', 'A', 'V', 'N', 'A', 'M', 'E', 'S'};
+inline constexpr char kMagicGraph[8] = {'N', 'A', 'V', 'G', 'R', 'A', 'P', 'H'};  ///< graph.dat magic.
+inline constexpr char kMagicEdges[8] = {'N', 'A', 'V', 'E', 'D', 'G', 'E', 'S'};  ///< edges.dat magic.
+inline constexpr char kMagicGeom[8] = {'N', 'A', 'V', 'G', 'E', 'O', 'M', '\0'};  ///< geom.dat magic.
+inline constexpr char kMagicNames[8] = {'N', 'A', 'V', 'N', 'A', 'M', 'E', 'S'};  ///< names.dat magic.
 
 inline const char* magic_for(FileType t) {
   switch (t) {
@@ -216,6 +219,7 @@ enum class RoadClass : Vrst_uint8 {
   Ferry,
   Count
 };
+/// Number of road classes: size of every per-class table and bits used in class masks.
 inline constexpr int kRoadClassCount = static_cast<int>(RoadClass::Count);
 
 /// Bit flags of a segment, stored in Vrst_seg_attr::flags.

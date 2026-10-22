@@ -90,6 +90,34 @@ if(NAV_BUILD_VIEWER)
   nav_warnings(navview)
 endif()
 
+# --- docs ------------------------------------------------------------------
+# `cmake --build <build> --target docs` -> <build>/docs/html/index.html
+find_package(Doxygen)
+if(DOXYGEN_FOUND)
+  set(DOXYGEN_PROJECT_NAME verst)
+  set(DOXYGEN_PROJECT_BRIEF "Offline OSM map rendering and car navigation")
+  set(DOXYGEN_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/docs")
+  set(DOXYGEN_USE_MDFILE_AS_MAINPAGE "${CMAKE_SOURCE_DIR}/README.md")
+  set(DOXYGEN_STRIP_FROM_PATH "${CMAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/generated")
+  set(DOXYGEN_FILE_PATTERNS *.h *.cpp)
+  # Types and fields live in anonymous namespaces and private sections too.
+  set(DOXYGEN_EXTRACT_PRIVATE YES)
+  set(DOXYGEN_EXTRACT_STATIC YES)
+  set(DOXYGEN_EXTRACT_ANON_NSPACES YES)
+  set(DOXYGEN_JAVADOC_AUTOBRIEF YES)
+  set(DOXYGEN_SOURCE_BROWSER YES)
+  set(DOXYGEN_GENERATE_TREEVIEW YES)
+  set(DOXYGEN_WARN_NO_PARAMDOC NO)
+  set(DOXYGEN_WARN_IF_UNDOCUMENTED NO)
+  doxygen_add_docs(docs
+    "${CMAKE_SOURCE_DIR}/README.md"
+    "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_BINARY_DIR}/generated/vrst_types.h"
+    COMMENT "Generating Doxygen docs")
+else()
+  message(STATUS "Doxygen not found; docs target disabled")
+endif()
+
 # --- tests -----------------------------------------------------------------
 enable_testing()
 if(EXISTS "${NAV_TEST_PBF}")

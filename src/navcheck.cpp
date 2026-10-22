@@ -19,6 +19,8 @@ using namespace nav;
 
 namespace {
 
+/// Number of failed checks so far; non-zero gives exit code 1 and skips later
+/// checks that would index through broken data.
 int g_failures = 0;
 
 void report(bool ok, const char* name, const std::string& detail) {
@@ -70,9 +72,10 @@ bool check_offsets(std::span<const Vrst_uint32> off, Vrst_uint64 last, Vrst_uint
 /// profile, which no per-file check can see.
 struct Vrst_union_find {
   /// parent[v]: next vertex towards the set root (root: parent[v] == v).
+  std::vector<Vrst_uint32> parent;
   /// size[root]: vertices in the set. Union by size keeps trees shallow, and the
   /// sizes give the largest-component share without a second pass.
-  std::vector<Vrst_uint32> parent, size;
+  std::vector<Vrst_uint32> size;
   explicit Vrst_union_find(Vrst_uint32 n) : parent(n), size(n, 1) { std::iota(parent.begin(), parent.end(), 0u); }
   Vrst_uint32 find(Vrst_uint32 x) {
     while (parent[x] != x) x = parent[x] = parent[parent[x]];

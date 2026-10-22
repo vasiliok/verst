@@ -32,7 +32,8 @@ using namespace nav;
 
 namespace {
 
-constexpr Vrst_float64 kPi = 3.14159265358979323846;
+constexpr Vrst_float64 kPi = 3.14159265358979323846;  ///< Pi in double, for degree <-> radian conversion.
+/// WGS84 equatorial radius in metres, the sphere radius of Web Mercator (EPSG:3857).
 constexpr Vrst_float64 kEarthRadius = 6378137.0;
 
 /// Start view and R: this point (47.322, 5.041) at street zoom. Falls back
@@ -47,7 +48,8 @@ constexpr Vrst_float64 kDefaultMetresPerPoint = 5.0;  ///< Start zoom: ground me
 struct Vrst_vec2d {
   /// Double on purpose: Web Mercator metres reach 2e7, where float has ~2 m steps.
   /// Everything is computed in double and only center-relative values go to float.
-  Vrst_float64 x, y;
+  Vrst_float64 x;
+  Vrst_float64 y;  ///< Second component; same units and precision as x.
 };
 
 Vrst_vec2d mercator(Vrst_coord c) {
@@ -75,6 +77,7 @@ constexpr Vrst_uint32 kClassGroups[9] = {
     bit(RoadClass::Service),
     bit(RoadClass::Ferry),
 };
+/// Label of each kClassGroups entry, for the panel and the console.
 constexpr const char* kGroupNames[9] = {"motorway", "trunk",       "primary", "secondary", "tertiary",
                                         "unclassified", "residential", "service", "ferry"};
 
@@ -99,7 +102,8 @@ constexpr Vrst_float32 kClassColors[kRoadClassCount][3] = {
 struct Vrst_gpu_point {
   /// Mercator metres relative to map_center. Float is enough only because of the
   /// subtraction: at 25 km from the center the step is ~2 mm, so zoom does not shake.
-  Vrst_float32 x, y;
+  Vrst_float32 x;
+  Vrst_float32 y;  ///< Second component; same units as x.
   /// Lines: `road_class | flags << 16`. Points: 1 = dead end. One integer attribute
   /// lets one draw call color, filter and highlight everything in the shader.
   Vrst_uint32 attr;
@@ -136,7 +140,8 @@ struct Vrst_app {
   Vrst_view view;
   /// Framebuffer size in pixels. Differs from the window size on HiDPI; the viewport
   /// and the NDC scale need the framebuffer one.
-  int fb_w = 1, fb_h = 1;
+  int fb_w = 1;
+  int fb_h = 1;  ///< Framebuffer height in pixels; see fb_w.
   /// Framebuffer pixels per window coordinate (2 on Retina). GLFW reports the cursor
   /// in window coordinates; without this zoom-at-cursor misses by a factor of 2.
   Vrst_float64 px_ratio = 1;
@@ -154,7 +159,8 @@ struct Vrst_app {
   bool dragging = false;
   /// Last cursor position, framebuffer px. Pan needs the delta, and scroll events
   /// carry no position, so zoom-at-cursor needs the last known one.
-  Vrst_float64 last_x = 0, last_y = 0;
+  Vrst_float64 last_x = 0;
+  Vrst_float64 last_y = 0;  ///< Last cursor y, framebuffer px; see last_x.
   /// Scale that fits the whole map: zoom 1x in the UI and the zoom-out limit.
   Vrst_float64 initial_scale = 1;
   /// Count of degree-1 vertices, shown in the panel.

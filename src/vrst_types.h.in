@@ -10,17 +10,17 @@
 
 namespace nav {
 
-using Vrst_int8 = @VRST_TYPE_INT8@;
-using Vrst_int16 = @VRST_TYPE_INT16@;
-using Vrst_int32 = @VRST_TYPE_INT32@;
-using Vrst_int64 = @VRST_TYPE_INT64@;
-using Vrst_uint8 = @VRST_TYPE_UINT8@;
-using Vrst_uint16 = @VRST_TYPE_UINT16@;
-using Vrst_uint32 = @VRST_TYPE_UINT32@;
-using Vrst_uint64 = @VRST_TYPE_UINT64@;
-using Vrst_float32 = @VRST_TYPE_FLOAT32@;
-using Vrst_float64 = @VRST_TYPE_FLOAT64@;
-using Vrst_size = @VRST_TYPE_SIZE@;
+using Vrst_int8 = @VRST_TYPE_INT8@;        ///< Signed 8-bit integer.
+using Vrst_int16 = @VRST_TYPE_INT16@;      ///< Signed 16-bit integer.
+using Vrst_int32 = @VRST_TYPE_INT32@;      ///< Signed 32-bit integer.
+using Vrst_int64 = @VRST_TYPE_INT64@;      ///< Signed 64-bit integer.
+using Vrst_uint8 = @VRST_TYPE_UINT8@;      ///< Unsigned 8-bit integer.
+using Vrst_uint16 = @VRST_TYPE_UINT16@;    ///< Unsigned 16-bit integer.
+using Vrst_uint32 = @VRST_TYPE_UINT32@;    ///< Unsigned 32-bit integer.
+using Vrst_uint64 = @VRST_TYPE_UINT64@;    ///< Unsigned 64-bit integer.
+using Vrst_float32 = @VRST_TYPE_FLOAT32@;  ///< IEEE 754 single precision.
+using Vrst_float64 = @VRST_TYPE_FLOAT64@;  ///< IEEE 754 double precision.
+using Vrst_size = @VRST_TYPE_SIZE@;        ///< Size and index type of the platform (size_t).
 
 /// True if T is an integer of exactly Bytes bytes with the given signedness.
 /// Used by the static_asserts below: a wrong `VRST_TYPE_*` setting must fail here,

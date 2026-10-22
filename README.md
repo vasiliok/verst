@@ -23,6 +23,17 @@ Dependencies: zlib (system). GLFW 3.4 and Dear ImGui v1.93.0 are fetched with Fe
 pre-generated in `third_party/glad/` (no Python needed at configure time; see its README to regenerate).
 Use `-DNAV_BUILD_VIEWER=OFF` to build without GLFW/OpenGL.
 
+## Docs
+
+All comments are Doxygen (`///`, `///<`, `@file`, `@return`). With Doxygen installed
+(`brew install doxygen`), configure and run:
+
+```sh
+cmake --build build --target docs    # -> build/docs/html/index.html
+```
+
+The target is skipped when Doxygen is not found.
+
 ## Scalar types
 
 All code uses the `Vrst_` scalar aliases (`Vrst_int8`…`Vrst_int64`, `Vrst_uint8`…`Vrst_uint64`, `Vrst_float32`,

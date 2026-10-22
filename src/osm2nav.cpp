@@ -58,10 +58,15 @@ struct Vrst_osm_tag {
 class Vrst_osm_way {
  public:
   /// Wraps the reader's buffers; nothing is copied.
+  /// @param id OSM way id.
+  /// @param refs Node ids in way order.
+  /// @param tags All tags of the way.
   Vrst_osm_way(Vrst_uint64 id, std::span<const Vrst_uint64> refs, std::span<const Vrst_osm_tag> tags)
       : m_id(id), m_refs(refs), m_tags(tags) {}
 
-  /// Value of tag key, or "" when the way does not have it.
+  /// Looks up one tag by linear search; ways have few tags.
+  /// @param key Tag key.
+  /// @return Tag value, or "" when the way does not have the tag.
   std::string_view tag(std::string_view key) const {
     for (const Vrst_osm_tag& t : m_tags)
       if (t.key == key) return t.value;
@@ -69,10 +74,13 @@ class Vrst_osm_way {
   }
 
   /// @copydoc Vrst_osm_way::m_id
+  /// @return The way id.
   Vrst_uint64 id() const { return m_id; }
   /// @copydoc Vrst_osm_way::m_refs
+  /// @return View into the reader's buffer, valid during the callback.
   std::span<const Vrst_uint64> refs() const { return m_refs; }
   /// @copydoc Vrst_osm_way::m_tags
+  /// @return View into the reader's buffer, valid during the callback.
   std::span<const Vrst_osm_tag> tags() const { return m_tags; }
 
  private:
@@ -100,9 +108,16 @@ struct Vrst_osm_node {
 /// an own protozero reader (or a test source) without touching the conversion.
 class Vrst_osm_source {
  public:
+  /// Virtual: sources are owned and used through this base class.
   virtual ~Vrst_osm_source() = default;
+  /// Bounding box from the file header, if the file has one. Only printed in the stats.
+  /// @return Box, or nullopt when the header has none.
   virtual std::optional<Vrst_bbox> header_bbox() = 0;
+  /// Reads all ways in file order (pass 1).
+  /// @param fn Called once per way; the way is valid only during the call.
   virtual void for_each_way(const std::function<void(const Vrst_osm_way&)>& fn) = 0;
+  /// Reads all nodes with a valid location in file order (pass 2).
+  /// @param fn Called once per node.
   virtual void for_each_node(const std::function<void(const Vrst_osm_node&)>& fn) = 0;
 };
 
@@ -111,8 +126,11 @@ class Vrst_osm_source {
 /// type, so only ways or only nodes are decoded.
 class Vrst_osmium_source final : public Vrst_osm_source {
  public:
+  /// Remembers the input; nothing is read yet.
+  /// @param path .osm.pbf file; it is opened again for every pass.
   explicit Vrst_osmium_source(std::string path) : m_path(std::move(path)) {}
 
+  /// @copydoc Vrst_osm_source::header_bbox
   std::optional<Vrst_bbox> header_bbox() override {
     osmium::io::Reader reader{m_path, osmium::osm_entity_bits::nothing};
     const osmium::Box box = reader.header().box();
@@ -121,6 +139,7 @@ class Vrst_osmium_source final : public Vrst_osm_source {
     return Vrst_bbox{{box.bottom_left().y(), box.bottom_left().x()}, {box.top_right().y(), box.top_right().x()}};
   }
 
+  /// @copydoc Vrst_osm_source::for_each_way
   void for_each_way(const std::function<void(const Vrst_osm_way&)>& fn) override {
     osmium::io::Reader reader{m_path, osmium::osm_entity_bits::way};
     std::vector<Vrst_uint64> refs;
@@ -137,6 +156,7 @@ class Vrst_osmium_source final : public Vrst_osm_source {
     reader.close();
   }
 
+  /// @copydoc Vrst_osm_source::for_each_node
   void for_each_node(const std::function<void(const Vrst_osm_node&)>& fn) override {
     osmium::io::Reader reader{m_path, osmium::osm_entity_bits::node};
     while (osmium::memory::Buffer buffer = reader.read()) {
@@ -202,6 +222,9 @@ static_assert([] {
   return true;
 }());
 
+/// Profile row for a highway=* value.
+/// @param highway Tag value.
+/// @return Row in kClasses, or nullptr when the value is empty or not a car road.
 const Vrst_class_def* find_class(std::string_view highway) {
   if (highway.empty()) return nullptr;
   for (const Vrst_class_def& c : kClasses)
@@ -209,7 +232,9 @@ const Vrst_class_def* find_class(std::string_view highway) {
   return nullptr;
 }
 
-/// Parses an OSM maxspeed tag value.
+/// Parses an OSM maxspeed tag value: plain km/h, "mph" values, a few French zone
+/// codes and "walk"; anything else counts as unknown.
+/// @param v Tag value, e.g. "50", "30 mph", "FR:urban".
 /// @return km/h, 0 = unknown / no limit.
 Vrst_uint8 parse_maxspeed(std::string_view v) {
   if (v.empty() || v == "none" || v == "signals" || v == "variable") return 0;
@@ -257,11 +282,19 @@ struct Vrst_way_info {
   Vrst_uint16 flags;
 };
 
+/// Whether an access-style tag grants access.
+/// @param v Tag value.
+/// @return true for "yes" and "designated".
 bool is_yes(std::string_view v) { return v == "yes" || v == "designated"; }
+/// Whether a flag tag such as tunnel=* or bridge=* is present.
+/// @param v Tag value.
+/// @return true for any value except "" and "no".
 bool is_set(std::string_view v) { return !v.empty() && v != "no"; }
 
-/// Applies the car profile to one way.
-/// @return the way summary, or nullopt when the way is not a car road.
+/// Applies the car profile to one way: road class, access, flags, speed and direction.
+/// @param w Way from pass 1.
+/// @return The way summary, or nullopt when the way is not a car road. name_id and
+///         ref_id are left 0 for the caller to fill.
 std::optional<Vrst_way_info> classify(const Vrst_osm_way& w) {
   const Vrst_class_def* cd = find_class(w.tag("highway"));
   const std::string_view mc = w.tag("motorcar");
@@ -305,6 +338,9 @@ std::optional<Vrst_way_info> classify(const Vrst_osm_way& w) {
   return info;
 }
 
+/// Speed used for the arc weight.
+/// @param w Way summary.
+/// @return Tagged maxspeed, or the class default when it is unknown.
 Vrst_uint32 speed_kmh(const Vrst_way_info& w) {
   return w.maxspeed_kmh ? w.maxspeed_kmh : kClasses[static_cast<int>(w.cls)].speed_kmh;
 }
@@ -318,13 +354,19 @@ Vrst_uint32 speed_kmh(const Vrst_way_info& w) {
 /// is stored once and segments carry a 4-byte id.
 class Vrst_string_pool {
  public:
+  /// Creates the pool with the empty string as id 0.
   Vrst_string_pool() { m_strings.emplace_back(); }
+  /// Adds a string once.
+  /// @param s String to add.
+  /// @return Its id; equal strings get the same id and "" is always 0.
   Vrst_uint32 intern(std::string_view s) {
     if (s.empty()) return 0;
     auto [it, inserted] = m_ids.try_emplace(std::string(s), static_cast<Vrst_uint32>(m_strings.size()));
     if (inserted) m_strings.emplace_back(s);
     return it->second;
   }
+  /// All strings, ready for names.dat.
+  /// @return Strings in id order.
   const std::vector<std::string>& strings() const { return m_strings; }
 
  private:
@@ -342,6 +384,11 @@ constexpr Vrst_coord kInvalidCoord{std::numeric_limits<Vrst_int32>::min(), std::
 /// "No index" marker, e.g. a node that is not a graph vertex.
 constexpr Vrst_uint32 kNone = std::numeric_limits<Vrst_uint32>::max();
 
+/// Great-circle distance on a sphere of mean Earth radius; within 0.5% of the
+/// ellipsoid, enough for lengths and weights.
+/// @param p First point.
+/// @param q Second point.
+/// @return Distance in metres.
 Vrst_float64 haversine_m(Vrst_coord p, Vrst_coord q) {
   constexpr Vrst_float64 kEarthRadiusM = 6371008.8;
   constexpr Vrst_float64 kDeg = 1e-7 * 3.14159265358979323846 / 180.0;
@@ -357,17 +404,32 @@ Vrst_float64 haversine_m(Vrst_coord p, Vrst_coord q) {
 /// elem_size in one place guarantees every file passes the loader's checks.
 class Vrst_file_writer {
  public:
+  /// Starts an empty file description.
+  /// @param type File to write; selects magic and file_type.
+  /// @param build_id Import id, the same for all four writers of one run.
   Vrst_file_writer(FileType type, Vrst_uint64 build_id) : m_type(type), m_build_id(build_id) {}
 
+  /// Queues a section; only the view is kept, nothing is copied.
+  /// @tparam T Element type, written as raw bytes.
+  /// @param id Section id.
+  /// @param data Elements; must stay alive until write().
   template <class T>
   void add(SectionId id, std::span<const T> data) {
     m_sections.push_back({id, sizeof(T), data.size(), data.data()});
   }
+  /// Queues a vector as a section; see the span overload.
+  /// @tparam T Element type, written as raw bytes.
+  /// @param id Section id.
+  /// @param data Elements; the vector must stay alive and unchanged until write().
   template <class T>
   void add(SectionId id, const std::vector<T>& data) {
     add(id, std::span<const T>(data));
   }
 
+  /// Writes header, section table and sections, padding each to kSectionAlign.
+  /// @param path Output file, replaced if it exists.
+  /// @return File size in bytes.
+  /// @throws std::runtime_error if the file cannot be created or written.
   Vrst_uint64 write(const fs::path& path) const {
     Vrst_file_header h{};
     std::memcpy(h.magic, magic_for(m_type), 8);
@@ -429,11 +491,15 @@ class Vrst_file_writer {
 /// extract converts slowly.
 class Vrst_phase_timer {
  public:
+  /// Prints the time since the previous phase (or the start) and starts the next one.
+  /// @param name Phase label.
   void phase(const char* name) {
     const auto now = std::chrono::steady_clock::now();
     std::printf("  %-22s %8.1f ms\n", name, std::chrono::duration<Vrst_float64, std::milli>(now - m_last).count());
     m_last = now;
   }
+  /// Time since the timer was created.
+  /// @return Milliseconds.
   Vrst_float64 total_ms() const {
     return std::chrono::duration<Vrst_float64, std::milli>(std::chrono::steady_clock::now() - m_start).count();
   }
@@ -445,6 +511,8 @@ class Vrst_phase_timer {
   std::chrono::steady_clock::time_point m_last = m_start;
 };
 
+/// Peak resident memory of the process.
+/// @return MiB; 0 on Windows.
 Vrst_float64 peak_rss_mb() {
 #ifdef _WIN32
   return 0;
@@ -459,6 +527,11 @@ Vrst_float64 peak_rss_mb() {
 #endif
 }
 
+/// Random 64-bit id for one import, written to all four files. Mixes random_device,
+/// the input path and the clock, so two runs practically never share an id even where
+/// random_device is weak.
+/// @param input Input path.
+/// @return Non-zero id.
 Vrst_uint64 make_build_id(const std::string& input) {
   std::random_device rd;
   Vrst_uint64 id = (Vrst_uint64(rd()) << 32) ^ rd();
@@ -488,8 +561,11 @@ struct Vrst_seg_tmp {
   Vrst_uint32 length_dm;
 };
 
-/// The single place that decides vertex order. Fills vertex_coord.
-/// @return node index -> vertex id (kNone for non-vertices).
+/// The single place that decides vertex order.
+/// @param segs All segments, ends given as node indices.
+/// @param node_coord Coordinate of each node index.
+/// @param[out] vertex_coord Receives the coordinate of each vertex, in vertex id order.
+/// @return Node index -> vertex id, kNone for nodes that are not vertices.
 /// @todo Sort used vertex nodes by Hilbert key of their coordinate.
 std::vector<Vrst_uint32> number_vertices(const std::vector<Vrst_seg_tmp>& segs, const std::vector<Vrst_coord>& node_coord,
                                       std::vector<Vrst_coord>& vertex_coord) {
@@ -505,6 +581,12 @@ std::vector<Vrst_uint32> number_vertices(const std::vector<Vrst_seg_tmp>& segs, 
   return node_to_vertex;
 }
 
+/// Converts one extract: pass 1 ways, node table, pass 2 nodes, segments, CSR, names,
+/// write, stats.
+/// @param input .osm.pbf file.
+/// @param out_dir Output directory, created if missing.
+/// @return 0.
+/// @throws std::runtime_error on a read or write error.
 int run(const std::string& input, const fs::path& out_dir) {
   Vrst_phase_timer timer;
   Vrst_osmium_source source(input);
@@ -787,6 +869,10 @@ int run(const std::string& input, const fs::path& out_dir) {
 
 }  // namespace
 
+/// osm2nav entry point.
+/// @param argc Argument count.
+/// @param argv `<input.osm.pbf> <out_dir>`.
+/// @return 0 on success, 1 on error, 2 on wrong usage.
 int main(int argc, char** argv) {
   if (argc != 3) {
     std::fprintf(stderr, "usage: %s <input.osm.pbf> <out_dir>\n", argv[0]);

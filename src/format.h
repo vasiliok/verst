@@ -30,6 +30,9 @@ inline constexpr char kMagicEdges[8] = {'N', 'A', 'V', 'E', 'D', 'G', 'E', 'S'};
 inline constexpr char kMagicGeom[8] = {'N', 'A', 'V', 'G', 'E', 'O', 'M', '\0'};  ///< geom.dat magic.
 inline constexpr char kMagicNames[8] = {'N', 'A', 'V', 'N', 'A', 'M', 'E', 'S'};  ///< names.dat magic.
 
+/// Magic bytes of a file type.
+/// @param t File type.
+/// @return 8 bytes, not NUL-terminated; nullptr for an unknown type.
 inline const char* magic_for(FileType t) {
   switch (t) {
     case FileType::Graph: return kMagicGraph;
@@ -40,6 +43,9 @@ inline const char* magic_for(FileType t) {
   return nullptr;
 }
 
+/// File name of a file type inside an output directory.
+/// @param t File type.
+/// @return "graph.dat", "edges.dat", "geom.dat" or "names.dat"; nullptr for an unknown type.
 inline const char* file_name_for(FileType t) {
   switch (t) {
     case FileType::Graph: return "graph.dat";
@@ -138,7 +144,12 @@ struct Vrst_coord {
   Vrst_int32 lat_e7;
   /// Longitude * 1e7. +-180 deg * 1e7 still fits in int32.
   Vrst_int32 lon_e7;
-  friend bool operator==(const Vrst_coord&, const Vrst_coord&) = default;
+  /// Exact equality, i.e. the same OSM position. Reliable because the coordinates are
+  /// fixed point; with floats two equal nodes could compare unequal.
+  /// @param a First coordinate.
+  /// @param b Second coordinate.
+  /// @return true if latitude and longitude are bit-identical.
+  friend bool operator==(const Vrst_coord& a, const Vrst_coord& b) = default;
 };
 
 /// Axis-aligned latitude/longitude rectangle, stored once in graph.dat.

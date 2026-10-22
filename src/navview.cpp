@@ -52,18 +52,25 @@ struct Vrst_vec2d {
   Vrst_float64 y;  ///< Second component; same units and precision as x.
 };
 
+/// Web Mercator (EPSG:3857) projection.
+/// @param c Geographic coordinate.
+/// @return Mercator metres (x east, y north) in double.
 Vrst_vec2d mercator(Vrst_coord c) {
   const Vrst_float64 lon = c.lon_e7 * 1e-7 * kPi / 180.0;
   const Vrst_float64 lat = c.lat_e7 * 1e-7 * kPi / 180.0;
   return {kEarthRadius * lon, kEarthRadius * std::log(std::tan(kPi / 4 + lat / 2))};
 }
 
-/// Inverse of mercator(): Web Mercator metres -> degrees (lat, lon).
+/// Inverse of mercator().
+/// @param m Web Mercator metres.
+/// @return Degrees: x = latitude, y = longitude.
 Vrst_vec2d inverse_mercator(Vrst_vec2d m) {
   return {(2 * std::atan(std::exp(m.y / kEarthRadius)) - kPi / 2) * 180.0 / kPi, m.x / kEarthRadius * 180.0 / kPi};
 }
 
-/// Bit of road class c in Vrst_app::class_mask.
+/// Bit of a road class in Vrst_app::class_mask.
+/// @param c Road class.
+/// @return Mask with only that class's bit set.
 constexpr Vrst_uint32 bit(RoadClass c) { return 1u << static_cast<int>(c); }
 /// Key 1..9 -> classes toggled together.
 constexpr Vrst_uint32 kClassGroups[9] = {
@@ -167,7 +174,9 @@ struct Vrst_app {
   Vrst_uint32 dead_ends = 0;
 };
 
-/// World -> NDC as a column-major mat3, computed in double.
+/// World -> NDC as a column-major mat3, computed in double and stored as float.
+/// @param app Viewer state: camera and framebuffer size.
+/// @param[out] out 9 floats for glUniformMatrix3fv.
 void view_matrix(const Vrst_app& app, Vrst_float32 out[9]) {
   const Vrst_view& v = app.view;
   const Vrst_float64 c = std::cos(v.angle) * v.scale, s = std::sin(v.angle) * v.scale;
@@ -178,30 +187,50 @@ void view_matrix(const Vrst_app& app, Vrst_float32 out[9]) {
   for (int i = 0; i < 9; ++i) out[i] = static_cast<Vrst_float32>(m[i]);
 }
 
-/// Cursor in framebuffer px (origin top-left) -> pixel offset from screen center, y up.
+/// Cursor position -> pixel offset from the screen center, y up.
+/// @param app Viewer state, for the framebuffer size.
+/// @param x Cursor x in framebuffer px.
+/// @param y Cursor y in framebuffer px, from the top.
+/// @return Offset in framebuffer px, y up.
 Vrst_vec2d screen_offset(const Vrst_app& app, Vrst_float64 x, Vrst_float64 y) { return {x - app.fb_w / 2.0, app.fb_h / 2.0 - y}; }
 
-/// Screen offset (px) -> world delta (metres).
+/// Screen offset -> world delta, undoing scale and rotation.
+/// @param v Camera.
+/// @param d Offset in framebuffer px, y up.
+/// @return Same offset in Mercator metres.
 Vrst_vec2d unproject_delta(const Vrst_view& v, Vrst_vec2d d) {
   const Vrst_float64 c = std::cos(-v.angle), s = std::sin(-v.angle);
   return {(c * d.x - s * d.y) / v.scale, (s * d.x + c * d.y) / v.scale};
 }
 
+/// World position under a screen point.
+/// @param app Viewer state.
+/// @param x Screen x in framebuffer px.
+/// @param y Screen y in framebuffer px, from the top.
+/// @return Mercator metres relative to map_center.
 Vrst_vec2d cursor_world(const Vrst_app& app, Vrst_float64 x, Vrst_float64 y) {
   const Vrst_vec2d d = unproject_delta(app.view, screen_offset(app, x, y));
   return {app.view.center.x + d.x, app.view.center.y + d.y};
 }
 
+/// Scale that shows the whole map with a 5% margin.
+/// @param app Viewer state with half_extent and framebuffer size.
+/// @return Framebuffer px per Mercator metre.
 Vrst_float64 fit_scale(const Vrst_app& app) {
   const Vrst_float64 sx = app.fb_w / (2 * std::max(app.half_extent.x, 1.0));
   const Vrst_float64 sy = app.fb_h / (2 * std::max(app.half_extent.y, 1.0));
   return 0.95 * std::min(sx, sy);
 }
 
+/// Centers the map, zooms to fit it and resets rotation (F).
+/// @param app Viewer state; its view is replaced.
 void fit_view(Vrst_app& app) {
   app.view = {{0, 0}, fit_scale(app), 0};
 }
 
+/// Moves to kDefaultPoint at street zoom (R), or fits the map when the point is
+/// outside the loaded data.
+/// @param app Viewer state; its view is replaced.
 void reset_view(Vrst_app& app) {
   const Vrst_bbox& bb = app.data.graph().bbox();
   const Vrst_coord p = kDefaultPoint;
@@ -216,8 +245,14 @@ void reset_view(Vrst_app& app) {
               app.px_ratio * std::cos(lat) / kDefaultMetresPerPoint, 0};
 }
 
+/// Viewer state of a window, for the GLFW callbacks.
+/// @param w Window.
+/// @return State stored as the window user pointer.
 Vrst_app* app_of(GLFWwindow* w) { return static_cast<Vrst_app*>(glfwGetWindowUserPointer(w)); }
 
+/// Reads framebuffer size and pixel ratio after a resize or a move to another screen.
+/// @param win Window.
+/// @param[out] app Receives fb_w, fb_h and px_ratio.
 void update_size(GLFWwindow* win, Vrst_app& app) {
   int ww, wh;
   glfwGetWindowSize(win, &ww, &wh);
@@ -227,7 +262,14 @@ void update_size(GLFWwindow* win, Vrst_app& app) {
   app.px_ratio = ww > 0 ? Vrst_float64(app.fb_w) / ww : 1.0;
 }
 
-void on_key(GLFWwindow* win, int key, int, int action, int) {
+/// GLFW key callback: 1-9 toggle class groups, Q/E rotate, O/V toggle highlights,
+/// R/F set the view, Esc quits. Ignored while ImGui has keyboard focus.
+/// @param win Window.
+/// @param key GLFW key code.
+/// @param scancode Platform scancode; unused.
+/// @param action GLFW_PRESS or GLFW_REPEAT (holding Q/E keeps rotating); releases are ignored.
+/// @param mods Modifier bits; unused.
+void on_key(GLFWwindow* win, int key, [[maybe_unused]] int scancode, int action, [[maybe_unused]] int mods) {
   if (action == GLFW_RELEASE || ImGui::GetIO().WantCaptureKeyboard) return;
   Vrst_app& app = *app_of(win);
   if (key >= GLFW_KEY_1 && key <= GLFW_KEY_9 && action == GLFW_PRESS) {
@@ -248,12 +290,23 @@ void on_key(GLFWwindow* win, int key, int, int action, int) {
   }
 }
 
-void on_mouse_button(GLFWwindow* win, int button, int action, int) {
+/// GLFW mouse button callback: the left button starts and ends a map drag. Drags
+/// that start on the ImGui panel belong to ImGui.
+/// @param win Window.
+/// @param button GLFW mouse button; only the left one is used.
+/// @param action GLFW_PRESS or GLFW_RELEASE.
+/// @param mods Modifier bits; unused.
+void on_mouse_button(GLFWwindow* win, int button, int action, [[maybe_unused]] int mods) {
   if (button != GLFW_MOUSE_BUTTON_LEFT) return;
   // Drags that start on the panel belong to ImGui; releases always end a map drag.
   app_of(win)->dragging = action == GLFW_PRESS && !ImGui::GetIO().WantCaptureMouse;
 }
 
+/// GLFW cursor callback: pans while dragging and remembers the cursor for
+/// zoom-at-cursor.
+/// @param win Window.
+/// @param x Cursor x in window coordinates; converted to framebuffer px.
+/// @param y Cursor y in window coordinates, from the top.
 void on_cursor(GLFWwindow* win, Vrst_float64 x, Vrst_float64 y) {
   Vrst_app& app = *app_of(win);
   x *= app.px_ratio;
@@ -267,7 +320,12 @@ void on_cursor(GLFWwindow* win, Vrst_float64 x, Vrst_float64 y) {
   app.last_y = y;
 }
 
-void on_scroll(GLFWwindow* win, Vrst_float64, Vrst_float64 yoff) {
+/// GLFW scroll callback: zooms by 1.25 per wheel step and keeps the point under the
+/// cursor fixed. Scale is limited to 0.1x the fit scale and 2000 px per metre.
+/// @param win Window.
+/// @param xoff Horizontal scroll; unused.
+/// @param yoff Wheel steps; positive zooms in.
+void on_scroll(GLFWwindow* win, [[maybe_unused]] Vrst_float64 xoff, Vrst_float64 yoff) {
   if (ImGui::GetIO().WantCaptureMouse) return;
   Vrst_app& app = *app_of(win);
   const Vrst_vec2d before = cursor_world(app, app.last_x, app.last_y);
@@ -276,11 +334,20 @@ void on_scroll(GLFWwindow* win, Vrst_float64, Vrst_float64 yoff) {
   app.view.center = {before.x - d.x, before.y - d.y};
 }
 
-void on_framebuffer_size(GLFWwindow* win, int, int) {
+/// GLFW framebuffer size callback.
+/// @param win Window.
+/// @param width New width; unused, update_size() reads both sizes itself.
+/// @param height New height; unused.
+void on_framebuffer_size(GLFWwindow* win, [[maybe_unused]] int width, [[maybe_unused]] int height) {
   Vrst_app& app = *app_of(win);
   update_size(win, app);
 }
 
+/// Compiles one shader.
+/// @param type GL_VERTEX_SHADER or GL_FRAGMENT_SHADER.
+/// @param src GLSL source.
+/// @return Shader object.
+/// @throws std::runtime_error with the compile log.
 GLuint compile(GLenum type, const char* src) {
   GLuint s = glCreateShader(type);
   glShaderSource(s, 1, &src, nullptr);
@@ -295,6 +362,11 @@ GLuint compile(GLenum type, const char* src) {
   return s;
 }
 
+/// Compiles and links a program; the shader objects are deleted after linking.
+/// @param vs Vertex shader source.
+/// @param fs Fragment shader source.
+/// @return Program object.
+/// @throws std::runtime_error with the compile or link log.
 GLuint link(const char* vs, const char* fs) {
   GLuint p = glCreateProgram();
   GLuint v = compile(GL_VERTEX_SHADER, vs), f = compile(GL_FRAGMENT_SHADER, fs);
@@ -313,11 +385,19 @@ GLuint link(const char* vs, const char* fs) {
   return p;
 }
 
+/// Throws on the first pending OpenGL error.
+/// @param where Label for the message, e.g. "setup".
+/// @throws std::runtime_error with the GL error code.
 void check_gl(const char* where) {
   for (GLenum e; (e = glGetError()) != GL_NO_ERROR;) throw std::runtime_error(std::string("GL error 0x") +
                                                                              std::to_string(e) + " at " + where);
 }
 
+/// Uploads vertices and creates a VAO: attribute 0 = position (2 floats),
+/// attribute 1 = attr (uint).
+/// @param verts Vertices to upload.
+/// @param[out] vbo Receives the vertex buffer, to delete at exit.
+/// @return Vertex array object.
 GLuint make_vao(const std::vector<Vrst_gpu_point>& verts, GLuint* vbo) {
   GLuint vao;
   glGenVertexArrays(1, &vao);
@@ -332,11 +412,17 @@ GLuint make_vao(const std::vector<Vrst_gpu_point>& verts, GLuint* vbo) {
   return vao;
 }
 
+/// Geographic position under the cursor.
+/// @param app Viewer state.
+/// @return Degrees: x = latitude, y = longitude.
 Vrst_vec2d cursor_latlon(const Vrst_app& app) {
   const Vrst_vec2d w = cursor_world(app, app.last_x, app.last_y);
   return inverse_mercator({w.x + app.map_center.x, w.y + app.map_center.y});
 }
 
+/// Builds the ImGui panel: counts, fps, cursor, zoom, class toggles and display
+/// options. Changes go straight into the viewer state.
+/// @param app Viewer state, read and changed by the widgets.
 void draw_panel(Vrst_app& app) {
   const Vrst_graph& g = app.data.graph();
   ImGui::SetNextWindowPos({10, 10}, ImGuiCond_FirstUseEver);
@@ -380,6 +466,10 @@ void draw_panel(Vrst_app& app) {
   ImGui::End();
 }
 
+/// Saves the back buffer as a 24-bit BMP (--screenshot).
+/// @param path Output file.
+/// @param w Framebuffer width in px.
+/// @param h Framebuffer height in px.
 void save_bmp(const std::string& path, int w, int h) {
   std::vector<Vrst_uint8> px(Vrst_size(w) * h * 3);
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -405,6 +495,13 @@ void save_bmp(const std::string& path, int w, int h) {
   }
 }
 
+/// Loads the data, builds the GPU buffers and runs the render loop until the window
+/// closes.
+/// @param dir Directory with the four nav files.
+/// @param screenshot BMP path; when not empty, renders 3 frames, saves the last and
+///        returns.
+/// @return 0.
+/// @throws std::runtime_error on a load, window or OpenGL failure.
 int run(const std::string& dir, const std::string& screenshot) {
   Vrst_app app;
   app.data.open(dir);
@@ -589,6 +686,10 @@ int run(const std::string& dir, const std::string& screenshot) {
 
 }  // namespace
 
+/// navview entry point.
+/// @param argc Argument count.
+/// @param argv `<out_dir> [--screenshot <file.bmp>]`.
+/// @return 0 on success, 1 on error, 2 on wrong usage.
 int main(int argc, char** argv) {
   if (argc != 2 && !(argc == 4 && std::string(argv[2]) == "--screenshot")) {
     std::fprintf(stderr, "usage: %s <out_dir> [--screenshot <file.bmp>]\n", argv[0]);

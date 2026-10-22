@@ -23,35 +23,63 @@ namespace {
 /// checks that would index through broken data.
 int g_failures = 0;
 
+/// Prints one PASS/FAIL line and counts failures in g_failures.
+/// @param ok Check result.
+/// @param name Check name, printed in the left column.
+/// @param detail Numbers that explain the result.
 void report(bool ok, const char* name, const std::string& detail) {
   std::printf("[%s] %-34s %s\n", ok ? "PASS" : "FAIL", name, detail.c_str());
   if (!ok) ++g_failures;
 }
 
+/// printf into a std::string, for report() details.
+/// @param f printf format.
+/// @param args Values for f.
+/// @return Formatted text, cut at 511 characters.
 std::string fmt(const char* f, auto... args) {
   char buf[512];
   std::snprintf(buf, sizeof buf, f, args...);
   return buf;
 }
 
+/// Fixed point to degrees.
+/// @param e7 Degrees * 1e7.
+/// @return Degrees.
 Vrst_float64 deg(Vrst_int32 e7) { return e7 * 1e-7; }
 
+/// Whether a coordinate is a possible WGS84 position.
+/// @param c Coordinate.
+/// @return true if latitude is in [-90, 90] and longitude in [-180, 180].
 bool valid_coord(Vrst_coord c) {
   return c.lat_e7 >= -900'000'000 && c.lat_e7 <= 900'000'000 && c.lon_e7 >= -1'800'000'000 &&
          c.lon_e7 <= 1'800'000'000;
 }
 
+/// Whether a coordinate lies in a box.
+/// @param c Coordinate.
+/// @param b Box, edges included.
+/// @return true if c is inside b.
 bool in_bbox(Vrst_coord c, const Vrst_bbox& b) {
   return c.lat_e7 >= b.min.lat_e7 && c.lat_e7 <= b.max.lat_e7 && c.lon_e7 >= b.min.lon_e7 &&
          c.lon_e7 <= b.max.lon_e7;
 }
 
-/// Tail of forward arc i (upper_bound in first_out).
+/// Tail of a forward arc. The tail is implicit in the CSR, so it is found by binary
+/// search (upper_bound) in fwd_first_out.
+/// @param g Graph.
+/// @param i Forward arc index, less than A.
+/// @return Vertex whose out-arc run contains arc i.
 Vrst_uint32 tail_of(const Vrst_graph& g, Vrst_uint32 i) {
   auto it = std::upper_bound(g.fwd_first_out().begin(), g.fwd_first_out().end(), i);
   return static_cast<Vrst_uint32>(it - g.fwd_first_out().begin()) - 1;
 }
 
+/// Checks a CSR offset (prefix) array: starts at 0, never decreases, ends at last.
+/// @param off Offsets to check.
+/// @param last Expected last value: the size of the array the offsets index.
+/// @param[out] bad_at Index of the first bad entry; the last index when only the
+///             end value is wrong or all is well.
+/// @return true if off is a valid prefix array over last elements.
 bool check_offsets(std::span<const Vrst_uint32> off, Vrst_uint64 last, Vrst_uint64* bad_at) {
   if (off.empty() || off.front() != 0) {
     *bad_at = 0;
@@ -72,16 +100,21 @@ bool check_offsets(std::span<const Vrst_uint32> off, Vrst_uint64 last, Vrst_uint
 /// profile, which no per-file check can see.
 class Vrst_union_find {
  public:
-  /// n singleton sets, one per vertex.
+  /// Creates n singleton sets, one per vertex.
+  /// @param n Number of vertices.
   explicit Vrst_union_find(Vrst_uint32 n) : m_parent(n), m_size(n, 1) {
     std::iota(m_parent.begin(), m_parent.end(), 0u);
   }
-  /// Root of the set containing x. Path halving keeps later finds short.
+  /// Root of the set containing a vertex. Path halving keeps later finds short.
+  /// @param x Vertex.
+  /// @return Root vertex of its set.
   Vrst_uint32 find(Vrst_uint32 x) {
     while (m_parent[x] != x) x = m_parent[x] = m_parent[m_parent[x]];
     return x;
   }
-  /// Merges the sets of a and b, the smaller under the larger.
+  /// Merges the sets of two vertices, the smaller under the larger.
+  /// @param a First vertex.
+  /// @param b Second vertex.
   void unite(Vrst_uint32 a, Vrst_uint32 b) {
     a = find(a), b = find(b);
     if (a == b) return;
@@ -89,7 +122,9 @@ class Vrst_union_find {
     m_parent[b] = a;
     m_size[a] += m_size[b];
   }
-  /// Number of vertices in the set whose root is root.
+  /// Size of a set.
+  /// @param root Root vertex, as returned by find().
+  /// @return Number of vertices in the set.
   Vrst_uint32 set_size(Vrst_uint32 root) const { return m_size[root]; }
 
  private:
@@ -100,9 +135,12 @@ class Vrst_union_find {
   std::vector<Vrst_uint32> m_size;
 };
 
-/// Check 1 opens each file on its own so every failure is reported.
+/// Opens each file on its own so every failure is reported, then checks that the
+/// files share one build_id and agree on the segment count.
+/// @param dir Directory with the four nav files.
+/// @param[out] d Receives the opened files.
 /// @return true if all four files opened, share one build_id and agree on the
-/// segment count.
+///         segment count.
 bool check_files(const fs::path& dir, Vrst_nav_data& d) {
   bool all_ok = true;
   auto try_open = [&](const char* name, auto&& open) {
@@ -129,6 +167,8 @@ bool check_files(const fs::path& dir, Vrst_nav_data& d) {
   return same && seg_counts;
 }
 
+/// Checks that both CSR offset arrays are valid prefix arrays over A arcs.
+/// @param g Graph.
 void check_csr(const Vrst_graph& g) {
   const Vrst_uint32 A = g.num_arcs();
   Vrst_uint64 at = 0;
@@ -138,6 +178,11 @@ void check_csr(const Vrst_graph& g) {
   report(ok, "BWD_FIRST_IN monotonic, last==A", ok ? fmt("V=%u A=%u", g.num_vertices(), A) : fmt("bad at %" PRIu64, at));
 }
 
+/// Checks every arc: head and segment ids in range, tail/head equal the segment ends,
+/// one arc per oneway segment and two otherwise, positive weights, and backward arcs
+/// that mirror the forward arcs one to one. Indexes through the CSR, so main() runs
+/// it only when the earlier checks passed.
+/// @param d Opened files.
 void check_arcs(const Vrst_nav_data& d) {
   const Vrst_graph& g = d.graph();
   const Vrst_uint32 V = g.num_vertices(), A = g.num_arcs(), S = d.edges().num_segments();
@@ -193,6 +238,9 @@ void check_arcs(const Vrst_nav_data& d) {
   report(zero_weight == 0, "arc weight >= 1", fmt("%" PRIu64 " zero", zero_weight));
 }
 
+/// Checks that SEG_FIRST_POINT is a valid prefix array and that every segment has at
+/// least 2 points that start and end on its vertices.
+/// @param d Opened files.
 void check_geometry(const Vrst_nav_data& d) {
   const Vrst_geom& geo = d.geom();
   const Vrst_uint32 S = d.edges().num_segments();
@@ -218,6 +266,9 @@ void check_geometry(const Vrst_nav_data& d) {
   report(bad_ends == 0, "segment ends == vertex coords", fmt("%" PRIu64 " bad", bad_ends));
 }
 
+/// Checks that all vertex and shape coordinates are valid WGS84 and inside the
+/// stored bbox.
+/// @param d Opened files.
 void check_coords(const Vrst_nav_data& d) {
   const Vrst_bbox& bb = d.graph().bbox();
   Vrst_uint64 invalid = 0, outside = 0;
@@ -235,6 +286,9 @@ void check_coords(const Vrst_nav_data& d) {
              deg(bb.max.lat_e7), deg(bb.min.lon_e7), deg(bb.max.lon_e7)));
 }
 
+/// Checks segment attributes and names: name/ref ids exist, road classes are valid,
+/// string offsets never decrease and string 0 is empty.
+/// @param d Opened files.
 void check_attrs(const Vrst_nav_data& d) {
   const Vrst_uint32 N = d.names().size();
   Vrst_uint64 bad_name = 0, bad_class = 0;
@@ -249,6 +303,9 @@ void check_attrs(const Vrst_nav_data& d) {
   report(offs_ok, "STR_OFFSETS monotonic, id 0 empty", fmt("data %zu bytes", d.names().data().size()));
 }
 
+/// Prints sizes, road length, dead ends and connected components. main() runs it
+/// only when all checks passed.
+/// @param d Opened files.
 void stats(const Vrst_nav_data& d) {
   const Vrst_uint32 V = d.graph().num_vertices();
   std::vector<Vrst_uint32> degree(V, 0);
@@ -276,6 +333,10 @@ void stats(const Vrst_nav_data& d) {
   std::printf("  largest component    %u vertices (%.1f%%)\n", largest, V ? 100.0 * largest / V : 0.0);
 }
 
+/// Prints the attributes, segments and shape points made from one OSM way
+/// (--dump-way), for comparison with openstreetmap.org.
+/// @param d Opened files.
+/// @param way_id OSM way id.
 void dump_way(const Vrst_nav_data& d, Vrst_uint64 way_id) {
   static const char* kClassNames[] = {"motorway",      "motorway_link", "trunk",          "trunk_link",
                                       "primary",       "primary_link",  "secondary",      "secondary_link",
@@ -301,6 +362,11 @@ void dump_way(const Vrst_nav_data& d, Vrst_uint64 way_id) {
 
 }  // namespace
 
+/// navcheck entry point.
+/// @param argc Argument count.
+/// @param argv `<out_dir> [--dump-way <osm_way_id>]`.
+/// @return 0 when all checks pass (or the dump ran), 1 on a failed check or load
+///         error, 2 on wrong usage.
 int main(int argc, char** argv) {
   if (argc != 2 && !(argc == 4 && std::string(argv[2]) == "--dump-way")) {
     std::fprintf(stderr, "usage: %s <out_dir> [--dump-way <osm_way_id>]\n", argv[0]);

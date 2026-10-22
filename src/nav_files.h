@@ -23,6 +23,11 @@ namespace nav {
 /// elem_size against sizeof(T). Everything above it can then use plain spans.
 class Vrst_nav_file {
  public:
+  /// Maps a nav file and validates its header and section table: magic, format_version
+  /// and file_type must match, and every section must be 64-aligned and inside the file.
+  /// @param path File to open.
+  /// @param type Expected file type.
+  /// @throws std::runtime_error naming the file and the failed check.
   void open(const std::string& path, FileType type) {
     m_file.open(path);
     const Vrst_size size = m_file.size();
@@ -46,11 +51,24 @@ class Vrst_nav_file {
     }
   }
 
+  /// File header.
+  /// @return Header at the start of the mapping; valid after open().
   const Vrst_file_header& header() const { return *header_ptr(); }
+  /// Import id of this file.
+  /// @return Id shared by the four files written by one osm2nav run.
   Vrst_uint64 build_id() const { return header().build_id; }
+  /// Path of the file, for error messages.
+  /// @return Path given to open().
   const std::string& path() const { return m_file.path(); }
+  /// Size of the file.
+  /// @return Size in bytes.
   Vrst_size file_size() const { return m_file.size(); }
 
+  /// Typed view of one section, without copying.
+  /// @tparam T Element type; sizeof(T) must equal the stored elem_size.
+  /// @param id Section to look up.
+  /// @return Span over the section inside the mapping.
+  /// @throws std::runtime_error if the section is missing or its elem_size differs.
   template <class T>
   std::span<const T> section(SectionId id) const {
     for (const Vrst_section_entry& s : m_table) {
@@ -64,7 +82,12 @@ class Vrst_nav_file {
   }
 
  private:
+  /// Header pointer without checks; open() checks the size before using it.
+  /// @return Start of the mapping as a header.
   const Vrst_file_header* header_ptr() const { return reinterpret_cast<const Vrst_file_header*>(m_file.data()); }
+  /// Reports a broken file.
+  /// @param msg What is wrong.
+  /// @throws std::runtime_error with the file path as prefix, always.
   [[noreturn]] void fail(const std::string& msg) const { throw std::runtime_error(m_file.path() + ": " + msg); }
 
   /// Owns the mapping that every span returned by section() points into.
@@ -74,6 +97,11 @@ class Vrst_nav_file {
   std::span<const Vrst_section_entry> m_table;
 };
 
+/// Throws when a consistency check fails.
+/// @param ok Check result; nothing happens when true.
+/// @param path File the check is about, for the message.
+/// @param what Description of the failed check.
+/// @throws std::runtime_error when ok is false.
 inline void require(bool ok, const std::string& path, const char* what) {
   if (!ok) throw std::runtime_error(path + ": " + what);
 }
@@ -84,6 +112,8 @@ inline void require(bool ok, const std::string& path, const char* what) {
 class Vrst_graph {
  public:
   /// Maps graph.dat and checks that the CSR arrays agree in size.
+  /// @param path Path of graph.dat.
+  /// @throws std::runtime_error on a header, section or size mismatch.
   void open(const std::string& path) {
     m_file.open(path, FileType::Graph);
     m_vertex_coord = m_file.section<Vrst_coord>(SectionId::VertexCoord);
@@ -100,32 +130,45 @@ class Vrst_graph {
     m_bbox = bb[0];
   }
 
-  /// Number of vertices V.
+  /// Number of vertices.
+  /// @return V.
   Vrst_uint32 num_vertices() const { return static_cast<Vrst_uint32>(m_vertex_coord.size()); }
-  /// Number of directed arcs A.
+  /// Number of directed arcs.
+  /// @return A.
   Vrst_uint32 num_arcs() const { return static_cast<Vrst_uint32>(m_fwd_arcs.size()); }
-  /// Arcs leaving vertex v.
+  /// Arcs leaving a vertex.
+  /// @param v Vertex id, less than V.
+  /// @return Contiguous run of forward arcs with tail v.
   std::span<const Vrst_fwd_arc> out_arcs(Vrst_uint32 v) const {
     return m_fwd_arcs.subspan(m_fwd_first_out[v], m_fwd_first_out[v + 1] - m_fwd_first_out[v]);
   }
-  /// Arcs entering vertex v.
+  /// Arcs entering a vertex.
+  /// @param v Vertex id, less than V.
+  /// @return Contiguous run of backward arcs with head v.
   std::span<const Vrst_bwd_arc> in_arcs(Vrst_uint32 v) const {
     return m_bwd_arcs.subspan(m_bwd_first_in[v], m_bwd_first_in[v + 1] - m_bwd_first_in[v]);
   }
 
   /// @copydoc m_file
+  /// @return The mapped file.
   const Vrst_nav_file& file() const { return m_file; }
   /// @copydoc m_vertex_coord
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const Vrst_coord> vertex_coord() const { return m_vertex_coord; }
   /// @copydoc m_fwd_first_out
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const Vrst_uint32> fwd_first_out() const { return m_fwd_first_out; }
   /// @copydoc m_fwd_arcs
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const Vrst_fwd_arc> fwd_arcs() const { return m_fwd_arcs; }
   /// @copydoc m_bwd_first_in
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const Vrst_uint32> bwd_first_in() const { return m_bwd_first_in; }
   /// @copydoc m_bwd_arcs
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const Vrst_bwd_arc> bwd_arcs() const { return m_bwd_arcs; }
   /// @copydoc m_bbox
+  /// @return The extent.
   const Vrst_bbox& bbox() const { return m_bbox; }
 
  private:
@@ -155,6 +198,8 @@ class Vrst_graph {
 class Vrst_edges {
  public:
   /// Maps edges.dat and checks that all per-segment arrays have S entries.
+  /// @param path Path of edges.dat.
+  /// @throws std::runtime_error on a header, section or size mismatch.
   void open(const std::string& path) {
     m_file.open(path, FileType::Edges);
     m_attr = m_file.section<Vrst_seg_attr>(SectionId::SegAttr);
@@ -164,16 +209,21 @@ class Vrst_edges {
     require(m_osm_way.size() == m_attr.size(), path, "SEG_OSM_WAY size != S");
   }
 
-  /// Number of segments S.
+  /// Number of segments.
+  /// @return S.
   Vrst_uint32 num_segments() const { return static_cast<Vrst_uint32>(m_attr.size()); }
 
   /// @copydoc m_file
+  /// @return The mapped file.
   const Vrst_nav_file& file() const { return m_file; }
   /// @copydoc m_attr
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const Vrst_seg_attr> attr() const { return m_attr; }
   /// @copydoc m_vertices
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const Vrst_seg_vertices> vertices() const { return m_vertices; }
   /// @copydoc m_osm_way
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const Vrst_uint64> osm_way() const { return m_osm_way; }
 
  private:
@@ -195,6 +245,8 @@ class Vrst_edges {
 class Vrst_geom {
  public:
   /// Maps geom.dat.
+  /// @param path Path of geom.dat.
+  /// @throws std::runtime_error on a header or section mismatch, or an empty SEG_FIRST_POINT.
   void open(const std::string& path) {
     m_file.open(path, FileType::Geom);
     m_seg_first_point = m_file.section<Vrst_uint32>(SectionId::SegFirstPoint);
@@ -202,16 +254,21 @@ class Vrst_geom {
     require(!m_seg_first_point.empty(), path, "SEG_FIRST_POINT empty");
   }
 
-  /// Points of segment s in stored (a -> b) order.
+  /// Shape of one segment.
+  /// @param s Segment id, less than S.
+  /// @return Points in stored (a -> b) order; the first is vertex a, the last vertex b.
   std::span<const Vrst_coord> segment_points(Vrst_uint32 s) const {
     return m_points.subspan(m_seg_first_point[s], m_seg_first_point[s + 1] - m_seg_first_point[s]);
   }
 
   /// @copydoc m_file
+  /// @return The mapped file.
   const Vrst_nav_file& file() const { return m_file; }
   /// @copydoc m_seg_first_point
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const Vrst_uint32> seg_first_point() const { return m_seg_first_point; }
   /// @copydoc m_points
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const Vrst_coord> points() const { return m_points; }
 
  private:
@@ -230,6 +287,8 @@ class Vrst_geom {
 class Vrst_names {
  public:
   /// Maps names.dat and checks that the offsets cover the string data exactly.
+  /// @param path Path of names.dat.
+  /// @throws std::runtime_error on a header, section or offset mismatch.
   void open(const std::string& path) {
     m_file.open(path, FileType::Names);
     m_offsets = m_file.section<Vrst_uint32>(SectionId::StrOffsets);
@@ -238,18 +297,24 @@ class Vrst_names {
     require(m_offsets.back() == m_data.size(), path, "STR_OFFSETS last != data size");
   }
 
-  /// Number of strings N, including the empty string 0.
+  /// Number of strings.
+  /// @return N, including the empty string 0.
   Vrst_uint32 size() const { return static_cast<Vrst_uint32>(m_offsets.size() - 1); }
-  /// String with the given id; id 0 is "".
+  /// String by id.
+  /// @param id String id, less than size(); 0 is "".
+  /// @return View into the mapping; not NUL-terminated.
   std::string_view get(Vrst_uint32 id) const {
     return {m_data.data() + m_offsets[id], m_offsets[id + 1] - m_offsets[id]};
   }
 
   /// @copydoc m_file
+  /// @return The mapped file.
   const Vrst_nav_file& file() const { return m_file; }
   /// @copydoc m_offsets
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const Vrst_uint32> offsets() const { return m_offsets; }
   /// @copydoc m_data
+  /// @return Span into the mapping, valid while this object is open.
   std::span<const char> data() const { return m_data; }
 
  private:
@@ -269,7 +334,10 @@ class Vrst_names {
 /// on its own cannot detect.
 class Vrst_nav_data {
  public:
-  /// Opens all four files from dir and checks that they belong together.
+  /// Opens all four files and checks that they belong together.
+  /// @param dir Directory with graph.dat, edges.dat, geom.dat and names.dat.
+  /// @throws std::runtime_error if a file is broken, the build_ids differ or the
+  ///         segment counts disagree.
   void open(const std::filesystem::path& dir) {
     open_file(FileType::Graph, dir);
     open_file(FileType::Edges, dir);
@@ -282,8 +350,11 @@ class Vrst_nav_data {
       throw std::runtime_error(dir.string() + ": SEG_FIRST_POINT size != S+1");
   }
 
-  /// Opens one file from dir without the cross-file checks. For navcheck, which opens
-  /// each file on its own so that every broken file is reported, not only the first.
+  /// Opens one file without the cross-file checks. For navcheck, which opens each file
+  /// on its own so that every broken file is reported, not only the first.
+  /// @param type Which file to open.
+  /// @param dir Directory with the nav files.
+  /// @throws std::runtime_error if the file is broken.
   void open_file(FileType type, const std::filesystem::path& dir) {
     const std::string path = (dir / file_name_for(type)).string();
     switch (type) {
@@ -295,12 +366,16 @@ class Vrst_nav_data {
   }
 
   /// @copydoc m_graph
+  /// @return The graph.dat view.
   const Vrst_graph& graph() const { return m_graph; }
   /// @copydoc m_edges
+  /// @return The edges.dat view.
   const Vrst_edges& edges() const { return m_edges; }
   /// @copydoc m_geom
+  /// @return The geom.dat view.
   const Vrst_geom& geom() const { return m_geom; }
   /// @copydoc m_names
+  /// @return The names.dat view.
   const Vrst_names& names() const { return m_names; }
 
  private:

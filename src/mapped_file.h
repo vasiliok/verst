@@ -31,13 +31,25 @@ namespace nav {
 /// so exactly one owner unmaps; all spans into the data die with it.
 class Vrst_mapped_file {
  public:
+  /// Creates a closed mapping; call open() before use.
   Vrst_mapped_file() = default;
+  /// Maps a file at once.
+  /// @param path File to map read-only.
+  /// @throws std::runtime_error if the file cannot be opened, stat'ed or mapped.
   explicit Vrst_mapped_file(const std::string& path) { open(path); }
+  /// Unmaps the file; spans into it become invalid.
   ~Vrst_mapped_file() { close(); }
 
+  /// Not copyable: two owners would unmap the same pages twice.
   Vrst_mapped_file(const Vrst_mapped_file&) = delete;
+  /// Not copyable: two owners would unmap the same pages twice.
   Vrst_mapped_file& operator=(const Vrst_mapped_file&) = delete;
+  /// Takes over another mapping.
+  /// @param o Source; it is left closed.
   Vrst_mapped_file(Vrst_mapped_file&& o) noexcept { swap(o); }
+  /// Closes this mapping and takes over another one.
+  /// @param o Source; it is left closed.
+  /// @return *this.
   Vrst_mapped_file& operator=(Vrst_mapped_file&& o) noexcept {
     if (this != &o) {
       close();
@@ -46,6 +58,10 @@ class Vrst_mapped_file {
     return *this;
   }
 
+  /// Maps a file read-only, closing any previous mapping first. An empty file gives
+  /// size() 0 and data() nullptr.
+  /// @param path File to map.
+  /// @throws std::runtime_error if the file cannot be opened, stat'ed or mapped.
   void open(const std::string& path) {
     close();
 #ifdef _WIN32
@@ -89,6 +105,7 @@ class Vrst_mapped_file {
     m_path = path;
   }
 
+  /// Unmaps the file and returns to the closed state. Safe to call when already closed.
   void close() {
     if (m_data) {
 #ifdef _WIN32
@@ -102,11 +119,19 @@ class Vrst_mapped_file {
     m_path.clear();
   }
 
+  /// Start of the mapping.
+  /// @return First byte, nullptr when closed or for an empty file.
   const Vrst_uint8* data() const { return m_data; }
+  /// Size of the mapping.
+  /// @return Mapped length in bytes, 0 when closed.
   Vrst_size size() const { return m_size; }
+  /// Path of the mapped file.
+  /// @return Path given to open(), empty when closed.
   const std::string& path() const { return m_path; }
 
  private:
+  /// Exchanges state with another mapping; the building block of the move operations.
+  /// @param o Other mapping.
   void swap(Vrst_mapped_file& o) noexcept {
     std::swap(m_data, o.m_data);
     std::swap(m_size, o.m_size);

@@ -6,7 +6,7 @@ Converts car roads from an `.osm.pbf` into four mmap-able files, validates them,
 |---|---|
 | `osm2nav` | `osm2nav <input.osm.pbf> <out_dir>` |
 | `navcheck` | `navcheck <out_dir>` (exit 0 = all PASS) · `navcheck <out_dir> --dump-way <osm_way_id>` |
-| `navview` | `navview <out_dir>` · `navview <out_dir> --screenshot <file.bmp>` (renders 3 frames, saves the last, exits) |
+| `navview` | `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--screenshot <file.bmp>]` (screenshot: renders 3 frames, saves the last, exits) |
 
 ## Build
 
@@ -34,6 +34,10 @@ cmake --build build --target docs    # -> build/docs/html/index.html
 
 The target is skipped when Doxygen is not found.
 
+Articles (also rendered as Doxygen pages):
+
+- [How Vrst_graph works](docs/vrst_graph.md): forward/backward CSR, arc fields, how osm2nav builds it, file layout and costs, and how the nav_files.h classes and file ids link together.
+
 ## Scalar types
 
 All code uses the `Vrst_` scalar aliases (`Vrst_int8`…`Vrst_int64`, `Vrst_uint8`…`Vrst_uint64`, `Vrst_float32`,
@@ -45,10 +49,12 @@ signedness and IEEE 754 at compile time, so a wrong setting fails the build.
 
 drag = pan · wheel = zoom at cursor · `Q`/`E` = rotate · `1`–`9` = toggle motorway, trunk, primary,
 secondary, tertiary, unclassified, residential (+living_street), service, ferry · `O` = highlight oneway ·
-`V` = vertices (red = dead end) · `R` = default point · `F` = fit map · `Esc` = quit. The Dear ImGui panel (top left) has the
+`V` = vertices (red = dead end) · `R` = start view · `F` = fit map · `Esc` = quit. The Dear ImGui panel (top left) has the
 same toggles plus dot size and rotation sliders; input over the panel does not move the map.
-The viewer starts at the default point 47.322, 5.041 (`kDefaultPoint` in `navview.cpp`) at about
-5 m per screen point; if the data does not contain that point, it starts with the whole map in view. The window title shows counts, FPS, the
+The viewer starts at `--center <lat> <lon>` with `--mpp` ground metres per screen point (smaller = closer).
+Without them it uses the default point 47.322, 5.041 (`kDefaultPoint` in `navview.cpp`) at 5 m per point.
+If the data does not contain the start point, it starts with the whole map in view. Example, the hairpins of
+the CS 600 in Andorra: `navview <out_dir> --center 42.48014 1.45493 --mpp 1.1`. The window title shows counts, FPS, the
 lat/lon under the cursor and the zoom.
 
 ## File format (v1)

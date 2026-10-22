@@ -1,11 +1,11 @@
 /// @file
-/// `navview <out_dir> [--screenshot <file.bmp>]`
+/// `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--screenshot <file.bmp>]`
 ///
 /// Draws the road network from the nav files. Web Mercator, relative to the
 /// map center in double, stored as float.
 ///
 /// Controls: drag = pan, wheel = zoom at cursor, Q/E = rotate, 1-9 = toggle
-/// road classes, O = oneway highlight, V = vertices, R = default point,
+/// road classes, O = oneway highlight, V = vertices, R = start view,
 /// F = fit map, Esc = quit.
 /// The same settings are in the Dear ImGui panel.
 
@@ -20,6 +20,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -28,18 +29,31 @@
 #include "nav_files.h"
 #include "shaders.h"
 
-using namespace nav;
-
-namespace {
+/// Everything of the navview tool: projection, camera, input, GPU buffers and the
+/// render loop. main() only parses arguments and calls run().
+namespace nav::viewer {
 
 constexpr Vrst_float64 kPi = 3.14159265358979323846;  ///< Pi in double, for degree <-> radian conversion.
 /// WGS84 equatorial radius in metres, the sphere radius of Web Mercator (EPSG:3857).
 constexpr Vrst_float64 kEarthRadius = 6378137.0;
 
-/// Start view and R: this point (47.322, 5.041) at street zoom. Falls back
-/// to fit-map when the point is outside the loaded data.
+/// Start view and R when no --center is given: this point (47.322, 5.041) at
+/// street zoom. Falls back to fit-map when the point is outside the loaded data.
 constexpr Vrst_coord kDefaultPoint{473220000, 50410000};
 constexpr Vrst_float64 kDefaultMetresPerPoint = 5.0;  ///< Start zoom: ground metres per window point.
+
+/// Command-line options of navview, filled by main().
+struct Vrst_options {
+  /// Directory with the four nav files.
+  std::string dir;
+  /// BMP path for --screenshot; empty for the normal interactive window.
+  std::string screenshot;
+  /// Start view center (--center), also used by R. Lets a session open directly on
+  /// the road being examined instead of panning there by hand.
+  Vrst_coord center = kDefaultPoint;
+  /// Start zoom in ground metres per window point (--mpp); smaller is closer.
+  Vrst_float64 metres_per_point = kDefaultMetresPerPoint;
+};
 
 /// 2D point or vector in double precision: Web Mercator metres, screen pixels or
 /// (lat, lon) degrees depending on use.
@@ -172,6 +186,10 @@ struct Vrst_app {
   Vrst_float64 initial_scale = 1;
   /// Count of degree-1 vertices, shown in the panel.
   Vrst_uint32 dead_ends = 0;
+  /// Point the start view and R center on: kDefaultPoint or --center.
+  Vrst_coord start_center = kDefaultPoint;
+  /// Zoom of the start view and R, ground metres per window point.
+  Vrst_float64 start_metres_per_point = kDefaultMetresPerPoint;
 };
 
 /// World -> NDC as a column-major mat3, computed in double and stored as float.
@@ -228,12 +246,12 @@ void fit_view(Vrst_app& app) {
   app.view = {{0, 0}, fit_scale(app), 0};
 }
 
-/// Moves to kDefaultPoint at street zoom (R), or fits the map when the point is
-/// outside the loaded data.
+/// Moves to the start view (R): start_center at start_metres_per_point, or fits the
+/// map when the point is outside the loaded data.
 /// @param app Viewer state; its view is replaced.
 void reset_view(Vrst_app& app) {
   const Vrst_bbox& bb = app.data.graph().bbox();
-  const Vrst_coord p = kDefaultPoint;
+  const Vrst_coord p = app.start_center;
   if (p.lat_e7 < bb.min.lat_e7 || p.lat_e7 > bb.max.lat_e7 || p.lon_e7 < bb.min.lon_e7 || p.lon_e7 > bb.max.lon_e7) {
     fit_view(app);
     return;
@@ -242,7 +260,7 @@ void reset_view(Vrst_app& app) {
   const Vrst_float64 lat = p.lat_e7 * 1e-7 * kPi / 180;
   // Mercator metres are 1/cos(lat) ground metres; scale is framebuffer px per Mercator metre.
   app.view = {{m.x - app.map_center.x, m.y - app.map_center.y},
-              app.px_ratio * std::cos(lat) / kDefaultMetresPerPoint, 0};
+              app.px_ratio * std::cos(lat) / app.start_metres_per_point, 0};
 }
 
 /// Viewer state of a window, for the GLFW callbacks.
@@ -459,7 +477,7 @@ void draw_panel(Vrst_app& app) {
   Vrst_float32 deg = static_cast<Vrst_float32>(app.view.angle * 180 / kPi);
   deg = std::remainder(deg, 360.0f);
   if (ImGui::SliderFloat("Rotation", &deg, -180.0f, 180.0f, "%.0f deg")) app.view.angle = deg * kPi / 180;
-  if (ImGui::Button("Default point (R)")) reset_view(app);
+  if (ImGui::Button("Start view (R)")) reset_view(app);
   ImGui::SameLine();
   if (ImGui::Button("Fit map (F)")) fit_view(app);
 
@@ -497,14 +515,16 @@ void save_bmp(const std::string& path, int w, int h) {
 
 /// Loads the data, builds the GPU buffers and runs the render loop until the window
 /// closes.
-/// @param dir Directory with the four nav files.
-/// @param screenshot BMP path; when not empty, renders 3 frames, saves the last and
-///        returns.
+/// @param opt Command-line options. With a screenshot path it renders 3 frames,
+///        saves the last and returns.
 /// @return 0.
 /// @throws std::runtime_error on a load, window or OpenGL failure.
-int run(const std::string& dir, const std::string& screenshot) {
+int run(const Vrst_options& opt) {
+  const std::string& screenshot = opt.screenshot;
   Vrst_app app;
-  app.data.open(dir);
+  app.start_center = opt.center;
+  app.start_metres_per_point = opt.metres_per_point;
+  app.data.open(opt.dir);
   const Vrst_graph& g = app.data.graph();
   const Vrst_edges& e = app.data.edges();
   const Vrst_geom& geo = app.data.geom();
@@ -684,19 +704,42 @@ int run(const std::string& dir, const std::string& screenshot) {
   return 0;
 }
 
-}  // namespace
+}  // namespace nav::viewer
 
 /// navview entry point.
 /// @param argc Argument count.
-/// @param argv `<out_dir> [--screenshot <file.bmp>]`.
+/// @param argv `<out_dir> [--center <lat> <lon>] [--mpp <metres>] [--screenshot <file.bmp>]`.
 /// @return 0 on success, 1 on error, 2 on wrong usage.
 int main(int argc, char** argv) {
-  if (argc != 2 && !(argc == 4 && std::string(argv[2]) == "--screenshot")) {
-    std::fprintf(stderr, "usage: %s <out_dir> [--screenshot <file.bmp>]\n", argv[0]);
+  nav::viewer::Vrst_options opt;
+  bool ok = argc >= 2;
+  if (ok) opt.dir = argv[1];
+  auto number = [&](const char* s, nav::Vrst_float64* out) {
+    char* end = nullptr;
+    *out = std::strtod(s, &end);
+    return end != s && *end == '\0';
+  };
+  for (int i = 2; ok && i < argc; ++i) {
+    const std::string a = argv[i];
+    nav::Vrst_float64 lat = 0, lon = 0;
+    if (a == "--screenshot" && i + 1 < argc) {
+      opt.screenshot = argv[++i];
+    } else if (a == "--center" && i + 2 < argc && number(argv[i + 1], &lat) && number(argv[i + 2], &lon) &&
+               std::abs(lat) <= 90 && std::abs(lon) <= 180) {
+      opt.center = {static_cast<nav::Vrst_int32>(std::lround(lat * 1e7)), static_cast<nav::Vrst_int32>(std::lround(lon * 1e7))};
+      i += 2;
+    } else if (a == "--mpp" && i + 1 < argc && number(argv[i + 1], &opt.metres_per_point) && opt.metres_per_point > 0) {
+      ++i;
+    } else {
+      ok = false;
+    }
+  }
+  if (!ok) {
+    std::fprintf(stderr, "usage: %s <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--screenshot <file.bmp>]\n", argv[0]);
     return 2;
   }
   try {
-    return run(argv[1], argc == 4 ? argv[3] : "");
+    return nav::viewer::run(opt);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "navview: %s\n", e.what());
     return 1;

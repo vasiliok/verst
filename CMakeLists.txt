@@ -99,7 +99,7 @@ if(DOXYGEN_FOUND)
   set(DOXYGEN_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/docs")
   set(DOXYGEN_USE_MDFILE_AS_MAINPAGE "${CMAKE_SOURCE_DIR}/README.md")
   set(DOXYGEN_STRIP_FROM_PATH "${CMAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/generated")
-  set(DOXYGEN_FILE_PATTERNS *.h *.cpp)
+  set(DOXYGEN_FILE_PATTERNS *.h *.cpp *.md)
   # Types and fields live in anonymous namespaces and private sections too.
   set(DOXYGEN_EXTRACT_PRIVATE YES)
   set(DOXYGEN_EXTRACT_STATIC YES)
@@ -113,6 +113,7 @@ if(DOXYGEN_FOUND)
   set(DOXYGEN_WARN_IF_INCOMPLETE_DOC YES)
   doxygen_add_docs(docs
     "${CMAKE_SOURCE_DIR}/README.md"
+    "${CMAKE_SOURCE_DIR}/docs"
     "${CMAKE_SOURCE_DIR}/src"
     "${CMAKE_BINARY_DIR}/generated/vrst_types.h"
     COMMENT "Generating Doxygen docs")

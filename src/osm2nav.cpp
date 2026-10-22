@@ -1,7 +1,8 @@
-// osm2nav <input.osm.pbf> <out_dir>
-//
-// Converts OSM car roads into graph.dat / edges.dat / geom.dat / names.dat.
-// Pass 1 reads ways, pass 2 reads node coordinates of road nodes only.
+/// @file
+/// `osm2nav <input.osm.pbf> <out_dir>`
+///
+/// Converts OSM car roads into graph.dat / edges.dat / geom.dat / names.dat.
+/// Pass 1 reads ways, pass 2 reads node coordinates of road nodes only.
 
 #include <algorithm>
 #include <charconv>
@@ -41,14 +42,26 @@ namespace {
 // OSM source interface (libosmium now, own protozero PBF reader later)
 // ===========================================================================
 
+/// One key=value tag of an OSM object, as seen by the converter.
+/// Part of the source-neutral input model, so the profile code does not depend on
+/// libosmium types.
 struct Vrst_osm_tag {
+  /// Views into the reader's buffer: valid only during the callback. No copy per tag,
+  /// which matters at tens of millions of ways.
   std::string_view key;
   std::string_view value;
 };
 
+/// One OSM way as delivered by Vrst_osm_source: id, node refs and tags.
+/// Valid only during the callback. Gives classify() and the segment splitter one
+/// input form whatever reader produced it.
 struct Vrst_osm_way {
+  /// OSM way id, kept per segment for turn restrictions and debugging.
   Vrst_uint64 id;
+  /// Node ids in way order. Ids, not coordinates: PBF ways store only refs, and the
+  /// shared ids are what reveals intersections.
   std::span<const Vrst_uint64> refs;
+  /// All tags of the way; the profile decides which matter.
   std::span<const Vrst_osm_tag> tags;
 
   std::string_view tag(std::string_view key) const {
@@ -58,11 +71,19 @@ struct Vrst_osm_way {
   }
 };
 
+/// One OSM node as delivered by Vrst_osm_source: id and position only.
+/// Tags are left out: the car graph needs no node tags yet (barriers and traffic
+/// signals may come later).
 struct Vrst_osm_node {
+  /// OSM node id, matched against the sorted road-node refs.
   Vrst_uint64 id;
+  /// Position in 1e-7 degrees, already in file format.
   Vrst_coord coord;
 };
 
+/// Abstract OSM input, read in passes: header bbox, then all ways, then all nodes.
+/// Isolates the converter from the PBF reader, so libosmium can later be replaced by
+/// an own protozero reader (or a test source) without touching the conversion.
 class Vrst_osm_source {
  public:
   virtual ~Vrst_osm_source() = default;
@@ -71,6 +92,9 @@ class Vrst_osm_source {
   virtual void for_each_node(const std::function<void(const Vrst_osm_node&)>& fn) = 0;
 };
 
+/// Vrst_osm_source implemented with libosmium.
+/// Current reader. Each pass opens a new osmium::io::Reader filtered to one entity
+/// type, so only ways or only nodes are decoded.
 class Vrst_osmium_source final : public Vrst_osm_source {
  public:
   explicit Vrst_osmium_source(std::string path) : path_(std::move(path)) {}
@@ -112,6 +136,8 @@ class Vrst_osmium_source final : public Vrst_osm_source {
   }
 
  private:
+  /// The PBF is opened once per pass: libosmium readers cannot rewind, and two
+  /// passes (ways, then nodes) avoid holding all node coordinates in memory.
   std::string path_;
 };
 
@@ -119,14 +145,25 @@ class Vrst_osmium_source final : public Vrst_osm_source {
 // Car profile
 // ===========================================================================
 
+/// One row of the car profile table kClasses: how a highway=* value maps to a
+/// RoadClass and its default speed.
+/// Keeps every profile decision in one table instead of if-chains, so speeds and
+/// classes can be tuned in one place and the table is checked at compile time.
 struct Vrst_class_def {
-  std::string_view highway;  // empty: not selected by highway tag
+  /// highway=* value that selects this class; empty for classes chosen by other tags
+  /// (ferry is route=ferry).
+  std::string_view highway;
+  /// Must equal the row index (checked by static_assert), so lookup by class is O(1).
   RoadClass cls;
-  Vrst_uint8 speed_kmh;         // default when maxspeed is unknown
+  /// Default speed when maxspeed is missing or "none". Most OSM ways have no
+  /// maxspeed, so without it most weights would be undefined.
+  Vrst_uint8 speed_kmh;
+  /// `*_link` ramp. Sets kSegLink; guidance says "take the exit" instead of naming the
+  /// ramp as a road.
   bool link;
 };
 
-// Indexed by RoadClass.
+/// Car profile table, indexed by RoadClass (checked by static_assert).
 constexpr Vrst_class_def kClasses[] = {
     {"motorway", RoadClass::Motorway, 110, false},
     {"motorway_link", RoadClass::MotorwayLink, 60, true},
@@ -158,7 +195,8 @@ const Vrst_class_def* find_class(std::string_view highway) {
   return nullptr;
 }
 
-// Returns km/h, 0 = unknown / no limit.
+/// Parses an OSM maxspeed tag value.
+/// @return km/h, 0 = unknown / no limit.
 Vrst_uint8 parse_maxspeed(std::string_view v) {
   if (v.empty() || v == "none" || v == "signals" || v == "variable") return 0;
   if (v == "walk") return 6;
@@ -178,22 +216,37 @@ Vrst_uint8 parse_maxspeed(std::string_view v) {
   return static_cast<Vrst_uint8>(std::clamp(std::lround(value), 1L, 255L));
 }
 
+/// Which ways a car may drive along an OSM way, relative to its node order.
+/// Both: two arcs per segment. Fwd: oneway along the node order (oneway=yes,
+/// roundabouts, motorways). Bwd: oneway against it (oneway=-1). Resolved once per
+/// way so the arc builder only has to read this, not the tags.
 enum class Dir : Vrst_uint8 { Both, Fwd, Bwd };
 
+/// Converter-side summary of one road way after pass 1: the result of classify().
+/// All segments cut from the way share it by index, so tags are parsed once per way,
+/// not once per segment, and only these few bytes stay in memory instead of all tags.
 struct Vrst_way_info {
+  /// Copied to SEG_OSM_WAY.
   Vrst_uint64 osm_id;
+  /// Interned name and ref; strings are stored once in Vrst_string_pool.
   Vrst_uint32 name_id;
   Vrst_uint32 ref_id;
+  /// Road class from the profile table.
   RoadClass cls;
+  /// Allowed direction after resolving oneway, implied oneway (roundabout, motorway)
+  /// and explicit oneway=no. Decides 1 or 2 arcs per segment, and which way.
   Dir dir;
+  /// Parsed maxspeed in km/h, 0 = unknown.
   Vrst_uint8 maxspeed_kmh;
+  /// SegFlags derived from tags.
   Vrst_uint16 flags;
 };
 
 bool is_yes(std::string_view v) { return v == "yes" || v == "designated"; }
 bool is_set(std::string_view v) { return !v.empty() && v != "no"; }
 
-// Returns nullopt when the way is not a car road.
+/// Applies the car profile to one way.
+/// @return the way summary, or nullopt when the way is not a car road.
 std::optional<Vrst_way_info> classify(const Vrst_osm_way& w) {
   const Vrst_class_def* cd = find_class(w.tag("highway"));
   const std::string_view mc = w.tag("motorcar");
@@ -245,6 +298,9 @@ Vrst_uint32 speed_kmh(const Vrst_way_info& w) {
 // Helpers
 // ===========================================================================
 
+/// Interns strings to dense ids, id 0 = "".
+/// Builds names.dat: thousands of segments share a few hundred names, so each name
+/// is stored once and segments carry a 4-byte id.
 class Vrst_string_pool {
  public:
   Vrst_string_pool() { strings_.emplace_back(); }
@@ -257,7 +313,11 @@ class Vrst_string_pool {
   const std::vector<std::string>& strings() const { return strings_; }
 
  private:
+  /// String -> id for deduplication. Thousands of segments share a few names; without
+  /// it names.dat would hold one copy per way.
   std::unordered_map<std::string, Vrst_uint32> ids_;
+  /// Strings in id order (id 0 = ""), written as names.dat. Needed besides ids_
+  /// because the map has no order.
   std::vector<std::string> strings_;
 };
 
@@ -274,6 +334,9 @@ Vrst_float64 haversine_m(Vrst_coord p, Vrst_coord q) {
   return 2 * kEarthRadiusM * std::asin(std::min(1.0, std::sqrt(h)));
 }
 
+/// Writes one nav file: header, section table and 64-byte aligned sections.
+/// The write-side counterpart of Vrst_nav_file. Computing offsets, alignment and
+/// elem_size in one place guarantees every file passes the loader's checks.
 class Vrst_file_writer {
  public:
   Vrst_file_writer(FileType type, Vrst_uint64 build_id) : type_(type), build_id_(build_id) {}
@@ -321,17 +384,28 @@ class Vrst_file_writer {
   }
 
  private:
+  /// One section queued for writing: id, element size, count and a pointer to the data.
+  /// Only a view: the caller keeps the data alive until write(). Lets `add<T>()` keep
+  /// type information that write(), which only sees bytes, would otherwise lose.
   struct Vrst_section {
     SectionId id;
+    /// sizeof(T) captured at add() time, where T is still known; write() only has bytes.
     Vrst_uint32 elem_size;
     Vrst_uint64 count;
     const void* data;
   };
+  /// Selects magic and file_type in the header.
   FileType type_;
+  /// Same value for all four writers of one run; see Vrst_file_header::build_id.
   Vrst_uint64 build_id_;
+  /// Sections in output order. Offsets are computed only in write(), so sections can
+  /// be added in any order without manual layout.
   std::vector<Vrst_section> sections_;
 };
 
+/// Prints the wall time of each converter phase and the total.
+/// Shows which phase takes the time, the first thing to look at when a large
+/// extract converts slowly.
 class Vrst_phase_timer {
  public:
   void phase(const char* name) {
@@ -344,7 +418,9 @@ class Vrst_phase_timer {
   }
 
  private:
+  /// Program start, for the total time.
   std::chrono::steady_clock::time_point start_ = std::chrono::steady_clock::now();
+  /// End of the previous phase: each phase prints only its own time.
   std::chrono::steady_clock::time_point last_ = start_;
 };
 
@@ -374,16 +450,26 @@ Vrst_uint64 make_build_id(const std::string& input) {
 // Segments
 // ===========================================================================
 
+/// Segment before vertex renumbering: one road piece between two graph vertices,
+/// referring to nodes by dense node index.
+/// Exists because vertex ids are only known after number_vertices(), which needs all
+/// segments first; this is the record that is renumbered and turned into arcs.
 struct Vrst_seg_tmp {
-  Vrst_uint32 a_node;  // dense node index
+  /// Dense node index of the first point. Node, not vertex id: vertex ids exist only
+  /// after number_vertices(), which needs all segments first.
+  Vrst_uint32 a_node;
+  /// Dense node index of the last point.
   Vrst_uint32 b_node;
+  /// Index into ways: name, class, direction and speed are taken from there instead
+  /// of being copied into every segment.
   Vrst_uint32 way;
+  /// Measured while the points are emitted, when the coordinates are at hand.
   Vrst_uint32 length_dm;
 };
 
-// The single place that decides vertex order. Returns node index -> vertex id
-// (kNone for non-vertices) and fills vertex coordinates.
-// TODO(hilbert): sort used vertex nodes by Hilbert key of their coordinate.
+/// The single place that decides vertex order. Fills vertex_coord.
+/// @return node index -> vertex id (kNone for non-vertices).
+/// @todo Sort used vertex nodes by Hilbert key of their coordinate.
 std::vector<Vrst_uint32> number_vertices(const std::vector<Vrst_seg_tmp>& segs, const std::vector<Vrst_coord>& node_coord,
                                       std::vector<Vrst_coord>& vertex_coord) {
   std::vector<Vrst_uint32> node_to_vertex(node_coord.size(), kNone);
@@ -555,6 +641,9 @@ int run(const std::string& input, const fs::path& out_dir) {
   std::vector<Vrst_seg_attr> seg_attr(S);
   std::vector<Vrst_seg_vertices> seg_vertices(S);
   std::vector<Vrst_uint64> seg_osm_way(S);
+  /// Arc before CSR, with an explicit tail.
+  /// Arcs are produced in segment order; the counting sort by tail then groups them
+  /// per vertex and makes the tail implicit in Vrst_fwd_arc.
   struct Vrst_arc_tmp {
     Vrst_uint32 tail, head, weight, seg;
   };

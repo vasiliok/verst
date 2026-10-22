@@ -1,12 +1,13 @@
-// navview <out_dir> [--screenshot <file.bmp>]
-//
-// Draws the road network from the nav files. Web Mercator, relative to the
-// map center in double, stored as float.
-//
-// Controls: drag = pan, wheel = zoom at cursor, Q/E = rotate, 1-9 = toggle
-// road classes, O = oneway highlight, V = vertices, R = default point,
-// F = fit map, Esc = quit.
-// The same settings are in the Dear ImGui panel.
+/// @file
+/// `navview <out_dir> [--screenshot <file.bmp>]`
+///
+/// Draws the road network from the nav files. Web Mercator, relative to the
+/// map center in double, stored as float.
+///
+/// Controls: drag = pan, wheel = zoom at cursor, Q/E = rotate, 1-9 = toggle
+/// road classes, O = oneway highlight, V = vertices, R = default point,
+/// F = fit map, Esc = quit.
+/// The same settings are in the Dear ImGui panel.
 
 #include <glad/glad.h>
 // glad must come first
@@ -34,12 +35,18 @@ namespace {
 constexpr Vrst_float64 kPi = 3.14159265358979323846;
 constexpr Vrst_float64 kEarthRadius = 6378137.0;
 
-// Start view and R: this point at street zoom. Falls back to fit-map when the
-// point is outside the loaded data.
-constexpr Vrst_coord kDefaultPoint{473220000, 50410000};  // 47.322, 5.041
-constexpr Vrst_float64 kDefaultMetresPerPoint = 5.0;        // ground metres per window point
+/// Start view and R: this point (47.322, 5.041) at street zoom. Falls back
+/// to fit-map when the point is outside the loaded data.
+constexpr Vrst_coord kDefaultPoint{473220000, 50410000};
+constexpr Vrst_float64 kDefaultMetresPerPoint = 5.0;  ///< Start zoom: ground metres per window point.
 
+/// 2D point or vector in double precision: Web Mercator metres, screen pixels or
+/// (lat, lon) degrees depending on use.
+/// All view math is done with it; only center-relative values are converted to
+/// float for the GPU.
 struct Vrst_vec2d {
+  /// Double on purpose: Web Mercator metres reach 2e7, where float has ~2 m steps.
+  /// Everything is computed in double and only center-relative values go to float.
   Vrst_float64 x, y;
 };
 
@@ -49,12 +56,14 @@ Vrst_vec2d mercator(Vrst_coord c) {
   return {kEarthRadius * lon, kEarthRadius * std::log(std::tan(kPi / 4 + lat / 2))};
 }
 
-Vrst_vec2d inverse_mercator(Vrst_vec2d m) {  // -> degrees (lat, lon)
+/// Inverse of mercator(): Web Mercator metres -> degrees (lat, lon).
+Vrst_vec2d inverse_mercator(Vrst_vec2d m) {
   return {(2 * std::atan(std::exp(m.y / kEarthRadius)) - kPi / 2) * 180.0 / kPi, m.x / kEarthRadius * 180.0 / kPi};
 }
 
-// Key 1..9 -> classes toggled together.
+/// Bit of road class c in Vrst_app::class_mask.
 constexpr Vrst_uint32 bit(RoadClass c) { return 1u << static_cast<int>(c); }
+/// Key 1..9 -> classes toggled together.
 constexpr Vrst_uint32 kClassGroups[9] = {
     bit(RoadClass::Motorway) | bit(RoadClass::MotorwayLink),
     bit(RoadClass::Trunk) | bit(RoadClass::TrunkLink),
@@ -69,7 +78,7 @@ constexpr Vrst_uint32 kClassGroups[9] = {
 constexpr const char* kGroupNames[9] = {"motorway", "trunk",       "primary", "secondary", "tertiary",
                                         "unclassified", "residential", "service", "ferry"};
 
-// Indexed by RoadClass.
+/// Line color (RGB) per road class, indexed by RoadClass.
 constexpr Vrst_float32 kClassColors[kRoadClassCount][3] = {
     {0.91f, 0.36f, 0.42f}, {0.91f, 0.50f, 0.55f},  // motorway
     {0.98f, 0.58f, 0.36f}, {0.98f, 0.68f, 0.50f},  // trunk
@@ -83,36 +92,76 @@ constexpr Vrst_float32 kClassColors[kRoadClassCount][3] = {
     {0.35f, 0.60f, 0.95f},                         // ferry
 };
 
+/// Vertex as uploaded to the GPU: float position relative to map_center plus one
+/// packed attribute.
+/// Kept to 12 bytes so the buffer stays small. All roads are one vertex buffer
+/// drawn with one GL_LINES call; the shader decides color and visibility from attr.
 struct Vrst_gpu_point {
+  /// Mercator metres relative to map_center. Float is enough only because of the
+  /// subtraction: at 25 km from the center the step is ~2 mm, so zoom does not shake.
   Vrst_float32 x, y;
+  /// Lines: `road_class | flags << 16`. Points: 1 = dead end. One integer attribute
+  /// lets one draw call color, filter and highlight everything in the shader.
   Vrst_uint32 attr;
 };
 static_assert(sizeof(Vrst_gpu_point) == 12);
 
+/// Camera of the 2D map: center, scale and rotation.
+/// Everything the view matrix is built from. Kept separate from Vrst_app so the
+/// projection helpers take only what they use.
 struct Vrst_view {
-  Vrst_vec2d center{0, 0};  // world metres relative to map center
-  Vrst_float64 scale = 1;    // framebuffer pixels per metre
-  Vrst_float64 angle = 0;    // radians, counter-clockwise
+  /// Point under the screen center, Mercator metres relative to map_center. Kept in
+  /// double so panning at deep zoom moves smoothly.
+  Vrst_vec2d center{0, 0};
+  /// Framebuffer pixels per Mercator metre. Framebuffer, not window, units so the
+  /// matrix is right on HiDPI screens.
+  Vrst_float64 scale = 1;
+  /// Map rotation, radians counter-clockwise. Separate from scale so zoom at cursor
+  /// and pan stay correct while rotated.
+  Vrst_float64 angle = 0;
 };
 
+/// All viewer state: loaded data, camera, screen size, toggles and input state.
+/// One object reached from the GLFW callbacks through the window user pointer, so
+/// the viewer needs no globals and callbacks, panel and render loop share one state.
 struct Vrst_app {
+  /// Mapped nav files; kept open for name lookups and the cursor position.
   Vrst_nav_data data;
-  Vrst_vec2d map_center{};    // mercator metres, subtracted from every point
-  Vrst_vec2d half_extent{};   // of the points, metres
+  /// Mercator position subtracted from every point before the float conversion.
+  /// Without it vertices are stored as ~1e6..2e7 m floats and lines jitter at zoom.
+  Vrst_vec2d map_center{};
+  /// Half size of the point extent in metres; used to fit the whole map (F).
+  Vrst_vec2d half_extent{};
+  /// Current pan / zoom / rotation.
   Vrst_view view;
+  /// Framebuffer size in pixels. Differs from the window size on HiDPI; the viewport
+  /// and the NDC scale need the framebuffer one.
   int fb_w = 1, fb_h = 1;
-  Vrst_float64 px_ratio = 1;   // framebuffer px per window coordinate
+  /// Framebuffer pixels per window coordinate (2 on Retina). GLFW reports the cursor
+  /// in window coordinates; without this zoom-at-cursor misses by a factor of 2.
+  Vrst_float64 px_ratio = 1;
+  /// Bit per RoadClass; a 0 bit discards that class in the fragment shader. One
+  /// uniform instead of rebuilding the index buffer on every toggle.
   Vrst_uint32 class_mask = (1u << kRoadClassCount) - 1;
+  /// Highlight oneway segments (O).
   bool oneway = false;
+  /// Draw the vertex dots (V).
   bool show_vertices = true;
-  Vrst_float32 point_px = 2.5f;  // vertex dot size, window points
+  /// Vertex dot size in window points; scaled by px_ratio so it looks the same on
+  /// every screen.
+  Vrst_float32 point_px = 2.5f;
+  /// Left button held on the map, not on the ImGui panel; pans on cursor move.
   bool dragging = false;
-  Vrst_float64 last_x = 0, last_y = 0;  // cursor, framebuffer px
+  /// Last cursor position, framebuffer px. Pan needs the delta, and scroll events
+  /// carry no position, so zoom-at-cursor needs the last known one.
+  Vrst_float64 last_x = 0, last_y = 0;
+  /// Scale that fits the whole map: zoom 1x in the UI and the zoom-out limit.
   Vrst_float64 initial_scale = 1;
+  /// Count of degree-1 vertices, shown in the panel.
   Vrst_uint32 dead_ends = 0;
 };
 
-// World -> NDC as a column-major mat3, computed in double.
+/// World -> NDC as a column-major mat3, computed in double.
 void view_matrix(const Vrst_app& app, Vrst_float32 out[9]) {
   const Vrst_view& v = app.view;
   const Vrst_float64 c = std::cos(v.angle) * v.scale, s = std::sin(v.angle) * v.scale;
@@ -123,10 +172,10 @@ void view_matrix(const Vrst_app& app, Vrst_float32 out[9]) {
   for (int i = 0; i < 9; ++i) out[i] = static_cast<Vrst_float32>(m[i]);
 }
 
-// Cursor in framebuffer px (origin top-left) -> pixel offset from screen center, y up.
+/// Cursor in framebuffer px (origin top-left) -> pixel offset from screen center, y up.
 Vrst_vec2d screen_offset(const Vrst_app& app, Vrst_float64 x, Vrst_float64 y) { return {x - app.fb_w / 2.0, app.fb_h / 2.0 - y}; }
 
-// Screen offset (px) -> world delta (metres).
+/// Screen offset (px) -> world delta (metres).
 Vrst_vec2d unproject_delta(const Vrst_view& v, Vrst_vec2d d) {
   const Vrst_float64 c = std::cos(-v.angle), s = std::sin(-v.angle);
   return {(c * d.x - s * d.y) / v.scale, (s * d.x + c * d.y) / v.scale};

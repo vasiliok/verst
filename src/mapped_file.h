@@ -1,4 +1,5 @@
-// Read-only memory-mapped file (POSIX + Windows). Throws std::runtime_error.
+/// @file
+/// Read-only memory-mapped file (POSIX + Windows). Throws std::runtime_error.
 #pragma once
 
 #include <stdexcept>
@@ -24,6 +25,10 @@
 
 namespace nav {
 
+/// Read-only memory mapping of a whole file, with POSIX and Windows back ends.
+/// The nav files are used in place: the OS pages in only what is touched, opening is
+/// O(1) whatever the file size, and several processes share the same pages. Move-only
+/// so exactly one owner unmaps; all spans into the data die with it.
 class Vrst_mapped_file {
  public:
   Vrst_mapped_file() = default;
@@ -108,8 +113,14 @@ class Vrst_mapped_file {
     std::swap(path_, o.path_);
   }
 
+  /// Start of the read-only mapping, nullptr when closed or for an empty file. All
+  /// typed views point into it, so it must outlive them.
   const Vrst_uint8* data_ = nullptr;
+  /// Mapped length in bytes. munmap needs it, and every section bound is checked
+  /// against it.
   Vrst_size size_ = 0;
+  /// For error messages only: with four files open, "bad magic" alone does not say
+  /// which file is broken.
   std::string path_;
 };
 

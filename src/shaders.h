@@ -1,9 +1,10 @@
-// GLSL 3.30 core shaders for navview.
+/// @file
+/// GLSL 3.30 core shaders for navview.
 #pragma once
 
 namespace nav::shaders {
 
-// Road lines. a_attr = road_class | flags << 16.
+/// Road lines, vertex shader. `a_attr = road_class | flags << 16`.
 inline constexpr const char* kLineVs = R"(#version 330 core
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in uint a_attr;
@@ -16,6 +17,7 @@ void main() {
 }
 )";
 
+/// Road lines, fragment shader: class color, class mask and oneway highlight.
 inline constexpr const char* kLineFs = R"(#version 330 core
 flat in uint v_attr;
 uniform vec3 u_colors[16];
@@ -32,7 +34,7 @@ void main() {
 }
 )";
 
-// Graph vertices. a_attr = 1 for dead ends (undirected degree 1).
+/// Graph vertices, vertex shader. `a_attr` = 1 for dead ends (undirected degree 1).
 inline constexpr const char* kPointVs = R"(#version 330 core
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in uint a_attr;
@@ -47,6 +49,7 @@ void main() {
 }
 )";
 
+/// Graph vertices, fragment shader: round dots, dead ends highlighted.
 inline constexpr const char* kPointFs = R"(#version 330 core
 flat in uint v_dead;
 out vec4 o_color;

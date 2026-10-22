@@ -1,6 +1,7 @@
-// navcheck <out_dir> [--dump-way <osm_way_id>]
-//
-// Validates the four nav files. Exit code 0 = all checks pass.
+/// @file
+/// `navcheck <out_dir> [--dump-way <osm_way_id>]`
+///
+/// Validates the four nav files. Exit code 0 = all checks pass.
 
 #include <algorithm>
 #include <cinttypes>
@@ -43,7 +44,7 @@ bool in_bbox(Vrst_coord c, const Vrst_bbox& b) {
          c.lon_e7 <= b.max.lon_e7;
 }
 
-// Tail of forward arc i (upper_bound in first_out).
+/// Tail of forward arc i (upper_bound in first_out).
 Vrst_uint32 tail_of(const Vrst_graph& g, Vrst_uint32 i) {
   auto it = std::upper_bound(g.fwd_first_out.begin(), g.fwd_first_out.end(), i);
   return static_cast<Vrst_uint32>(it - g.fwd_first_out.begin()) - 1;
@@ -63,7 +64,14 @@ bool check_offsets(std::span<const Vrst_uint32> off, Vrst_uint64 last, Vrst_uint
   return off.back() == last;
 }
 
+/// Disjoint-set forest over vertices, with path halving and union by size.
+/// Counts the connected components of the road graph and the largest one's share in
+/// near-linear time. Many small components usually mean broken data or a too-strict
+/// profile, which no per-file check can see.
 struct Vrst_union_find {
+  /// parent[v]: next vertex towards the set root (root: parent[v] == v).
+  /// size[root]: vertices in the set. Union by size keeps trees shallow, and the
+  /// sizes give the largest-component share without a second pass.
   std::vector<Vrst_uint32> parent, size;
   explicit Vrst_union_find(Vrst_uint32 n) : parent(n), size(n, 1) { std::iota(parent.begin(), parent.end(), 0u); }
   Vrst_uint32 find(Vrst_uint32 x) {
@@ -79,7 +87,9 @@ struct Vrst_union_find {
   }
 };
 
-// Check 1 opens each file on its own so every failure is reported.
+/// Check 1 opens each file on its own so every failure is reported.
+/// @return true if all four files opened, share one build_id and agree on the
+/// segment count.
 bool check_files(const fs::path& dir, Vrst_nav_data& d) {
   bool all_ok = true;
   auto try_open = [&](const char* name, auto&& open) {

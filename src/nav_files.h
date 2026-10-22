@@ -1,7 +1,8 @@
-// Typed, zero-copy views over the mapped nav files. Throws std::runtime_error.
-//
-// Loading checks magic, version, file type, section bounds/alignment,
-// elem_size and O(1) count consistency. Deep checks live in navcheck.
+/// @file
+/// Typed, zero-copy views over the mapped nav files. Throws std::runtime_error.
+///
+/// Loading checks magic, version, file type, section bounds/alignment,
+/// elem_size and O(1) count consistency. Deep checks live in navcheck.
 #pragma once
 
 #include <cstring>
@@ -16,6 +17,10 @@
 
 namespace nav {
 
+/// One mapped nav file with its header and section table checked.
+/// The only place where raw bytes become typed arrays: open() validates magic,
+/// version, type and every section's bounds and alignment, and `section<T>()` checks
+/// elem_size against sizeof(T). Everything above it can then use plain spans.
 class Vrst_nav_file {
  public:
   void open(const std::string& path, FileType type) {
@@ -62,7 +67,10 @@ class Vrst_nav_file {
   const Vrst_file_header* header_ptr() const { return reinterpret_cast<const Vrst_file_header*>(file_.data()); }
   [[noreturn]] void fail(const std::string& msg) const { throw std::runtime_error(file_.path() + ": " + msg); }
 
+  /// Owns the mapping that every span returned by section() points into.
   Vrst_mapped_file file_;
+  /// Validated section table inside the mapping. Kept so section() is a short linear
+  /// search with no copy; all entries were bounds-checked in open().
   std::span<const Vrst_section_entry> table_;
 };
 
@@ -70,13 +78,27 @@ inline void require(bool ok, const std::string& path, const char* what) {
   if (!ok) throw std::runtime_error(path + ": " + what);
 }
 
+/// Typed view of graph.dat: vertex positions plus forward and backward CSR.
+/// The routing hot data, kept in its own file so a route query touches only these
+/// pages and never the attributes, geometry or names.
 struct Vrst_graph {
+  /// Keeps graph.dat mapped; all spans below point into it.
   Vrst_nav_file file;
+  /// Position of each vertex. A* needs it for the distance heuristic, and snapping
+  /// needs it without opening geom.dat.
   std::span<const Vrst_coord> vertex_coord;
+  /// CSR row starts, V+1 entries: out-arcs of v are [fwd_first_out[v], [v+1]). The
+  /// extra last entry (= A) removes the special case for the last vertex.
   std::span<const Vrst_uint32> fwd_first_out;
+  /// All arcs sorted by tail; the forward search reads one contiguous run per vertex.
   std::span<const Vrst_fwd_arc> fwd_arcs;
+  /// Same as fwd_first_out for incoming arcs. Without a reverse index, finding the
+  /// arcs into v means scanning all A arcs, which kills backward and bidirectional
+  /// search.
   std::span<const Vrst_uint32> bwd_first_in;
+  /// Incoming arcs sorted by head.
   std::span<const Vrst_bwd_arc> bwd_arcs;
+  /// Extent of the source data (copied, it is one element).
   Vrst_bbox bbox{};
 
   Vrst_uint32 num_vertices() const { return static_cast<Vrst_uint32>(vertex_coord.size()); }
@@ -105,10 +127,19 @@ struct Vrst_graph {
   }
 };
 
+/// Typed view of edges.dat: per-segment attributes, end vertices and OSM way id,
+/// all indexed by segment id (Vrst_fwd_arc::seg & kSegIdMask).
+/// Used after routing (guidance, display) and for snapping, not during the search.
 struct Vrst_edges {
+  /// Keeps edges.dat mapped.
   Vrst_nav_file file;
+  /// Per-segment attributes, indexed by segment id.
   std::span<const Vrst_seg_attr> attr;
+  /// Segment end vertices (a, b), indexed by segment id.
   std::span<const Vrst_seg_vertices> vertices;
+  /// Source OSM way per segment. OSM turn restrictions reference way ids, so mapping
+  /// them onto arcs later is impossible without it; also used to compare with
+  /// openstreetmap.org when debugging.
   std::span<const Vrst_uint64> osm_way;
 
   Vrst_uint32 num_segments() const { return static_cast<Vrst_uint32>(attr.size()); }
@@ -123,12 +154,20 @@ struct Vrst_edges {
   }
 };
 
+/// Typed view of geom.dat: the shape points of every segment.
+/// Shapes are by far the largest data and are needed only for drawing, snapping and
+/// distance along a road, so they live apart from the graph.
 struct Vrst_geom {
+  /// Keeps geom.dat mapped. Separate file so the router never pages in shape points.
   Vrst_nav_file file;
+  /// Start of each segment's point run, S+1 entries (last = P). Segments have a
+  /// variable number of points, so a prefix array is the only O(1) lookup.
   std::span<const Vrst_uint32> seg_first_point;
+  /// All shape points, segment after segment, both end points included so a segment
+  /// can be drawn or measured without looking up its vertices.
   std::span<const Vrst_coord> points;
 
-  // Points of segment s in stored (a -> b) order.
+  /// Points of segment s in stored (a -> b) order.
   std::span<const Vrst_coord> segment_points(Vrst_uint32 s) const {
     return points.subspan(seg_first_point[s], seg_first_point[s + 1] - seg_first_point[s]);
   }
@@ -141,9 +180,16 @@ struct Vrst_geom {
   }
 };
 
+/// Typed view of names.dat: street names and road refs, looked up by id (0 = "").
+/// Ids keep Vrst_seg_attr fixed-size; each distinct string is stored once.
 struct Vrst_names {
+  /// Keeps names.dat mapped.
   Vrst_nav_file file;
+  /// Start of string i, N+1 entries. Length is offsets[i+1] - offsets[i], so strings
+  /// need no terminator and may contain any UTF-8.
   std::span<const Vrst_uint32> offsets;
+  /// All strings back to back, deduplicated (one copy of "Avinguda Meritxell" for
+  /// all its segments).
   std::span<const char> data;
 
   Vrst_uint32 size() const { return static_cast<Vrst_uint32>(offsets.size() - 1); }
@@ -160,11 +206,18 @@ struct Vrst_names {
   }
 };
 
-// All four files of one import.
+/// All four files of one import, opened together.
+/// The normal entry point for tools: besides opening each file it checks that all
+/// share one build_id and agree on the segment count, the mismatches that each file
+/// on its own cannot detect.
 struct Vrst_nav_data {
+  /// Routing hot data.
   Vrst_graph graph;
+  /// Segment attributes, needed after routing (guidance, display).
   Vrst_edges edges;
+  /// Shape points, needed for drawing and snapping.
   Vrst_geom geom;
+  /// Street names and refs.
   Vrst_names names;
 
   void open(const std::filesystem::path& dir) {

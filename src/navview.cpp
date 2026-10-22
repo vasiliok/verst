@@ -203,7 +203,7 @@ void fit_view(Vrst_app& app) {
 }
 
 void reset_view(Vrst_app& app) {
-  const Vrst_bbox& bb = app.data.graph.bbox;
+  const Vrst_bbox& bb = app.data.graph().bbox();
   const Vrst_coord p = kDefaultPoint;
   if (p.lat_e7 < bb.min.lat_e7 || p.lat_e7 > bb.max.lat_e7 || p.lon_e7 < bb.min.lon_e7 || p.lon_e7 > bb.max.lon_e7) {
     fit_view(app);
@@ -338,12 +338,12 @@ Vrst_vec2d cursor_latlon(const Vrst_app& app) {
 }
 
 void draw_panel(Vrst_app& app) {
-  const Vrst_graph& g = app.data.graph;
+  const Vrst_graph& g = app.data.graph();
   ImGui::SetNextWindowPos({10, 10}, ImGuiCond_FirstUseEver);
   ImGui::Begin("navview", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
-  ImGui::Text("V %u   S %u   A %u   P %zu", g.num_vertices(), app.data.edges.num_segments(), g.num_arcs(),
-              app.data.geom.points.size());
+  ImGui::Text("V %u   S %u   A %u   P %zu", g.num_vertices(), app.data.edges().num_segments(), g.num_arcs(),
+              app.data.geom().points().size());
   ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
   const Vrst_vec2d ll = cursor_latlon(app);
   ImGui::Text("cursor  %.6f, %.6f", ll.x, ll.y);
@@ -408,17 +408,17 @@ void save_bmp(const std::string& path, int w, int h) {
 int run(const std::string& dir, const std::string& screenshot) {
   Vrst_app app;
   app.data.open(dir);
-  const Vrst_graph& g = app.data.graph;
-  const Vrst_edges& e = app.data.edges;
-  const Vrst_geom& geo = app.data.geom;
+  const Vrst_graph& g = app.data.graph();
+  const Vrst_edges& e = app.data.edges();
+  const Vrst_geom& geo = app.data.geom();
   const Vrst_uint32 V = g.num_vertices(), S = e.num_segments();
-  const Vrst_size P = geo.points.size();
+  const Vrst_size P = geo.points().size();
 
   // --- projection: double, relative to map center --------------------------
   Vrst_vec2d lo{1e300, 1e300}, hi{-1e300, -1e300};
   std::vector<Vrst_vec2d> merc(P);
   for (Vrst_size i = 0; i < P; ++i) {
-    merc[i] = mercator(geo.points[i]);
+    merc[i] = mercator(geo.points()[i]);
     lo = {std::min(lo.x, merc[i].x), std::min(lo.y, merc[i].y)};
     hi = {std::max(hi.x, merc[i].x), std::max(hi.y, merc[i].y)};
   }
@@ -428,8 +428,8 @@ int run(const std::string& dir, const std::string& screenshot) {
 
   std::vector<Vrst_gpu_point> line_verts(P);
   for (Vrst_uint32 s = 0; s < S; ++s) {
-    const Vrst_uint32 attr = e.attr[s].road_class | Vrst_uint32(e.attr[s].flags) << 16;
-    for (Vrst_uint32 i = geo.seg_first_point[s]; i < geo.seg_first_point[s + 1]; ++i)
+    const Vrst_uint32 attr = e.attr()[s].road_class | Vrst_uint32(e.attr()[s].flags) << 16;
+    for (Vrst_uint32 i = geo.seg_first_point()[s]; i < geo.seg_first_point()[s + 1]; ++i)
       line_verts[i] = {Vrst_float32(merc[i].x - app.map_center.x), Vrst_float32(merc[i].y - app.map_center.y), attr};
   }
   std::vector<Vrst_vec2d>().swap(merc);
@@ -439,15 +439,15 @@ int run(const std::string& dir, const std::string& screenshot) {
   indices.reserve((P - S) * 2);
   for (int cls = kRoadClassCount - 1; cls >= 0; --cls)
     for (Vrst_uint32 s = 0; s < S; ++s) {
-      if (e.attr[s].road_class != cls) continue;
-      for (Vrst_uint32 i = geo.seg_first_point[s]; i + 1 < geo.seg_first_point[s + 1]; ++i) {
+      if (e.attr()[s].road_class != cls) continue;
+      for (Vrst_uint32 i = geo.seg_first_point()[s]; i + 1 < geo.seg_first_point()[s + 1]; ++i) {
         indices.push_back(i);
         indices.push_back(i + 1);
       }
     }
 
   std::vector<Vrst_uint32> degree(V, 0);
-  for (const Vrst_seg_vertices& sv : e.vertices) ++degree[sv.a], ++degree[sv.b];
+  for (const Vrst_seg_vertices& sv : e.vertices()) ++degree[sv.a], ++degree[sv.b];
   std::vector<Vrst_gpu_point> vertex_verts;
   vertex_verts.reserve(V);
   for (int pass = 0; pass < 2; ++pass)  // dead ends last, on top
@@ -455,7 +455,7 @@ int run(const std::string& dir, const std::string& screenshot) {
       const Vrst_uint32 dead = degree[v] == 1;
       if (dead != Vrst_uint32(pass)) continue;
       app.dead_ends += dead;
-      const Vrst_vec2d m = mercator(g.vertex_coord[v]);
+      const Vrst_vec2d m = mercator(g.vertex_coord()[v]);
       vertex_verts.push_back({Vrst_float32(m.x - app.map_center.x), Vrst_float32(m.y - app.map_center.y), dead});
     }
 

@@ -55,20 +55,34 @@ struct Vrst_osm_tag {
 /// One OSM way as delivered by Vrst_osm_source: id, node refs and tags.
 /// Valid only during the callback. Gives classify() and the segment splitter one
 /// input form whatever reader produced it.
-struct Vrst_osm_way {
-  /// OSM way id, kept per segment for turn restrictions and debugging.
-  Vrst_uint64 id;
-  /// Node ids in way order. Ids, not coordinates: PBF ways store only refs, and the
-  /// shared ids are what reveals intersections.
-  std::span<const Vrst_uint64> refs;
-  /// All tags of the way; the profile decides which matter.
-  std::span<const Vrst_osm_tag> tags;
+class Vrst_osm_way {
+ public:
+  /// Wraps the reader's buffers; nothing is copied.
+  Vrst_osm_way(Vrst_uint64 id, std::span<const Vrst_uint64> refs, std::span<const Vrst_osm_tag> tags)
+      : m_id(id), m_refs(refs), m_tags(tags) {}
 
+  /// Value of tag key, or "" when the way does not have it.
   std::string_view tag(std::string_view key) const {
-    for (const Vrst_osm_tag& t : tags)
+    for (const Vrst_osm_tag& t : m_tags)
       if (t.key == key) return t.value;
     return {};
   }
+
+  /// @copydoc Vrst_osm_way::m_id
+  Vrst_uint64 id() const { return m_id; }
+  /// @copydoc Vrst_osm_way::m_refs
+  std::span<const Vrst_uint64> refs() const { return m_refs; }
+  /// @copydoc Vrst_osm_way::m_tags
+  std::span<const Vrst_osm_tag> tags() const { return m_tags; }
+
+ private:
+  /// OSM way id, kept per segment for turn restrictions and debugging.
+  Vrst_uint64 m_id;
+  /// Node ids in way order. Ids, not coordinates: PBF ways store only refs, and the
+  /// shared ids are what reveals intersections.
+  std::span<const Vrst_uint64> m_refs;
+  /// All tags of the way; the profile decides which matter.
+  std::span<const Vrst_osm_tag> m_tags;
 };
 
 /// One OSM node as delivered by Vrst_osm_source: id and position only.
@@ -97,10 +111,10 @@ class Vrst_osm_source {
 /// type, so only ways or only nodes are decoded.
 class Vrst_osmium_source final : public Vrst_osm_source {
  public:
-  explicit Vrst_osmium_source(std::string path) : path_(std::move(path)) {}
+  explicit Vrst_osmium_source(std::string path) : m_path(std::move(path)) {}
 
   std::optional<Vrst_bbox> header_bbox() override {
-    osmium::io::Reader reader{path_, osmium::osm_entity_bits::nothing};
+    osmium::io::Reader reader{m_path, osmium::osm_entity_bits::nothing};
     const osmium::Box box = reader.header().box();
     reader.close();
     if (!box.valid()) return std::nullopt;
@@ -108,7 +122,7 @@ class Vrst_osmium_source final : public Vrst_osm_source {
   }
 
   void for_each_way(const std::function<void(const Vrst_osm_way&)>& fn) override {
-    osmium::io::Reader reader{path_, osmium::osm_entity_bits::way};
+    osmium::io::Reader reader{m_path, osmium::osm_entity_bits::way};
     std::vector<Vrst_uint64> refs;
     std::vector<Vrst_osm_tag> tags;
     while (osmium::memory::Buffer buffer = reader.read()) {
@@ -124,7 +138,7 @@ class Vrst_osmium_source final : public Vrst_osm_source {
   }
 
   void for_each_node(const std::function<void(const Vrst_osm_node&)>& fn) override {
-    osmium::io::Reader reader{path_, osmium::osm_entity_bits::node};
+    osmium::io::Reader reader{m_path, osmium::osm_entity_bits::node};
     while (osmium::memory::Buffer buffer = reader.read()) {
       for (const osmium::Node& n : buffer.select<osmium::Node>()) {
         const osmium::Location loc = n.location();
@@ -138,7 +152,7 @@ class Vrst_osmium_source final : public Vrst_osm_source {
  private:
   /// The PBF is opened once per pass: libosmium readers cannot rewind, and two
   /// passes (ways, then nodes) avoid holding all node coordinates in memory.
-  std::string path_;
+  std::string m_path;
 };
 
 // ===========================================================================
@@ -264,7 +278,7 @@ std::optional<Vrst_way_info> classify(const Vrst_osm_way& w) {
   if ((access == "no" || access == "private") && !is_yes(car)) return std::nullopt;
 
   Vrst_way_info info{};
-  info.osm_id = w.id;
+  info.osm_id = w.id();
   info.cls = cd->cls;
   info.maxspeed_kmh = parse_maxspeed(w.tag("maxspeed"));
 
@@ -304,22 +318,22 @@ Vrst_uint32 speed_kmh(const Vrst_way_info& w) {
 /// is stored once and segments carry a 4-byte id.
 class Vrst_string_pool {
  public:
-  Vrst_string_pool() { strings_.emplace_back(); }
+  Vrst_string_pool() { m_strings.emplace_back(); }
   Vrst_uint32 intern(std::string_view s) {
     if (s.empty()) return 0;
-    auto [it, inserted] = ids_.try_emplace(std::string(s), static_cast<Vrst_uint32>(strings_.size()));
-    if (inserted) strings_.emplace_back(s);
+    auto [it, inserted] = m_ids.try_emplace(std::string(s), static_cast<Vrst_uint32>(m_strings.size()));
+    if (inserted) m_strings.emplace_back(s);
     return it->second;
   }
-  const std::vector<std::string>& strings() const { return strings_; }
+  const std::vector<std::string>& strings() const { return m_strings; }
 
  private:
   /// String -> id for deduplication. Thousands of segments share a few names; without
   /// it names.dat would hold one copy per way.
-  std::unordered_map<std::string, Vrst_uint32> ids_;
-  /// Strings in id order (id 0 = ""), written as names.dat. Needed besides ids_
+  std::unordered_map<std::string, Vrst_uint32> m_ids;
+  /// Strings in id order (id 0 = ""), written as names.dat. Needed besides m_ids
   /// because the map has no order.
-  std::vector<std::string> strings_;
+  std::vector<std::string> m_strings;
 };
 
 /// Coordinate of a road node not found in pass 2 (way refers to a node outside the
@@ -343,11 +357,11 @@ Vrst_float64 haversine_m(Vrst_coord p, Vrst_coord q) {
 /// elem_size in one place guarantees every file passes the loader's checks.
 class Vrst_file_writer {
  public:
-  Vrst_file_writer(FileType type, Vrst_uint64 build_id) : type_(type), build_id_(build_id) {}
+  Vrst_file_writer(FileType type, Vrst_uint64 build_id) : m_type(type), m_build_id(build_id) {}
 
   template <class T>
   void add(SectionId id, std::span<const T> data) {
-    sections_.push_back({id, sizeof(T), data.size(), data.data()});
+    m_sections.push_back({id, sizeof(T), data.size(), data.data()});
   }
   template <class T>
   void add(SectionId id, const std::vector<T>& data) {
@@ -356,16 +370,16 @@ class Vrst_file_writer {
 
   Vrst_uint64 write(const fs::path& path) const {
     Vrst_file_header h{};
-    std::memcpy(h.magic, magic_for(type_), 8);
+    std::memcpy(h.magic, magic_for(m_type), 8);
     h.format_version = kFormatVersion;
-    h.file_type = static_cast<Vrst_uint32>(type_);
-    h.build_id = build_id_;
-    h.section_count = static_cast<Vrst_uint32>(sections_.size());
+    h.file_type = static_cast<Vrst_uint32>(m_type);
+    h.build_id = m_build_id;
+    h.section_count = static_cast<Vrst_uint32>(m_sections.size());
 
     auto align = [](Vrst_uint64 x) { return (x + kSectionAlign - 1) & ~(kSectionAlign - 1); };
     std::vector<Vrst_section_entry> table;
-    Vrst_uint64 offset = sizeof(Vrst_file_header) + sections_.size() * sizeof(Vrst_section_entry);
-    for (const Vrst_section& s : sections_) {
+    Vrst_uint64 offset = sizeof(Vrst_file_header) + m_sections.size() * sizeof(Vrst_section_entry);
+    for (const Vrst_section& s : m_sections) {
       offset = align(offset);
       table.push_back({static_cast<Vrst_uint32>(s.id), s.elem_size, offset, s.count});
       offset += s.count * s.elem_size;
@@ -377,10 +391,10 @@ class Vrst_file_writer {
     out.write(reinterpret_cast<const char*>(table.data()), table.size() * sizeof(Vrst_section_entry));
     Vrst_uint64 pos = sizeof(Vrst_file_header) + table.size() * sizeof(Vrst_section_entry);
     static constexpr char kZeros[kSectionAlign] = {};
-    for (Vrst_size i = 0; i < sections_.size(); ++i) {
+    for (Vrst_size i = 0; i < m_sections.size(); ++i) {
       out.write(kZeros, static_cast<std::streamsize>(table[i].offset - pos));
-      const Vrst_uint64 bytes = sections_[i].count * sections_[i].elem_size;
-      out.write(static_cast<const char*>(sections_[i].data), static_cast<std::streamsize>(bytes));
+      const Vrst_uint64 bytes = m_sections[i].count * m_sections[i].elem_size;
+      out.write(static_cast<const char*>(m_sections[i].data), static_cast<std::streamsize>(bytes));
       pos = table[i].offset + bytes;
     }
     if (!out.flush()) throw std::runtime_error("write failed: " + path.string());
@@ -402,12 +416,12 @@ class Vrst_file_writer {
     const void* data;
   };
   /// Selects magic and file_type in the header.
-  FileType type_;
+  FileType m_type;
   /// Same value for all four writers of one run; see Vrst_file_header::build_id.
-  Vrst_uint64 build_id_;
+  Vrst_uint64 m_build_id;
   /// Sections in output order. Offsets are computed only in write(), so sections can
   /// be added in any order without manual layout.
-  std::vector<Vrst_section> sections_;
+  std::vector<Vrst_section> m_sections;
 };
 
 /// Prints the wall time of each converter phase and the total.
@@ -417,18 +431,18 @@ class Vrst_phase_timer {
  public:
   void phase(const char* name) {
     const auto now = std::chrono::steady_clock::now();
-    std::printf("  %-22s %8.1f ms\n", name, std::chrono::duration<Vrst_float64, std::milli>(now - last_).count());
-    last_ = now;
+    std::printf("  %-22s %8.1f ms\n", name, std::chrono::duration<Vrst_float64, std::milli>(now - m_last).count());
+    m_last = now;
   }
   Vrst_float64 total_ms() const {
-    return std::chrono::duration<Vrst_float64, std::milli>(std::chrono::steady_clock::now() - start_).count();
+    return std::chrono::duration<Vrst_float64, std::milli>(std::chrono::steady_clock::now() - m_start).count();
   }
 
  private:
   /// Program start, for the total time.
-  std::chrono::steady_clock::time_point start_ = std::chrono::steady_clock::now();
+  std::chrono::steady_clock::time_point m_start = std::chrono::steady_clock::now();
   /// End of the previous phase: each phase prints only its own time.
-  std::chrono::steady_clock::time_point last_ = start_;
+  std::chrono::steady_clock::time_point m_last = m_start;
 };
 
 Vrst_float64 peak_rss_mb() {
@@ -504,13 +518,13 @@ int run(const std::string& input, const fs::path& out_dir) {
 
   source.for_each_way([&](const Vrst_osm_way& w) {
     ++ways_read;
-    if (w.refs.size() < 2) return;
+    if (w.refs().size() < 2) return;
     std::optional<Vrst_way_info> info = classify(w);
     if (!info) return;
     info->name_id = names.intern(w.tag("name"));
     info->ref_id = names.intern(w.tag("ref"));
     ways.push_back(*info);
-    for (Vrst_uint64 r : w.refs)
+    for (Vrst_uint64 r : w.refs())
       if (refs.size() == way_first_ref.back() || refs.back() != r) refs.push_back(r);  // drop repeated refs
     way_first_ref.push_back(refs.size());
   });

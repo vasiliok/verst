@@ -57,14 +57,14 @@ class Vrst_mapped_file {
       CloseHandle(f);
       throw std::runtime_error("cannot stat " + path);
     }
-    size_ = static_cast<Vrst_size>(sz.QuadPart);
-    if (size_ > 0) {
+    m_size = static_cast<Vrst_size>(sz.QuadPart);
+    if (m_size > 0) {
       HANDLE m = CreateFileMappingA(f, nullptr, PAGE_READONLY, 0, 0, nullptr);
       CloseHandle(f);
       if (!m) throw std::runtime_error("cannot map " + path);
-      data_ = static_cast<const Vrst_uint8*>(MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0));
+      m_data = static_cast<const Vrst_uint8*>(MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0));
       CloseHandle(m);
-      if (!data_) throw std::runtime_error("cannot map " + path);
+      if (!m_data) throw std::runtime_error("cannot map " + path);
     } else {
       CloseHandle(f);
     }
@@ -76,52 +76,52 @@ class Vrst_mapped_file {
       ::close(fd);
       throw std::runtime_error("cannot stat " + path);
     }
-    size_ = static_cast<Vrst_size>(st.st_size);
-    if (size_ > 0) {
-      void* p = mmap(nullptr, size_, PROT_READ, MAP_SHARED, fd, 0);
+    m_size = static_cast<Vrst_size>(st.st_size);
+    if (m_size > 0) {
+      void* p = mmap(nullptr, m_size, PROT_READ, MAP_SHARED, fd, 0);
       ::close(fd);
       if (p == MAP_FAILED) throw std::runtime_error("cannot map " + path);
-      data_ = static_cast<const Vrst_uint8*>(p);
+      m_data = static_cast<const Vrst_uint8*>(p);
     } else {
       ::close(fd);
     }
 #endif
-    path_ = path;
+    m_path = path;
   }
 
   void close() {
-    if (data_) {
+    if (m_data) {
 #ifdef _WIN32
-      UnmapViewOfFile(data_);
+      UnmapViewOfFile(m_data);
 #else
-      munmap(const_cast<Vrst_uint8*>(data_), size_);
+      munmap(const_cast<Vrst_uint8*>(m_data), m_size);
 #endif
     }
-    data_ = nullptr;
-    size_ = 0;
-    path_.clear();
+    m_data = nullptr;
+    m_size = 0;
+    m_path.clear();
   }
 
-  const Vrst_uint8* data() const { return data_; }
-  Vrst_size size() const { return size_; }
-  const std::string& path() const { return path_; }
+  const Vrst_uint8* data() const { return m_data; }
+  Vrst_size size() const { return m_size; }
+  const std::string& path() const { return m_path; }
 
  private:
   void swap(Vrst_mapped_file& o) noexcept {
-    std::swap(data_, o.data_);
-    std::swap(size_, o.size_);
-    std::swap(path_, o.path_);
+    std::swap(m_data, o.m_data);
+    std::swap(m_size, o.m_size);
+    std::swap(m_path, o.m_path);
   }
 
   /// Start of the read-only mapping, nullptr when closed or for an empty file. All
   /// typed views point into it, so it must outlive them.
-  const Vrst_uint8* data_ = nullptr;
+  const Vrst_uint8* m_data = nullptr;
   /// Mapped length in bytes. munmap needs it, and every section bound is checked
   /// against it.
-  Vrst_size size_ = 0;
+  Vrst_size m_size = 0;
   /// For error messages only: with four files open, "bad magic" alone does not say
   /// which file is broken.
-  std::string path_;
+  std::string m_path;
 };
 
 }  // namespace nav

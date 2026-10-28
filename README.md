@@ -7,6 +7,21 @@ Converts car roads from an `.osm.pbf` into four mmap-able files, validates them,
 | `osm2nav` | `osm2nav <input.osm.pbf> <out_dir>` |
 | `navcheck` | `navcheck <out_dir>` (exit 0 = all PASS) · `navcheck <out_dir> --dump-way <osm_way_id>` |
 | `navview` | `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--screenshot <file.bmp>]` (screenshot: renders 3 frames, saves the last, exits) |
+| iPhone app | `ios/`: UIKit + OpenGL ES 3.0, same map code as navview; see [ios/README.md](ios/README.md) |
+
+## Desktop and mobile
+
+One C++ core, thin front ends:
+
+| Layer | Files | Used by |
+|---|---|---|
+| nav files (mmap, typed views) | `src/format.h`, `src/mapped_file.h`, `src/nav_files.h` | all tools and apps |
+| map scene (projection, class tables, camera, mesh) | `src/map_scene.h` | navview, iPhone app |
+| OpenGL renderer (GL 3.3 core / GLES 3.0) | `src/map_renderer.h`, `src/shaders.h`, `src/gl_api.h` | navview, iPhone app |
+| desktop front end (GLFW, Dear ImGui, mouse/keys) | `src/navview.cpp` | macOS, Linux, Windows |
+| iPhone front end (UIKit, GLKView, gestures) | `ios/main.mm` | iOS |
+
+New features go into the core first; a front end only adds input and UI.
 
 ## Build
 

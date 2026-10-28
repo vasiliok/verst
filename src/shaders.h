@@ -1,11 +1,15 @@
 /// @file
-/// GLSL 3.30 core shaders for navview.
+/// Map shaders shared by desktop OpenGL 3.3 core and OpenGL ES 3.0 (iOS).
+///
+/// The sources have no `#version` line: Vrst_map_renderer prepends kGlslHeader for the
+/// platform, `#version 330 core` or `#version 300 es` with precision qualifiers. The bodies
+/// use only features both languages share (flat uint varyings, gl_PointCoord).
 #pragma once
 
 namespace nav::shaders {
 
 /// Road lines, vertex shader. `a_attr = road_class | flags << 16`.
-inline constexpr const char* kLineVs = R"(#version 330 core
+inline constexpr const char* kLineVs = R"(
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in uint a_attr;
 uniform mat3 u_view;
@@ -18,7 +22,7 @@ void main() {
 )";
 
 /// Road lines, fragment shader: class color, class mask and oneway highlight.
-inline constexpr const char* kLineFs = R"(#version 330 core
+inline constexpr const char* kLineFs = R"(
 flat in uint v_attr;
 uniform vec3 u_colors[16];
 uniform uint u_class_mask;
@@ -35,7 +39,7 @@ void main() {
 )";
 
 /// Graph vertices, vertex shader. `a_attr` = 1 for dead ends (undirected degree 1).
-inline constexpr const char* kPointVs = R"(#version 330 core
+inline constexpr const char* kPointVs = R"(
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in uint a_attr;
 uniform mat3 u_view;
@@ -50,7 +54,7 @@ void main() {
 )";
 
 /// Graph vertices, fragment shader: round dots, dead ends highlighted.
-inline constexpr const char* kPointFs = R"(#version 330 core
+inline constexpr const char* kPointFs = R"(
 flat in uint v_dead;
 out vec4 o_color;
 void main() {

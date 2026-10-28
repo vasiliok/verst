@@ -36,6 +36,12 @@ configure_file(src/vrst_types.h.in "${CMAKE_BINARY_DIR}/generated/vrst_types.h" 
 add_library(vrst_types INTERFACE)
 target_include_directories(vrst_types INTERFACE "${CMAKE_BINARY_DIR}/generated")
 
+# --- iOS: only the app (cmake -G Xcode -DCMAKE_SYSTEM_NAME=iOS, see ios/README.md) ---
+if(IOS)
+  add_subdirectory(ios)
+  return()
+endif()
+
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 
@@ -99,7 +105,8 @@ if(DOXYGEN_FOUND)
   set(DOXYGEN_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/docs")
   set(DOXYGEN_USE_MDFILE_AS_MAINPAGE "${CMAKE_SOURCE_DIR}/README.md")
   set(DOXYGEN_STRIP_FROM_PATH "${CMAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/generated")
-  set(DOXYGEN_FILE_PATTERNS *.h *.cpp *.md)
+  set(DOXYGEN_FILE_PATTERNS *.h *.cpp *.mm *.md)
+  set(DOXYGEN_EXTENSION_MAPPING mm=Objective-C)
   # Types and fields live in anonymous namespaces and private sections too.
   set(DOXYGEN_EXTRACT_PRIVATE YES)
   set(DOXYGEN_EXTRACT_STATIC YES)
@@ -115,6 +122,7 @@ if(DOXYGEN_FOUND)
     "${CMAKE_SOURCE_DIR}/README.md"
     "${CMAKE_SOURCE_DIR}/docs"
     "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/ios"
     "${CMAKE_BINARY_DIR}/generated/vrst_types.h"
     COMMENT "Generating Doxygen docs")
 else()

@@ -16,9 +16,11 @@ foreach(f graph.dat edges.dat geom.dat names.dat)
 endforeach()
 # Bundled read-only data: <app>/map/*.dat, mapped in place like on desktop.
 set_source_files_properties(${_map_files} PROPERTIES MACOSX_PACKAGE_LOCATION map)
+# Label fonts (downloaded by the top-level CMakeLists): <app>/fonts/*.ttf.
+set_source_files_properties(${VRST_FONT_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION fonts)
 
-add_executable(verst_ios MACOSX_BUNDLE main.mm ${_map_files})
-target_link_libraries(verst_ios PRIVATE vrst_types
+add_executable(verst_ios MACOSX_BUNDLE main.mm ${_map_files} ${VRST_FONT_FILES})
+target_link_libraries(verst_ios PRIVATE vrst_types freetype
   "-framework Foundation" "-framework CoreGraphics" "-framework UIKit" "-framework GLKit" "-framework OpenGLES" "-framework QuartzCore")
 target_include_directories(verst_ios PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(verst_ios PRIVATE -fobjc-arc -Wall -Wextra)

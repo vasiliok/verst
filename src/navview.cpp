@@ -1,12 +1,15 @@
 /// @file
-/// `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--screenshot <file.bmp>]`
+/// `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--screenshot <file.bmp>]`
 ///
 /// Draws the road network from the nav files. Web Mercator, relative to the
 /// map center in double, stored as float.
 ///
+/// With --gpx it replays a recorded GPS track: a marker moves along the track at the
+/// recorded times, multiplied by --speed, and the camera follows it.
+///
 /// Controls: drag = pan, wheel = zoom at cursor, Q/E = rotate, 1-9 = toggle
 /// road classes, O = oneway highlight, V = vertices, R = start view,
-/// F = fit map, Esc = quit.
+/// F = fit map, L = place names, Space = play/pause track, C = follow marker, Esc = quit.
 /// The same settings are in the Dear ImGui panel.
 
 #include "gl_api.h"  // glad must come before GLFW
@@ -25,6 +28,9 @@
 #include <string>
 #include <vector>
 
+#include "glyph_atlas.h"
+#include "gpx_track.h"
+#include "map_labels.h"
 #include "map_renderer.h"
 #include "map_scene.h"
 #include "nav_files.h"
@@ -32,6 +38,10 @@
 /// Everything of the navview tool: projection, camera, input, GPU buffers and the
 /// render loop. main() only parses arguments and calls run().
 namespace nav::viewer {
+
+#ifndef VRST_FONT_DIR
+#define VRST_FONT_DIR "fonts"  ///< Label font directory; CMake sets it to `<build>/fonts`.
+#endif
 
 /// Command-line options of navview, filled by main().
 struct Vrst_options {
@@ -44,6 +54,14 @@ struct Vrst_options {
   Vrst_coord center = kDefaultPoint;
   /// Start zoom in ground metres per window point (--mpp); smaller is closer.
   Vrst_float64 metres_per_point = kDefaultMetresPerPoint;
+  /// Whether --center was given; without it a --gpx track starts at its first point.
+  bool has_center = false;
+  /// GPX file to replay (--gpx); empty = no track.
+  std::string gpx;
+  /// Playback speed factor (--speed); 2 = twice the recorded speed.
+  Vrst_float64 speed = 1;
+  /// Playback start, seconds since the first track point (--track-time).
+  Vrst_float64 track_time = 0;
 };
 
 /// All viewer state: loaded data, camera, screen size, toggles and input state.
@@ -70,6 +88,12 @@ struct Vrst_app {
   bool oneway = false;
   /// Draw the vertex dots (V).
   bool show_vertices = true;
+  /// Draw place names (L).
+  bool show_labels = true;
+  /// City, town, village and hamlet labels; layout() runs every frame.
+  Vrst_map_labels labels;
+  /// SDF glyphs of every character the labels use.
+  Vrst_glyph_atlas atlas;
   /// Vertex dot size in window points; scaled by px_ratio so it looks the same on
   /// every screen.
   Vrst_float32 point_px = 2.5f;
@@ -85,6 +109,17 @@ struct Vrst_app {
   Vrst_coord start_center = kDefaultPoint;
   /// Zoom of the start view and R, ground metres per window point.
   Vrst_float64 start_metres_per_point = kDefaultMetresPerPoint;
+  /// Recorded GPS track (--gpx); empty when none was given.
+  Vrst_gpx_track track;
+  /// Playback position, seconds since the first track point.
+  Vrst_float64 track_time = 0;
+  /// Playback speed factor; 2 = twice the recorded speed.
+  Vrst_float64 track_speed = 1;
+  /// Playback running (Space). Stops by itself at the end of the track.
+  bool playing = true;
+  /// Keep the marker at the screen center (C). A map drag turns it off, so the user
+  /// can look around without fighting the camera.
+  bool follow = true;
 };
 
 /// Centers the map, zooms to fit it and resets rotation (F).
@@ -140,8 +175,16 @@ void on_key(GLFWwindow* win, int key, [[maybe_unused]] int scancode, int action,
     case GLFW_KEY_E: app.view.angle -= 5 * kPi / 180; break;
     case GLFW_KEY_O: if (action == GLFW_PRESS) app.oneway = !app.oneway; break;
     case GLFW_KEY_V: if (action == GLFW_PRESS) app.show_vertices = !app.show_vertices; break;
+    case GLFW_KEY_L: if (action == GLFW_PRESS) app.show_labels = !app.show_labels; break;
     case GLFW_KEY_R: reset_view(app); break;
     case GLFW_KEY_F: fit_view(app); break;
+    case GLFW_KEY_SPACE:
+      if (action == GLFW_PRESS && !app.track.empty()) {
+        if (!app.playing && app.track_time >= app.track.duration()) app.track_time = 0;  // replay from the start
+        app.playing = !app.playing;
+      }
+      break;
+    case GLFW_KEY_C: if (action == GLFW_PRESS) app.follow = !app.follow; break;
     default: break;
   }
 }
@@ -167,7 +210,10 @@ void on_cursor(GLFWwindow* win, Vrst_float64 x, Vrst_float64 y) {
   Vrst_app& app = *app_of(win);
   x *= app.px_ratio;
   y *= app.px_ratio;
-  if (app.dragging) pan_by(app.view, x - app.last_x, y - app.last_y);
+  if (app.dragging) {
+    pan_by(app.view, x - app.last_x, y - app.last_y);
+    app.follow = false;
+  }
   app.last_x = x;
   app.last_y = y;
 }
@@ -230,6 +276,11 @@ void draw_panel(Vrst_app& app) {
 
   ImGui::SeparatorText("Display");
   ImGui::Checkbox("Oneway highlight (O)", &app.oneway);
+  ImGui::Checkbox("Place names (L)", &app.show_labels);
+  if (app.show_labels) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu / %zu", app.labels.placed(), app.labels.size());
+  }
   ImGui::Checkbox("Vertices (V)", &app.show_vertices);
   if (app.show_vertices) {
     ImGui::SliderFloat("Dot size", &app.point_px, 1.0f, 8.0f, "%.1f");
@@ -241,6 +292,27 @@ void draw_panel(Vrst_app& app) {
   if (ImGui::Button("Start view (R)")) reset_view(app);
   ImGui::SameLine();
   if (ImGui::Button("Fit map (F)")) fit_view(app);
+
+  if (!app.track.empty()) {
+    ImGui::SeparatorText("GPS track");
+    const Vrst_track_sample ts = app.track.sample(app.track_time);
+    const int t = int(app.track_time), d = int(app.track.duration());
+    ImGui::Text("time   %02d:%02d / %02d:%02d   point %zu / %zu", t / 60, t % 60, d / 60, d % 60, ts.index + 1,
+                app.track.points().size());
+    ImGui::Text("speed  %.0f km/h", ts.speed_kmh);
+    Vrst_float32 tf = Vrst_float32(app.track_time);
+    if (ImGui::SliderFloat("Time", &tf, 0.0f, Vrst_float32(app.track.duration()), "%.0f s")) app.track_time = tf;
+    Vrst_float32 sp = Vrst_float32(app.track_speed);
+    if (ImGui::SliderFloat("Speed", &sp, 0.25f, 32.0f, "x%.2g", ImGuiSliderFlags_Logarithmic)) app.track_speed = sp;
+    if (ImGui::Button(app.playing ? "Pause (Space)" : "Play (Space)")) {
+      if (!app.playing && app.track_time >= app.track.duration()) app.track_time = 0;
+      app.playing = !app.playing;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Restart")) app.track_time = 0;
+    ImGui::SameLine();
+    ImGui::Checkbox("Follow (C)", &app.follow);
+  }
 
   ImGui::End();
 }
@@ -287,6 +359,23 @@ int run(const Vrst_options& opt) {
   app.start_metres_per_point = opt.metres_per_point;
   app.data.open(opt.dir);
   app.mesh.build(app.data);
+  app.labels.build(app.data, app.mesh);
+  {
+    std::vector<std::string> fonts;
+    for (const char* f : kLabelFontFiles) fonts.push_back(std::string(VRST_FONT_DIR) + "/" + f);
+    app.atlas.build(fonts, app.labels.codepoints());
+    app.labels.measure(app.atlas);
+    std::printf("labels: %zu places, %zu glyphs, atlas %dx%d\n", app.labels.size(), app.atlas.size(),
+                app.atlas.width(), app.atlas.height());
+  }
+  if (!opt.gpx.empty()) {
+    app.track.load(opt.gpx);
+    app.track_speed = opt.speed;
+    app.track_time = opt.track_time;
+    if (!opt.has_center) app.start_center = app.track.sample(app.track_time).pos;
+    std::printf("track %s: %zu points, %.1f km, %.0f s, playing at x%g\n", opt.gpx.c_str(),
+                app.track.points().size(), app.track.length_m() / 1000, app.track.duration(), app.track_speed);
+  }
   const Vrst_uint32 V = app.data.graph().num_vertices(), S = app.data.edges().num_segments();
   const Vrst_size P = app.data.geom().points().size();
 
@@ -328,13 +417,42 @@ int run(const Vrst_options& opt) {
   // --- GPU buffers ---------------------------------------------------------
   Vrst_map_renderer renderer;
   renderer.init(app.mesh);
+  renderer.set_label_atlas(app.atlas);
+  if (!app.track.empty()) {
+    std::vector<Vrst_vec2d> world;
+    world.reserve(app.track.points().size());
+    for (const Vrst_coord& c : app.track.points()) world.push_back(app.mesh.to_world(c));
+    renderer.set_track(world);
+  }
 
   // --- loop ----------------------------------------------------------------
   Vrst_float64 fps_t0 = glfwGetTime(), fps = 0;
   int frames = 0, shot_frame = 0;
+  Vrst_float64 last_frame = glfwGetTime();
   while (!glfwWindowShouldClose(win)) {
+    const Vrst_float64 frame_t = glfwGetTime();
+    if (!app.track.empty() && app.playing && screenshot.empty()) {
+      app.track_time += (frame_t - last_frame) * app.track_speed;
+      if (app.track_time >= app.track.duration()) {
+        app.track_time = app.track.duration();
+        app.playing = false;
+      }
+    }
+    last_frame = frame_t;
+    Vrst_track_sample ts{};
+    if (!app.track.empty()) {
+      ts = app.track.sample(app.track_time);
+      if (app.follow) app.view.center = app.mesh.to_world(ts.pos);
+    }
+
     renderer.draw(app.view, app.fb_w, app.fb_h,
                   {app.class_mask, app.oneway, app.show_vertices, Vrst_float32(app.point_px * app.px_ratio)});
+    if (!app.track.empty())
+      renderer.draw_track(app.view, app.fb_w, app.fb_h, ts.index + 1, app.mesh.to_world(ts.pos),
+                          Vrst_float32(14 * app.px_ratio));
+    if (app.show_labels)
+      renderer.draw_labels(app.labels.layout(app.view, app.fb_w, app.fb_h, app.px_ratio, app.atlas), app.fb_w,
+                           app.fb_h, Vrst_float32(2.0 * app.px_ratio));
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -379,7 +497,7 @@ int run(const Vrst_options& opt) {
 
 /// navview entry point.
 /// @param argc Argument count.
-/// @param argv `<out_dir> [--center <lat> <lon>] [--mpp <metres>] [--screenshot <file.bmp>]`.
+/// @param argv `<out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--screenshot <file.bmp>]`.
 /// @return 0 on success, 1 on error, 2 on wrong usage.
 int main(int argc, char** argv) {
   nav::viewer::Vrst_options opt;
@@ -399,14 +517,21 @@ int main(int argc, char** argv) {
                std::abs(lat) <= 90 && std::abs(lon) <= 180) {
       opt.center = {static_cast<nav::Vrst_int32>(std::lround(lat * 1e7)), static_cast<nav::Vrst_int32>(std::lround(lon * 1e7))};
       i += 2;
+      opt.has_center = true;
     } else if (a == "--mpp" && i + 1 < argc && number(argv[i + 1], &opt.metres_per_point) && opt.metres_per_point > 0) {
+      ++i;
+    } else if (a == "--gpx" && i + 1 < argc) {
+      opt.gpx = argv[++i];
+    } else if (a == "--speed" && i + 1 < argc && number(argv[i + 1], &opt.speed) && opt.speed > 0) {
+      ++i;
+    } else if (a == "--track-time" && i + 1 < argc && number(argv[i + 1], &opt.track_time) && opt.track_time >= 0) {
       ++i;
     } else {
       ok = false;
     }
   }
   if (!ok) {
-    std::fprintf(stderr, "usage: %s <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--screenshot <file.bmp>]\n", argv[0]);
+    std::fprintf(stderr, "usage: %s <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--screenshot <file.bmp>]\n", argv[0]);
     return 2;
   }
   try {

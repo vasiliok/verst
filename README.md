@@ -6,7 +6,7 @@ Converts car roads from an `.osm.pbf` into four mmap-able files, validates them,
 |---|---|
 | `osm2nav` | `osm2nav <input.osm.pbf> <out_dir>` |
 | `navcheck` | `navcheck <out_dir>` (exit 0 = all PASS) · `navcheck <out_dir> --dump-way <osm_way_id>` |
-| `navview` | `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--screenshot <file.bmp>]` (screenshot: renders 3 frames, saves the last, exits) |
+| `navview` | `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--screenshot <file.bmp>]` (screenshot: renders 3 frames, saves the last, exits) |
 | iPhone app | `ios/`: UIKit + OpenGL ES 3.0, same map code as navview; see [ios/README.md](ios/README.md) |
 
 ## Desktop and mobile
@@ -34,7 +34,8 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure   # runs osm2nav + navcheck on NAV_TEST_PBF
 ```
 
-Dependencies: zlib (system). GLFW 3.4 and Dear ImGui v1.93.0 are fetched with FetchContent. The glad GL 3.3 core loader is
+Dependencies: zlib (system). GLFW 3.4, Dear ImGui v1.93.0 and FreeType 2.13.3 are fetched with FetchContent; the
+DejaVu Sans label fonts are downloaded into `<build>/fonts` at configure time. The glad GL 3.3 core loader is
 pre-generated in `third_party/glad/` (no Python needed at configure time; see its README to regenerate).
 Use `-DNAV_BUILD_VIEWER=OFF` to build without GLFW/OpenGL.
 
@@ -72,7 +73,18 @@ If the data does not contain the start point, it starts with the whole map in vi
 the CS 600 in Andorra: `navview <out_dir> --center 42.48014 1.45493 --mpp 1.1`. The window title shows counts, FPS, the
 lat/lon under the cursor and the zoom.
 
-## File format (v1)
+**Place names.** Cities, towns, villages and hamlets (OSM `place=*` nodes with a name) are labelled with text drawn
+from a FreeType signed-distance-field glyph atlas (`src/glyph_atlas.h`, DejaVu Sans) with a dark halo. Smaller
+places appear only when zoomed in (town < 250, village < 45, hamlet < 9 m per point); labels are placed by
+priority and dropped when they would overlap a more important one (`src/map_labels.h`). `L` toggles them.
+
+**GPS track replay.** `--gpx <file.gpx>` loads a recorded track (`src/gpx_track.h`, shared with the iOS app) and
+moves a red marker along it at the recorded times, multiplied by `--speed` (default 1). The track is blue, the
+driven part yellow, and the camera follows the marker. `--track-time <s>` starts later in the track; without
+`--center` the view starts at the marker. `Space` = play/pause, `C` = follow (a map drag turns it off); the panel
+has time and speed sliders. Example: `navview <bourgogne_dir> --gpx drive.gpx --speed 2 --mpp 3`.
+
+## File format (v2)
 
 Every file: `FileHeader` (64 B) + `SectionEntry[n]` (24 B each) + sections at 64-byte aligned offsets.
 Little-endian, offsets and indexes only. All four files of one import share `build_id`; the loader
@@ -83,7 +95,7 @@ refuses mixed sets. Layout is in `src/format.h`; the loader is `src/nav_files.h`
 | `graph.dat` `NAVGRAPH` | `VERTEX_COORD` Coord[V] · `FWD_FIRST_OUT` u32[V+1] · `FWD_ARCS` {head, weight ds, seg\|bit31 reversed}[A] · `BWD_FIRST_IN` u32[V+1] · `BWD_ARCS` {tail, weight, fwd_arc}[A] · `BBOX` {min,max}[1] |
 | `edges.dat` `NAVEDGES` | `SEG_ATTR` {length_dm, name_id, ref_id, class, maxspeed, flags}[S] · `SEG_VERTICES` {a,b}[S] · `SEG_OSM_WAY` u64[S] |
 | `geom.dat` `NAVGEOM` | `SEG_FIRST_POINT` u32[S+1] · `POINTS` Coord[P] (each range includes both end points) |
-| `names.dat` `NAVNAMES` | `STR_OFFSETS` u32[N+1] · `STR_DATA` UTF-8 (id 0 = empty, deduplicated) |
+| `names.dat` `NAVNAMES` | `STR_OFFSETS` u32[N+1] · `STR_DATA` UTF-8 (id 0 = empty, deduplicated) · `PLACES` Place[L] 20 B (city/town/village/hamlet label: pos, name_id, population, kind; sorted by kind, then population) |
 
 Coord = int32 lat/lon in 1e-7°. A segment is an undirected road piece between two vertices, stored in
 OSM way order (a → b). Two-way = 2 arcs, oneway = 1 arc. For `oneway=-1` the single arc runs b → a with

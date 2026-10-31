@@ -282,7 +282,8 @@ class Vrst_geom {
   std::span<const Vrst_coord> m_points;
 };
 
-/// Typed view of names.dat: street names and road refs, looked up by id (0 = "").
+/// Typed view of names.dat: street names and road refs, looked up by id (0 = ""),
+/// and the settlement labels (places()).
 /// Ids keep Vrst_seg_attr fixed-size; each distinct string is stored once.
 class Vrst_names {
  public:
@@ -295,6 +296,7 @@ class Vrst_names {
     m_data = m_file.section<char>(SectionId::StrData);
     require(m_offsets.size() >= 2, path, "STR_OFFSETS needs at least 2 entries");
     require(m_offsets.back() == m_data.size(), path, "STR_OFFSETS last != data size");
+    m_places = m_file.section<Vrst_place>(SectionId::Places);
   }
 
   /// Number of strings.
@@ -316,6 +318,9 @@ class Vrst_names {
   /// @copydoc m_data
   /// @return Span into the mapping, valid while this object is open.
   std::span<const char> data() const { return m_data; }
+  /// @copydoc m_places
+  /// @return Span into the mapping, valid while this object is open.
+  std::span<const Vrst_place> places() const { return m_places; }
 
  private:
   /// Keeps names.dat mapped.
@@ -326,6 +331,8 @@ class Vrst_names {
   /// All strings back to back, deduplicated (one copy of "Avinguda Meritxell" for
   /// all its segments).
   std::span<const char> m_data;
+  /// Settlement labels, most important first (see Vrst_place).
+  std::span<const Vrst_place> m_places;
 };
 
 /// All four files of one import, opened together.
@@ -385,7 +392,7 @@ class Vrst_nav_data {
   Vrst_edges m_edges;
   /// Shape points, needed for drawing and snapping.
   Vrst_geom m_geom;
-  /// Street names and refs.
+  /// Street names, refs and place labels.
   Vrst_names m_names;
 };
 

@@ -42,7 +42,7 @@ and run the `verst_ios` target from the generated `verst.xcodeproj` in Xcode.
 | double tap / two-finger tap | zoom in / out 2× |
 | Fit / Start | whole map / start view |
 | Roads | menu with the 9 road class groups |
-| Oneway / Dots | highlight oneway roads / show graph vertices |
+| Oneway / Dots / Names | highlight oneway roads / show graph vertices / show place names |
 
 The stats line shows V, S, A, P, the zoom relative to the whole map, metres per
 screen point and the dead-end count.

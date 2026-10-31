@@ -64,4 +64,68 @@ void main() {
 }
 )";
 
+/// Overlays (GPS track line, position marker), vertex shader. One color per draw call.
+inline constexpr const char* kOverlayVs = R"(
+layout(location = 0) in vec2 a_pos;
+uniform mat3 u_view;
+uniform float u_point_px;
+void main() {
+  vec3 p = u_view * vec3(a_pos, 1.0);
+  gl_Position = vec4(p.xy, 0.0, 1.0);
+  gl_PointSize = u_point_px;
+}
+)";
+
+/// Overlays, fragment shader. Lines use u_color; with u_round points become a filled
+/// circle in u_color with a white ring, so the marker stays visible on any road color.
+inline constexpr const char* kOverlayFs = R"(
+uniform vec4 u_color;
+uniform bool u_round;
+out vec4 o_color;
+void main() {
+  if (u_round) {
+    vec2 d = gl_PointCoord - vec2(0.5);
+    float r2 = dot(d, d);
+    if (r2 > 0.25) discard;
+    o_color = r2 > 0.12 ? vec4(1.0) : u_color;
+  } else {
+    o_color = u_color;
+  }
+}
+)";
+
+/// Label glyphs, vertex shader: framebuffer px (y down) -> NDC.
+inline constexpr const char* kTextVs = R"(
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec2 a_uv;
+uniform vec2 u_fb_size;
+out vec2 v_uv;
+void main() {
+  gl_Position = vec4(a_pos.x / u_fb_size.x * 2.0 - 1.0, 1.0 - a_pos.y / u_fb_size.y * 2.0, 0.0, 1.0);
+  v_uv = a_uv;
+}
+)";
+
+/// Label glyphs, fragment shader: signed distance field (0.5 = outline) drawn as
+/// light text with a dark halo of u_halo_px screen pixels. fwidth() gives the change
+/// of the distance per screen pixel, so edges stay sharp and the halo keeps its width
+/// at every label size.
+inline constexpr const char* kTextFs = R"(
+in vec2 v_uv;
+uniform sampler2D u_atlas;
+uniform float u_halo_px;
+uniform vec3 u_text_color;
+uniform vec3 u_halo_color;
+out vec4 o_color;
+void main() {
+  float d = texture(u_atlas, v_uv).r;
+  float w = max(fwidth(d), 1e-4);
+  float fill = smoothstep(0.5 - w, 0.5 + w, d);
+  float edge = max(0.5 - u_halo_px * w, 0.02);
+  float alpha = smoothstep(edge - w, edge + w, d);
+  if (alpha <= 0.0) discard;
+  o_color = vec4(mix(u_halo_color, u_text_color, fill), alpha);
+}
+)";
+
 }  // namespace nav::shaders

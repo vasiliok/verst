@@ -36,6 +36,39 @@ configure_file(src/vrst_types.h.in "${CMAKE_BINARY_DIR}/generated/vrst_types.h" 
 add_library(vrst_types INTERFACE)
 target_include_directories(vrst_types INTERFACE "${CMAKE_BINARY_DIR}/generated")
 
+# --- text: FreeType + label font, shared by navview and the iOS app ---------
+# Map labels are drawn from a FreeType SDF glyph atlas (src/glyph_atlas.h). FreeType
+# is built from source so desktop and iOS (cross-compiled) use the same version.
+if(NAV_BUILD_VIEWER OR IOS)
+  include(FetchContent)
+  foreach(_ft_opt FT_DISABLE_ZLIB FT_DISABLE_BZIP2 FT_DISABLE_PNG FT_DISABLE_HARFBUZZ FT_DISABLE_BROTLI)
+    set(${_ft_opt} ON CACHE BOOL "" FORCE)
+  endforeach()
+  FetchContent_Declare(freetype
+    GIT_REPOSITORY https://github.com/freetype/freetype.git
+    GIT_TAG VER-2-13-3
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(freetype)
+
+  # Label font: DejaVu Sans (free license, full Latin incl. accents), fetched once.
+  set(VRST_FONT_DIR "${CMAKE_BINARY_DIR}/fonts")
+  set(VRST_FONT_FILES "${VRST_FONT_DIR}/DejaVuSans.ttf" "${VRST_FONT_DIR}/DejaVuSans-Bold.ttf")
+  if(NOT EXISTS "${VRST_FONT_DIR}/DejaVuSans-Bold.ttf")
+    set(_dejavu "${CMAKE_BINARY_DIR}/dejavu-fonts-ttf-2.37.tar.bz2")
+    file(DOWNLOAD
+      https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.tar.bz2
+      "${_dejavu}" STATUS _dl)
+    list(GET _dl 0 _dl_code)
+    if(NOT _dl_code EQUAL 0)
+      message(FATAL_ERROR "DejaVu font download failed: ${_dl}")
+    endif()
+    file(ARCHIVE_EXTRACT INPUT "${_dejavu}" DESTINATION "${CMAKE_BINARY_DIR}/dejavu"
+      PATTERNS "*/ttf/DejaVuSans.ttf" "*/ttf/DejaVuSans-Bold.ttf")
+    file(GLOB _ttf "${CMAKE_BINARY_DIR}/dejavu/*/ttf/*.ttf")
+    file(COPY ${_ttf} DESTINATION "${VRST_FONT_DIR}")
+  endif()
+endif()
+
 # --- iOS: only the app (cmake -G Xcode -DCMAKE_SYSTEM_NAME=iOS, see ios/README.md) ---
 if(IOS)
   add_subdirectory(ios)
@@ -92,7 +125,8 @@ if(NAV_BUILD_VIEWER)
 
   find_package(OpenGL REQUIRED)
   add_executable(navview src/navview.cpp)
-  target_link_libraries(navview PRIVATE vrst_types glad imgui OpenGL::GL)
+  target_link_libraries(navview PRIVATE vrst_types glad imgui freetype OpenGL::GL)
+  target_compile_definitions(navview PRIVATE VRST_FONT_DIR="${VRST_FONT_DIR}")
   nav_warnings(navview)
 endif()
 

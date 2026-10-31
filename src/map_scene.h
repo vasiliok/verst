@@ -1,6 +1,6 @@
 /// @file
 /// Platform-independent map drawing data shared by navview (OpenGL) and the iOS app
-/// (Metal): Web Mercator projection, road class tables, the GPU vertex format, the
+/// (OpenGL ES): Web Mercator projection, road class tables, the GPU vertex format, the
 /// 2D camera and the mesh built from the nav files.
 ///
 /// Nothing here calls a graphics API. Each front end uploads Vrst_map_mesh's arrays
@@ -169,6 +169,18 @@ inline Vrst_vec2d screen_to_world(const Vrst_view& v, int fb_w, int fb_h, Vrst_f
   return {v.center.x + d.x, v.center.y + d.y};
 }
 
+/// Screen position of a world point; the inverse of screen_to_world().
+/// @param v Camera.
+/// @param fb_w Framebuffer width in px.
+/// @param fb_h Framebuffer height in px.
+/// @param w Mercator metres relative to the map center.
+/// @return Framebuffer px, y from the top.
+inline Vrst_vec2d world_to_screen(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d w) {
+  const Vrst_float64 c = std::cos(v.angle) * v.scale, s = std::sin(v.angle) * v.scale;
+  const Vrst_float64 dx = w.x - v.center.x, dy = w.y - v.center.y;
+  return {fb_w / 2.0 + c * dx - s * dy, fb_h / 2.0 - (s * dx + c * dy)};
+}
+
 /// Moves the camera so the world point under (x, y) moves with a drag of (dx, dy).
 /// @param v Camera, changed.
 /// @param dx Drag x in framebuffer px.
@@ -309,6 +321,14 @@ class Vrst_map_mesh {
                         p.lon_e7 >= bbox.min.lon_e7 && p.lon_e7 <= bbox.max.lon_e7;
     if (!inside) return {{0, 0}, fit_scale(fb_w, fb_h), 0};
     return view_at(p, metres_per_point, px_per_point);
+  }
+
+  /// World position of a geographic point, for overlays such as a GPS track.
+  /// @param p Geographic coordinate.
+  /// @return Mercator metres relative to the map center, like the mesh vertices.
+  Vrst_vec2d to_world(Vrst_coord p) const {
+    const Vrst_vec2d m = mercator(p);
+    return {m.x - m_center.x, m.y - m_center.y};
   }
 
   /// Geographic position of a world point.

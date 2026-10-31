@@ -15,7 +15,7 @@ namespace nav {
 
 /// Layout version written to Vrst_file_header::format_version. Bump on any change to
 /// an on-disk struct or enum value; loaders refuse every other version.
-inline constexpr Vrst_uint32 kFormatVersion = 1;
+inline constexpr Vrst_uint32 kFormatVersion = 2;  // 2: names.dat Places section
 /// Section offset alignment in bytes: one cache line, and enough for any element type.
 inline constexpr Vrst_uint64 kSectionAlign = 64;
 
@@ -79,6 +79,7 @@ enum class SectionId : Vrst_uint32 {
   // names.dat
   StrOffsets = 48,    ///< uint32[N+1]
   StrData = 49,       ///< char[]
+  Places = 50,        ///< Vrst_place[L]  city/town/village/hamlet labels, by priority
 };
 
 /// First 64 bytes of every nav file.
@@ -292,6 +293,37 @@ struct Vrst_seg_vertices {
   Vrst_uint32 b;
 };
 
+// --- names.dat -------------------------------------------------------------
+
+/// Settlement size from OSM place=*, stored in Vrst_place::kind.
+/// Decides label priority, font size and the zoom from which a label is shown; a
+/// village label at country zoom would cover the map. Ordered from most to least
+/// important; values are on-disk, add new kinds before Count and bump kFormatVersion.
+enum class PlaceKind : Vrst_uint8 { City, Town, Village, Hamlet, Count };
+/// Number of place kinds: size of every per-kind table.
+inline constexpr int kPlaceKindCount = static_cast<int>(PlaceKind::Count);
+
+/// Named settlement to label on the map: an OSM node with place=city/town/village/hamlet.
+/// Roads alone do not tell where a town is or what it is called; these points are
+/// what the map labels with text. Stored in names.dat because the label text is a
+/// names.dat string. The section is sorted by kind, then by population (largest
+/// first), so a label layout that walks it in order places the important names
+/// first and drops the ones that would overlap them.
+/// Size: 20 B (checked by static_assert).
+struct Vrst_place {
+  /// Position of the place node, the label anchor.
+  Vrst_coord pos;
+  /// Name, index into the names.dat strings; never 0 (unnamed places are skipped).
+  Vrst_uint32 name_id;
+  /// population=* tag, 0 = unknown. Orders places of the same kind, so the bigger
+  /// town wins when two labels collide.
+  Vrst_uint32 population;
+  /// PlaceKind.
+  Vrst_uint8 kind;
+  /// Zero. Keeps the size a multiple of 4.
+  Vrst_uint8 reserved[3];
+};
+
 static_assert(sizeof(Vrst_file_header) == 64);
 static_assert(sizeof(Vrst_section_entry) == 24);
 static_assert(sizeof(Vrst_coord) == 8);
@@ -300,5 +332,6 @@ static_assert(sizeof(Vrst_fwd_arc) == 12);
 static_assert(sizeof(Vrst_bwd_arc) == 12);
 static_assert(sizeof(Vrst_seg_attr) == 16);
 static_assert(sizeof(Vrst_seg_vertices) == 8);
+static_assert(sizeof(Vrst_place) == 20);
 
 }  // namespace nav

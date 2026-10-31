@@ -93,14 +93,20 @@ class Vrst_osm_way {
   std::span<const Vrst_osm_tag> m_tags;
 };
 
-/// One OSM node as delivered by Vrst_osm_source: id and position only.
-/// Tags are left out: the car graph needs no node tags yet (barriers and traffic
-/// signals may come later).
+/// One OSM node as delivered by Vrst_osm_source: id, position and the few tags the
+/// converter uses. Other tags are left out: the car graph needs no node tags yet
+/// (barriers and traffic signals may come later).
 struct Vrst_osm_node {
   /// OSM node id, matched against the sorted road-node refs.
   Vrst_uint64 id;
   /// Position in 1e-7 degrees, already in file format.
   Vrst_coord coord;
+  /// place=* value ("" if none); settlements become map labels (Vrst_place).
+  std::string_view place;
+  /// name=* value ("" if none); the label text of a place.
+  std::string_view name;
+  /// population=* value ("" if none); orders labels of the same kind.
+  std::string_view population;
 };
 
 /// Abstract OSM input, read in passes: header bbox, then all ways, then all nodes.
@@ -163,7 +169,14 @@ class Vrst_osmium_source final : public Vrst_osm_source {
       for (const osmium::Node& n : buffer.select<osmium::Node>()) {
         const osmium::Location loc = n.location();
         if (!loc.valid()) continue;
-        fn(Vrst_osm_node{static_cast<Vrst_uint64>(n.id()), Vrst_coord{loc.y(), loc.x()}});
+        const osmium::TagList& tags = n.tags();
+        auto tag = [&](const char* key) {
+          const char* v = tags.get_value_by_key(key);
+          return v ? std::string_view(v) : std::string_view();
+        };
+        // The string views point into the buffer and are valid during fn only.
+        fn(Vrst_osm_node{static_cast<Vrst_uint64>(n.id()), Vrst_coord{loc.y(), loc.x()}, tag("place"), tag("name"),
+                         tag("population")});
       }
     }
     reader.close();
@@ -377,6 +390,29 @@ class Vrst_string_pool {
   /// because the map has no order.
   std::vector<std::string> m_strings;
 };
+
+/// Place kind of a place=* value.
+/// @param v Tag value.
+/// @return Kind, or nullopt for values that get no label (suburb, locality, ...).
+std::optional<PlaceKind> place_kind(std::string_view v) {
+  if (v == "city") return PlaceKind::City;
+  if (v == "town") return PlaceKind::Town;
+  if (v == "village") return PlaceKind::Village;
+  if (v == "hamlet") return PlaceKind::Hamlet;
+  return std::nullopt;
+}
+
+/// Leading digits of a population=* value ("12 345" and "12,345" count as 12345).
+/// @param v Tag value.
+/// @return Population, 0 when the value has no digits.
+Vrst_uint32 parse_population(std::string_view v) {
+  Vrst_uint64 n = 0;
+  for (char c : v) {
+    if (c >= '0' && c <= '9') n = std::min<Vrst_uint64>(n * 10 + Vrst_uint64(c - '0'), 0xFFFF'FFFFu);
+    else if (c != ' ' && c != ',' && c != '.') break;
+  }
+  return static_cast<Vrst_uint32>(n);
+}
 
 /// Coordinate of a road node not found in pass 2 (way refers to a node outside the
 /// extract). Such nodes split the way, so no segment spans the missing point.
@@ -641,8 +677,13 @@ int run(const std::string& input, const fs::path& out_dir) {
   Vrst_bbox extent{{std::numeric_limits<Vrst_int32>::max(), std::numeric_limits<Vrst_int32>::max()},
               {std::numeric_limits<Vrst_int32>::min(), std::numeric_limits<Vrst_int32>::min()}};
   Vrst_uint64 nodes_read = 0;
+  std::vector<Vrst_place> places;
   source.for_each_node([&](const Vrst_osm_node& n) {
     ++nodes_read;
+    if (!n.place.empty() && !n.name.empty()) {
+      if (const std::optional<PlaceKind> k = place_kind(n.place))
+        places.push_back({n.coord, names.intern(n.name), parse_population(n.population), Vrst_uint8(*k), {}});
+    }
     extent.min.lat_e7 = std::min(extent.min.lat_e7, n.coord.lat_e7);
     extent.min.lon_e7 = std::min(extent.min.lon_e7, n.coord.lon_e7);
     extent.max.lat_e7 = std::max(extent.max.lat_e7, n.coord.lat_e7);
@@ -651,6 +692,12 @@ int run(const std::string& input, const fs::path& out_dir) {
     if (it != node_ids.end() && *it == n.id) node_coord[it - node_ids.begin()] = n.coord;
   });
   std::vector<Vrst_uint64>().swap(node_ids);
+  // Label priority order: kind, then population, then name id for a stable order.
+  std::sort(places.begin(), places.end(), [](const Vrst_place& a, const Vrst_place& b) {
+    if (a.kind != b.kind) return a.kind < b.kind;
+    if (a.population != b.population) return a.population > b.population;
+    return a.name_id < b.name_id;
+  });
   timer.phase("pass 2 (nodes)");
 
   // --- segments ------------------------------------------------------------
@@ -828,6 +875,7 @@ int run(const std::string& input, const fs::path& out_dir) {
   Vrst_file_writer strs(FileType::Names, build_id);
   strs.add(SectionId::StrOffsets, str_offsets);
   strs.add(SectionId::StrData, str_data);
+  strs.add(SectionId::Places, places);
 
   const Vrst_uint64 sz_graph = graph.write(out_dir / file_name_for(FileType::Graph));
   const Vrst_uint64 sz_edges = edges.write(out_dir / file_name_for(FileType::Edges));
@@ -851,6 +899,12 @@ int run(const std::string& input, const fs::path& out_dir) {
   std::printf("arcs A               %12u\n", A);
   std::printf("points P             %12zu\n", points.size());
   std::printf("names N              %12zu\n", names.strings().size());
+  {
+    Vrst_size per_kind[kPlaceKindCount] = {};
+    for (const Vrst_place& pl : places) ++per_kind[pl.kind];
+    std::printf("places L             %12zu  (%zu city, %zu town, %zu village, %zu hamlet)\n", places.size(),
+                per_kind[0], per_kind[1], per_kind[2], per_kind[3]);
+  }
   std::printf("road length          %12.1f km\n", total_m / 1000);
   std::printf("node extent          lat [%.7f, %.7f] lon [%.7f, %.7f]\n", extent.min.lat_e7 * 1e-7,
               extent.max.lat_e7 * 1e-7, extent.min.lon_e7 * 1e-7, extent.max.lon_e7 * 1e-7);

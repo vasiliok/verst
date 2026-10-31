@@ -19,6 +19,8 @@
 #include <cmath>
 #include <exception>
 
+#include "glyph_atlas.h"
+#include "map_labels.h"
 #include "map_renderer.h"
 #include "map_scene.h"
 #include "nav_files.h"
@@ -37,6 +39,12 @@ using namespace nav;
   Vrst_map_mesh _mesh;
   /// Shared OpenGL renderer; initialised once the context exists.
   Vrst_map_renderer _renderer;
+  /// Place name labels, laid out on every draw.
+  Vrst_map_labels _labels;
+  /// SDF glyphs of the label characters, from the bundled fonts.
+  Vrst_glyph_atlas _atlas;
+  /// Draw place names (Names button).
+  BOOL _showLabels;
   /// Current camera.
   Vrst_view _view;
   /// Display switches changed by the toolbar.
@@ -64,6 +72,7 @@ using namespace nav;
   /// Toggle buttons, kept to update their tint.
   UIBarButtonItem* _onewayItem;
   UIBarButtonItem* _dotsItem;   ///< Vertex dots toggle; see _onewayItem.
+  UIBarButtonItem* _namesItem;  ///< Place names toggle; see _onewayItem.
   UIBarButtonItem* _roadsItem;  ///< Road class menu button.
   /// Load error shown instead of the map, or nil.
   NSString* _error;
@@ -95,8 +104,16 @@ using namespace nav;
     NSString* dir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"map"];
     _data.open(dir.UTF8String);
     _mesh.build(_data);
+    _labels.build(_data, _mesh);
+    NSString* fontDir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"fonts"];
+    std::vector<std::string> fonts;
+    for (const char* f : kLabelFontFiles) fonts.push_back(std::string(fontDir.UTF8String) + "/" + f);
+    _atlas.build(fonts, _labels.codepoints());
+    _labels.measure(_atlas);
+    _showLabels = YES;
     _loaded = YES;
     _renderer.init(_mesh);
+    _renderer.set_label_atlas(_atlas);
     _glReady = YES;
   } catch (const std::exception& e) {
     _error = [NSString stringWithFormat:@"cannot load map: %s", e.what()];
@@ -180,6 +197,9 @@ using namespace nav;
   }
   _opt.point_px = Vrst_float32(2.5 * [self pxPerPoint]);
   _renderer.draw(_view, w, h, _opt);
+  if (_showLabels)
+    _renderer.draw_labels(_labels.layout(_view, w, h, [self pxPerPoint], _atlas), w, h,
+                          Vrst_float32(2.0 * [self pxPerPoint]));
   [self updateStats];
 }
 
@@ -222,9 +242,11 @@ using namespace nav;
                                                 target:self action:@selector(onOneway)];
   _dotsItem = [[UIBarButtonItem alloc] initWithTitle:@"Dots" style:UIBarButtonItemStylePlain
                                               target:self action:@selector(onDots)];
+  _namesItem = [[UIBarButtonItem alloc] initWithTitle:@"Names" style:UIBarButtonItemStylePlain
+                                               target:self action:@selector(onNames)];
   UIBarButtonItem* flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
                                                                         target:nil action:nil];
-  bar.items = @[ fit, flex, start, flex, _roadsItem, flex, _onewayItem, flex, _dotsItem ];
+  bar.items = @[ fit, flex, start, flex, _roadsItem, flex, _onewayItem, flex, _dotsItem, flex, _namesItem ];
   [self.view addSubview:bar];
 
   UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
@@ -265,6 +287,7 @@ using namespace nav;
 - (void)updateToggles {
   _onewayItem.tintColor = _opt.oneway ? UIColor.systemPinkColor : UIColor.lightGrayColor;
   _dotsItem.tintColor = _opt.show_vertices ? UIColor.systemPinkColor : UIColor.lightGrayColor;
+  _namesItem.tintColor = _showLabels ? UIColor.systemPinkColor : UIColor.lightGrayColor;
 }
 
 /// Refreshes the stats line: counts, zoom and ground resolution, or the load error.
@@ -303,6 +326,13 @@ using namespace nav;
 /// Toolbar: vertex dots.
 - (void)onDots {
   _opt.show_vertices = !_opt.show_vertices;
+  [self updateToggles];
+  [self redraw];
+}
+
+/// Toolbar: place names.
+- (void)onNames {
+  _showLabels = !_showLabels;
   [self updateToggles];
   [self redraw];
 }

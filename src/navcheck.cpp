@@ -287,7 +287,8 @@ void check_coords(const Vrst_nav_data& d) {
 }
 
 /// Checks segment attributes and names: name/ref ids exist, road classes are valid,
-/// string offsets never decrease and string 0 is empty.
+/// string offsets never decrease and string 0 is empty. Places must have a name, a
+/// valid kind, a position inside the bbox, and be sorted by kind.
 /// @param d Opened files.
 void check_attrs(const Vrst_nav_data& d) {
   const Vrst_uint32 N = d.names().size();
@@ -301,6 +302,18 @@ void check_attrs(const Vrst_nav_data& d) {
   bool offs_ok = d.names().offsets().front() == 0 && d.names().offsets()[1] == 0;
   for (Vrst_size i = 1; i < d.names().offsets().size(); ++i) offs_ok &= d.names().offsets()[i] >= d.names().offsets()[i - 1];
   report(offs_ok, "STR_OFFSETS monotonic, id 0 empty", fmt("data %zu bytes", d.names().data().size()));
+
+  const Vrst_bbox bb = d.graph().bbox();
+  Vrst_uint64 bad_place = 0;
+  Vrst_uint8 prev_kind = 0;
+  for (const Vrst_place& pl : d.names().places()) {
+    const bool inside = pl.pos.lat_e7 >= bb.min.lat_e7 && pl.pos.lat_e7 <= bb.max.lat_e7 &&
+                        pl.pos.lon_e7 >= bb.min.lon_e7 && pl.pos.lon_e7 <= bb.max.lon_e7;
+    bad_place += pl.name_id == 0 || pl.name_id >= N || pl.kind >= kPlaceKindCount || pl.kind < prev_kind || !inside;
+    prev_kind = pl.kind;
+  }
+  report(bad_place == 0, "places named, valid kind, sorted, inside bbox",
+         fmt("%zu places, %" PRIu64 " bad", d.names().places().size(), bad_place));
 }
 
 /// Prints sizes, road length, dead ends and connected components. main() runs it

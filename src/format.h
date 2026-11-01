@@ -15,20 +15,21 @@ namespace nav {
 
 /// Layout version written to Vrst_file_header::format_version. Bump on any change to
 /// an on-disk struct or enum value; loaders refuse every other version.
-inline constexpr Vrst_uint32 kFormatVersion = 2;  // 2: names.dat Places section
+inline constexpr Vrst_uint32 kFormatVersion = 3;  // 2: names.dat Places section, 3: map.dat
 /// Section offset alignment in bytes: one cache line, and enough for any element type.
 inline constexpr Vrst_uint64 kSectionAlign = 64;
 
-/// Which of the four nav files a file is; stored in Vrst_file_header::file_type.
+/// Which nav file a file is; stored in Vrst_file_header::file_type.
 /// Each loader states the type it expects, so passing edges.dat where graph.dat is
 /// wanted fails at open() instead of misreading sections. Starts at 1 so a
 /// zero-filled header never matches any type.
-enum class FileType : Vrst_uint32 { Graph = 1, Edges = 2, Geom = 3, Names = 4 };
+enum class FileType : Vrst_uint32 { Graph = 1, Edges = 2, Geom = 3, Names = 4, Map = 5 };
 
 inline constexpr char kMagicGraph[8] = {'N', 'A', 'V', 'G', 'R', 'A', 'P', 'H'};  ///< graph.dat magic.
 inline constexpr char kMagicEdges[8] = {'N', 'A', 'V', 'E', 'D', 'G', 'E', 'S'};  ///< edges.dat magic.
 inline constexpr char kMagicGeom[8] = {'N', 'A', 'V', 'G', 'E', 'O', 'M', '\0'};  ///< geom.dat magic.
 inline constexpr char kMagicNames[8] = {'N', 'A', 'V', 'N', 'A', 'M', 'E', 'S'};  ///< names.dat magic.
+inline constexpr char kMagicMap[8] = {'N', 'A', 'V', 'M', 'A', 'P', '\0', '\0'};  ///< map.dat magic.
 
 /// Magic bytes of a file type.
 /// @param t File type.
@@ -39,19 +40,21 @@ inline const char* magic_for(FileType t) {
     case FileType::Edges: return kMagicEdges;
     case FileType::Geom: return kMagicGeom;
     case FileType::Names: return kMagicNames;
+    case FileType::Map: return kMagicMap;
   }
   return nullptr;
 }
 
 /// File name of a file type inside an output directory.
 /// @param t File type.
-/// @return "graph.dat", "edges.dat", "geom.dat" or "names.dat"; nullptr for an unknown type.
+/// @return "graph.dat", "edges.dat", "geom.dat", "names.dat" or "map.dat"; nullptr for an unknown type.
 inline const char* file_name_for(FileType t) {
   switch (t) {
     case FileType::Graph: return "graph.dat";
     case FileType::Edges: return "edges.dat";
     case FileType::Geom: return "geom.dat";
     case FileType::Names: return "names.dat";
+    case FileType::Map: return "map.dat";
   }
   return nullptr;
 }
@@ -59,7 +62,7 @@ inline const char* file_name_for(FileType t) {
 /// Id of one array inside a nav file, stored in Vrst_section_entry::id.
 /// Readers look sections up by id, never by position, so sections can be added or
 /// reordered without breaking old readers. Ids are grouped by file in blocks of 16
-/// (graph 1.., edges 16.., geom 32.., names 48..) so a new section fits next to its
+/// (graph 1.., edges 16.., geom 32.., names 48.., map 64..) so a new section fits next to its
 /// file without renumbering. Values are on-disk: never change an existing one.
 enum class SectionId : Vrst_uint32 {
   // graph.dat
@@ -80,6 +83,16 @@ enum class SectionId : Vrst_uint32 {
   StrOffsets = 48,    ///< uint32[N+1]
   StrData = 49,       ///< char[]
   Places = 50,        ///< Vrst_place[L]  city/town/village/hamlet labels, by priority
+  // map.dat
+  AreaFirstPoint = 64,  ///< uint32[R+1]  first point of each area in AREA_POINTS
+  AreaFirstIndex = 65,  ///< uint32[R+1]  first triangle index of each area in AREA_INDICES
+  AreaKinds = 66,       ///< uint8[R]     AreaKind
+  AreaPoints = 67,      ///< Vrst_coord[]  outline points, outer ring first
+  AreaIndices = 68,     ///< uint32[]     triangles, 3 per triangle, relative to the area's first point
+  LineFirstPoint = 69,  ///< uint32[L+1]  first point of each line in LINE_POINTS
+  LineAttr = 70,        ///< Vrst_line_attr[L]
+  LinePoints = 71,      ///< Vrst_coord[]
+  AreaOuterSize = 72,   ///< uint32[R]    points of the outer ring; the rest are holes
 };
 
 /// First 64 bytes of every nav file.
@@ -324,6 +337,56 @@ struct Vrst_place {
   Vrst_uint8 reserved[3];
 };
 
+// --- map.dat ---------------------------------------------------------------
+
+/// What an area of map.dat is, stored in AREA_KIND. Drawing-only layers: routing never
+/// reads map.dat. Ordered bottom to top as the renderer draws them, so sorting areas
+/// by kind is the draw order. Values are on-disk; add new kinds before Count and bump
+/// kFormatVersion.
+enum class AreaKind : Vrst_uint8 {
+  Farmland,     ///< landuse=farmland/farmyard/orchard/vineyard
+  Meadow,       ///< landuse=meadow/grass, natural=grassland/scrub/heath
+  Residential,  ///< landuse=residential
+  Industrial,   ///< landuse=industrial/commercial/retail/railway
+  Park,         ///< leisure=park/garden/pitch, landuse=cemetery/recreation_ground
+  Forest,       ///< landuse=forest, natural=wood
+  Water,        ///< natural=water, waterway=riverbank, landuse=reservoir/basin
+  Building,     ///< building=*, usually reduced to its smallest rotated rectangle
+  Count
+};
+/// Number of area kinds: size of every per-kind table.
+inline constexpr int kAreaKindCount = static_cast<int>(AreaKind::Count);
+
+/// What a line of map.dat is, stored in Vrst_line_attr::kind. Roads are not here: they
+/// are the routing segments of geom.dat. Values are on-disk.
+enum class LineKind : Vrst_uint8 {
+  Stream,     ///< waterway=stream/ditch/drain
+  River,      ///< waterway=river/canal
+  Rail,       ///< railway=rail/narrow_gauge
+  MinorRail,  ///< railway=light_rail/tram/subway
+  Count
+};
+/// Number of line kinds: size of every per-kind table.
+inline constexpr int kLineKindCount = static_cast<int>(LineKind::Count);
+
+/// Bit flags of a map.dat line, stored in Vrst_line_attr::flags. Same meaning as the
+/// kSegBridge / kSegTunnel road flags, so the renderer treats railways and roads alike.
+enum LineFlags : Vrst_uint8 {
+  kLineBridge = 1u << 0,  ///< bridge=* except no: drawn above what it crosses, with a casing
+  kLineTunnel = 1u << 1,  ///< tunnel=* except no: drawn faded below everything else
+};
+
+/// Attributes of one map.dat line (river, railway), indexed by line id.
+/// Size: 4 B (checked by static_assert).
+struct Vrst_line_attr {
+  /// LineKind.
+  Vrst_uint8 kind;
+  /// LineFlags.
+  Vrst_uint8 flags;
+  /// Zero. Keeps the size a multiple of 4.
+  Vrst_uint16 reserved;
+};
+
 static_assert(sizeof(Vrst_file_header) == 64);
 static_assert(sizeof(Vrst_section_entry) == 24);
 static_assert(sizeof(Vrst_coord) == 8);
@@ -333,5 +396,6 @@ static_assert(sizeof(Vrst_bwd_arc) == 12);
 static_assert(sizeof(Vrst_seg_attr) == 16);
 static_assert(sizeof(Vrst_seg_vertices) == 8);
 static_assert(sizeof(Vrst_place) == 20);
+static_assert(sizeof(Vrst_line_attr) == 4);
 
 }  // namespace nav

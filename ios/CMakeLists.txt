@@ -1,9 +1,9 @@
-# verst iPhone app: UIKit shell + OpenGL ES 3.0 through GLKView, drawing with the
-# shared src/map_scene.h and src/map_renderer.h. Configured from the top-level
-# CMakeLists.txt when CMAKE_SYSTEM_NAME is iOS.
+# verst iPhone app: UIKit shell + OpenGL ES 3.0 through GLKView, drawing the tiled
+# map with the shared src/map_tiles.h and src/tile_renderer.h. Configured from the
+# top-level CMakeLists.txt when CMAKE_SYSTEM_NAME is iOS.
 enable_language(OBJCXX)
 
-set(VERST_MAP_DIR "" CACHE PATH "Directory with graph.dat, edges.dat, geom.dat, names.dat to bundle")
+set(VERST_MAP_DIR "" CACHE PATH "Directory with graph.dat, edges.dat, geom.dat, names.dat (and map.dat) to bundle")
 set(VERST_BUNDLE_ID "com.verst.app" CACHE STRING "iOS bundle identifier")
 set(VERST_IOS_TEAM "" CACHE STRING "Apple development team id; empty = unsigned (Simulator only)")
 
@@ -14,6 +14,12 @@ foreach(f graph.dat edges.dat geom.dat names.dat)
   endif()
   list(APPEND _map_files "${VERST_MAP_DIR}/${f}")
 endforeach()
+# Drawing-only layers (water, forest, buildings, railways); without it the app draws roads only.
+if(EXISTS "${VERST_MAP_DIR}/map.dat")
+  list(APPEND _map_files "${VERST_MAP_DIR}/map.dat")
+else()
+  message(WARNING "VERST_MAP_DIR has no map.dat: the app will draw roads only")
+endif()
 # Bundled read-only data: <app>/map/*.dat, mapped in place like on desktop.
 set_source_files_properties(${_map_files} PROPERTIES MACOSX_PACKAGE_LOCATION map)
 # Label fonts (downloaded by the top-level CMakeLists): <app>/fonts/*.ttf.
@@ -21,8 +27,10 @@ set_source_files_properties(${VRST_FONT_FILES} PROPERTIES MACOSX_PACKAGE_LOCATIO
 
 add_executable(verst_ios MACOSX_BUNDLE main.mm ${_map_files} ${VRST_FONT_FILES})
 target_link_libraries(verst_ios PRIVATE vrst_types freetype
-  "-framework Foundation" "-framework CoreGraphics" "-framework UIKit" "-framework GLKit" "-framework OpenGLES" "-framework QuartzCore")
+  "-framework Foundation" "-framework CoreGraphics" "-framework UIKit" "-framework GLKit" "-framework OpenGLES"
+  "-framework QuartzCore" "-framework CoreLocation")
 target_include_directories(verst_ios PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_include_directories(verst_ios SYSTEM PRIVATE "${earcut_SOURCE_DIR}/include")
 target_compile_options(verst_ios PRIVATE -fobjc-arc -Wall -Wextra)
 set_target_properties(verst_ios PROPERTIES
   OUTPUT_NAME Verst

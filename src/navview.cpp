@@ -1,15 +1,17 @@
 /// @file
-/// `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--screenshot <file.bmp>]`
+/// `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--rotate <deg>] [--tile-borders] [--screenshot <file.bmp>]`
 ///
-/// Draws the road network from the nav files. Web Mercator, relative to the
-/// map center in double, stored as float.
+/// Draws the map from the nav files: roads, and with map.dat water, forest, land
+/// use, buildings, rivers and railways. The map is cut into Web Mercator tiles
+/// (map_tiles.h) built on worker threads; only the tiles on screen are drawn.
 ///
 /// With --gpx it replays a recorded GPS track: a marker moves along the track at the
 /// recorded times, multiplied by --speed, and the camera follows it.
 ///
 /// Controls: drag = pan, wheel = zoom at cursor, Q/E = rotate, 1-9 = toggle
 /// road classes, O = oneway highlight, V = vertices, R = start view,
-/// F = fit map, L = place names, Space = play/pause track, C = follow marker, Esc = quit.
+/// F = fit map, L = place names, A = areas, B = buildings, W = rivers, G = railways,
+/// T = tile borders, Space = play/pause track, C = follow marker, Esc = quit.
 /// The same settings are in the Dear ImGui panel.
 
 #include "gl_api.h"  // glad must come before GLFW
@@ -20,12 +22,16 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <string>
+#include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "glyph_atlas.h"
@@ -33,7 +39,9 @@
 #include "map_labels.h"
 #include "map_renderer.h"
 #include "map_scene.h"
+#include "map_tiles.h"
 #include "nav_files.h"
+#include "tile_renderer.h"
 
 /// Everything of the navview tool: projection, camera, input, GPU buffers and the
 /// render loop. main() only parses arguments and calls run().
@@ -62,6 +70,10 @@ struct Vrst_options {
   Vrst_float64 speed = 1;
   /// Playback start, seconds since the first track point (--track-time).
   Vrst_float64 track_time = 0;
+  /// Start rotation in degrees counter-clockwise (--rotate).
+  Vrst_float64 rotate_deg = 0;
+  /// Start with the tile borders shown (--tile-borders), for screenshots.
+  bool tile_borders = false;
 };
 
 /// All viewer state: loaded data, camera, screen size, toggles and input state.
@@ -70,8 +82,18 @@ struct Vrst_options {
 struct Vrst_app {
   /// Mapped nav files; kept open for name lookups and the cursor position.
   Vrst_nav_data data;
-  /// GPU-ready geometry, map center and extent; shared with the iOS app.
+  /// Map center and extent (the world origin); its GPU arrays are not built.
   Vrst_map_mesh mesh;
+  /// Which roads, areas and lines touch which tile, per level.
+  Vrst_tile_index tiles;
+  /// Layer switches and line options for the tile renderer.
+  Vrst_tile_draw_options tile_opt;
+  /// Tile level drawn in the last frame (index into kTileLevels).
+  int level = 0;
+  /// Tiles on screen in the last frame.
+  Vrst_size tiles_visible = 0;
+  /// Tiles on screen that were not built yet.
+  Vrst_size tiles_missing = 0;
   /// Current pan / zoom / rotation.
   Vrst_view view;
   /// Framebuffer size in pixels. Differs from the window size on HiDPI; the viewport
@@ -86,8 +108,8 @@ struct Vrst_app {
   Vrst_uint32 class_mask = kAllClasses;
   /// Highlight oneway segments (O).
   bool oneway = false;
-  /// Draw the vertex dots (V).
-  bool show_vertices = true;
+  /// Draw the vertex dots (V). Off by default: on a full map they hide the streets.
+  bool show_vertices = false;
   /// Draw place names (L).
   bool show_labels = true;
   /// City, town, village and hamlet labels; layout() runs every frame.
@@ -153,8 +175,9 @@ void update_size(GLFWwindow* win, Vrst_app& app) {
   app.px_ratio = ww > 0 ? Vrst_float64(app.fb_w) / ww : 1.0;
 }
 
-/// GLFW key callback: 1-9 toggle class groups, Q/E rotate, O/V toggle highlights,
-/// R/F set the view, Esc quits. Ignored while ImGui has keyboard focus.
+/// GLFW key callback: 1-9 toggle class groups, Q/E rotate, O/V/L toggle highlights
+/// and names, A/B/W/G toggle map layers, T tile borders, R/F set the view, Esc quits.
+/// Ignored while ImGui has keyboard focus.
 /// @param win Window.
 /// @param key GLFW key code.
 /// @param scancode Platform scancode; unused.
@@ -176,6 +199,11 @@ void on_key(GLFWwindow* win, int key, [[maybe_unused]] int scancode, int action,
     case GLFW_KEY_O: if (action == GLFW_PRESS) app.oneway = !app.oneway; break;
     case GLFW_KEY_V: if (action == GLFW_PRESS) app.show_vertices = !app.show_vertices; break;
     case GLFW_KEY_L: if (action == GLFW_PRESS) app.show_labels = !app.show_labels; break;
+    case GLFW_KEY_A: if (action == GLFW_PRESS) app.tile_opt.areas = !app.tile_opt.areas; break;
+    case GLFW_KEY_B: if (action == GLFW_PRESS) app.tile_opt.buildings = !app.tile_opt.buildings; break;
+    case GLFW_KEY_W: if (action == GLFW_PRESS) app.tile_opt.water_lines = !app.tile_opt.water_lines; break;
+    case GLFW_KEY_G: if (action == GLFW_PRESS) app.tile_opt.railways = !app.tile_opt.railways; break;
+    case GLFW_KEY_T: if (action == GLFW_PRESS) app.tile_opt.borders = !app.tile_opt.borders; break;
     case GLFW_KEY_R: reset_view(app); break;
     case GLFW_KEY_F: fit_view(app); break;
     case GLFW_KEY_SPACE:
@@ -256,6 +284,7 @@ void draw_panel(Vrst_app& app) {
   ImGui::Text("V %u   S %u   A %u   P %zu", g.num_vertices(), app.data.edges().num_segments(), g.num_arcs(),
               app.data.geom().points().size());
   ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
+  ImGui::Text("tiles   z%d  %zu on screen, %zu loading", kTileLevels[app.level].z, app.tiles_visible, app.tiles_missing);
   const Vrst_vec2d ll = cursor_latlon(app);
   ImGui::Text("cursor  %.6f, %.6f", ll.x, ll.y);
   const Vrst_float64 center_lat = inverse_mercator(app.mesh.center()).x * kPi / 180;
@@ -274,6 +303,16 @@ void draw_panel(Vrst_app& app) {
     if (ImGui::Checkbox(label, &on)) app.class_mask ^= kClassGroups[i];
   }
 
+  ImGui::SeparatorText("Map layers");
+  ImGui::Checkbox("Areas (A)", &app.tile_opt.areas);
+  ImGui::SameLine();
+  ImGui::Checkbox("Buildings (B)", &app.tile_opt.buildings);
+  ImGui::Checkbox("Rivers (W)", &app.tile_opt.water_lines);
+  ImGui::SameLine();
+  ImGui::Checkbox("Railways (G)", &app.tile_opt.railways);
+  ImGui::Checkbox("Tile borders (T)", &app.tile_opt.borders);
+  if (!app.data.has_map()) ImGui::TextDisabled("no map.dat: roads only");
+
   ImGui::SeparatorText("Display");
   ImGui::Checkbox("Oneway highlight (O)", &app.oneway);
   ImGui::Checkbox("Place names (L)", &app.show_labels);
@@ -284,7 +323,7 @@ void draw_panel(Vrst_app& app) {
   ImGui::Checkbox("Vertices (V)", &app.show_vertices);
   if (app.show_vertices) {
     ImGui::SliderFloat("Dot size", &app.point_px, 1.0f, 8.0f, "%.1f");
-    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1), "dead ends: %u", app.mesh.dead_ends());
+    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1), "dead ends: %zu", app.tiles.dead_ends());
   }
   Vrst_float32 deg = static_cast<Vrst_float32>(app.view.angle * 180 / kPi);
   deg = std::remainder(deg, 360.0f);
@@ -358,7 +397,14 @@ int run(const Vrst_options& opt) {
   app.start_center = opt.center;
   app.start_metres_per_point = opt.metres_per_point;
   app.data.open(opt.dir);
-  app.mesh.build(app.data);
+  app.mesh.build(app.data, false);
+  {
+    const auto t0 = std::chrono::steady_clock::now();
+    app.tiles.build(app.data);
+    const Vrst_float64 ms = std::chrono::duration<Vrst_float64, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("tiles: index %.0f ms, %zu z14 tiles%s\n", ms, app.tiles.size(0),
+                app.data.has_map() ? "" : " (no map.dat: roads only)");
+  }
   app.labels.build(app.data, app.mesh);
   {
     std::vector<std::string> fonts;
@@ -404,6 +450,8 @@ int run(const Vrst_options& opt) {
   update_size(win, app);
   app.initial_scale = app.mesh.fit_scale(app.fb_w, app.fb_h);  // zoom 1x = whole map
   reset_view(app);
+  app.view.angle = opt.rotate_deg * kPi / 180;
+  app.tile_opt.borders = opt.tile_borders;
   std::printf("GL %s | %s\n", glGetString(GL_VERSION), glGetString(GL_RENDERER));
 
   // ImGui after our callbacks: its GLFW backend chains to them.
@@ -415,8 +463,14 @@ int run(const Vrst_options& opt) {
   ImGui_ImplOpenGL3_Init("#version 330 core");
 
   // --- GPU buffers ---------------------------------------------------------
-  Vrst_map_renderer renderer;
-  renderer.init(app.mesh);
+  Vrst_map_renderer renderer;  // GPS track and labels
+  renderer.init_overlays();
+  Vrst_tile_renderer tile_renderer;
+  tile_renderer.init();
+  const Vrst_tile_builder builder(app.data, app.tiles, app.mesh.center());
+  Vrst_tile_loader loader(builder, int(std::clamp(std::thread::hardware_concurrency(), 2u, 6u)) - 1);
+  constexpr Vrst_size kTileBudget = 384u << 20;  // GPU bytes of cached tiles
+  Vrst_uint64 frame = 0;
   renderer.set_label_atlas(app.atlas);
   if (!app.track.empty()) {
     std::vector<Vrst_vec2d> world;
@@ -427,10 +481,17 @@ int run(const Vrst_options& opt) {
 
   // --- loop ----------------------------------------------------------------
   Vrst_float64 fps_t0 = glfwGetTime(), fps = 0;
-  int frames = 0, shot_frame = 0;
+  int frames = 0, shot_frame = 0, shot_wait = 0;
+  // A screenshot also measures the render time (CPU + GPU, swap excluded) over 60
+  // frames once all tiles are in.
+  constexpr int kShotFrames = 60;
+  Vrst_float64 shot_ms = 0;  // render time summed over the measured frames, swap excluded
+  if (!screenshot.empty()) glfwSwapInterval(0);
   Vrst_float64 last_frame = glfwGetTime();
   while (!glfwWindowShouldClose(win)) {
     const Vrst_float64 frame_t = glfwGetTime();
+    if (!screenshot.empty()) glFinish();  // the previous swap must not count as render time
+    const Vrst_float64 render_t0 = glfwGetTime();
     if (!app.track.empty() && app.playing && screenshot.empty()) {
       app.track_time += (frame_t - last_frame) * app.track_speed;
       if (app.track_time >= app.track.duration()) {
@@ -445,8 +506,20 @@ int run(const Vrst_options& opt) {
       if (app.follow) app.view.center = app.mesh.to_world(ts.pos);
     }
 
-    renderer.draw(app.view, app.fb_w, app.fb_h,
-                  {app.class_mask, app.oneway, app.show_vertices, Vrst_float32(app.point_px * app.px_ratio)});
+    // Tiles: draw what is cached, ask the workers for the rest.
+    Vrst_tile_frame tf;
+    const std::vector<Vrst_uint64> draw_keys = select_tiles(tile_renderer, loader, app.tiles, app.view, app.fb_w,
+                                                            app.fb_h, app.mesh.center(), ++frame, kTileBudget, &tf);
+    app.level = tf.level;
+    app.tiles_visible = tf.visible;
+    app.tiles_missing = tf.missing;
+    const Vrst_float64 ground_mpp = ground_metres_per_point(app.view, app.mesh.center(), app.px_ratio);
+    app.tile_opt.class_mask = app.class_mask;
+    app.tile_opt.oneway = app.oneway;
+    app.tile_opt.show_vertices = app.show_vertices;
+    app.tile_opt.point_px = Vrst_float32(app.point_px * app.px_ratio);
+    app.tile_opt.px_ratio = app.px_ratio;
+    tile_renderer.draw(app.view, app.fb_w, app.fb_h, draw_keys, ground_mpp, app.tile_opt);
     if (!app.track.empty())
       renderer.draw_track(app.view, app.fb_w, app.fb_h, ts.index + 1, app.mesh.to_world(ts.pos),
                           Vrst_float32(14 * app.px_ratio));
@@ -461,7 +534,17 @@ int run(const Vrst_options& opt) {
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-    if (!screenshot.empty() && ++shot_frame == 3) {  // ImGui sizes auto-resize windows on frame 1
+    // A screenshot waits until every visible tile is built (at most ~20 s).
+    if (!screenshot.empty() && (app.tiles_missing > 0 || loader.pending() > 0) && ++shot_wait < 1200) shot_frame = 0, shot_ms = 0;
+    if (!screenshot.empty() && shot_frame >= 2) {
+      glFinish();
+      shot_ms += (glfwGetTime() - render_t0) * 1000;
+    }
+    if (!screenshot.empty() && ++shot_frame == kShotFrames) {  // ImGui sizes auto-resize windows on frame 1
+      glFinish();
+      std::printf("render %.1f ms (%d frames, %zu tiles drawn, %d draw calls, %.0f MB tiles)\n",
+                  shot_ms / (kShotFrames - 2), kShotFrames - 2, draw_keys.size(),
+                  tile_renderer.draw_calls(), tile_renderer.bytes() / 1048576.0);
       Vrst_map_renderer::check_error("screenshot");
       save_bmp(screenshot, app.fb_w, app.fb_h);
       std::printf("saved %s (%dx%d)\n", screenshot.c_str(), app.fb_w, app.fb_h);
@@ -488,6 +571,7 @@ int run(const Vrst_options& opt) {
   ImGui_ImplGlfw_Shutdown();
   ImGui::DestroyContext();
   renderer.destroy();
+  tile_renderer.destroy();
   glfwDestroyWindow(win);
   glfwTerminate();
   return 0;
@@ -497,7 +581,7 @@ int run(const Vrst_options& opt) {
 
 /// navview entry point.
 /// @param argc Argument count.
-/// @param argv `<out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--screenshot <file.bmp>]`.
+/// @param argv `<out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--rotate <deg>] [--tile-borders] [--screenshot <file.bmp>]`.
 /// @return 0 on success, 1 on error, 2 on wrong usage.
 int main(int argc, char** argv) {
   nav::viewer::Vrst_options opt;
@@ -524,6 +608,10 @@ int main(int argc, char** argv) {
       opt.gpx = argv[++i];
     } else if (a == "--speed" && i + 1 < argc && number(argv[i + 1], &opt.speed) && opt.speed > 0) {
       ++i;
+    } else if (a == "--rotate" && i + 1 < argc && number(argv[i + 1], &opt.rotate_deg)) {
+      ++i;
+    } else if (a == "--tile-borders") {
+      opt.tile_borders = true;
     } else if (a == "--track-time" && i + 1 < argc && number(argv[i + 1], &opt.track_time) && opt.track_time >= 0) {
       ++i;
     } else {
@@ -531,7 +619,7 @@ int main(int argc, char** argv) {
     }
   }
   if (!ok) {
-    std::fprintf(stderr, "usage: %s <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--screenshot <file.bmp>]\n", argv[0]);
+    std::fprintf(stderr, "usage: %s <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--rotate <deg>] [--tile-borders] [--screenshot <file.bmp>]\n", argv[0]);
     return 2;
   }
   try {

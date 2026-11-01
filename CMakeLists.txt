@@ -69,6 +69,17 @@ if(NAV_BUILD_VIEWER OR IOS)
   endif()
 endif()
 
+# --- earcut: polygon triangulation (header only) -----------------------------
+# Cuts the map.dat polygons into triangles: once at import (osm2nav), and again for
+# the simplified outlines of zoomed-out tiles (navview, iOS app).
+include(FetchContent)
+FetchContent_Declare(earcut
+  GIT_REPOSITORY https://github.com/mapbox/earcut.hpp.git
+  GIT_TAG v2.2.4
+  GIT_SHALLOW TRUE
+  SOURCE_SUBDIR include)  # header only: no CMakeLists there, so its tests are not added
+FetchContent_MakeAvailable(earcut)
+
 # --- iOS: only the app (cmake -G Xcode -DCMAKE_SYSTEM_NAME=iOS, see ios/README.md) ---
 if(IOS)
   add_subdirectory(ios)
@@ -82,9 +93,27 @@ find_package(ZLIB REQUIRED)
 add_executable(osm2nav src/osm2nav.cpp)
 target_include_directories(osm2nav SYSTEM PRIVATE
   third_party/libosmium/include
-  third_party/protozero/include)
+  third_party/protozero/include
+  ${earcut_SOURCE_DIR}/include)
 target_link_libraries(osm2nav PRIVATE vrst_types ZLIB::ZLIB Threads::Threads)
 nav_warnings(osm2nav)
+
+# --- tile_test: GoogleTest tests of the tiled map (tests/) --------------------
+option(NAV_BUILD_TESTS "Build the GoogleTest tests (fetches GoogleTest)" ON)
+if(NAV_BUILD_TESTS)
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+  set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.15.2
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(googletest)
+  add_executable(tile_test tests/tile_test.cpp)
+  target_include_directories(tile_test PRIVATE src)
+  target_include_directories(tile_test SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
+  target_link_libraries(tile_test PRIVATE vrst_types GTest::gtest_main Threads::Threads)
+  nav_warnings(tile_test)
+endif()
 
 # --- navcheck --------------------------------------------------------------
 add_executable(navcheck src/navcheck.cpp)
@@ -125,7 +154,8 @@ if(NAV_BUILD_VIEWER)
 
   find_package(OpenGL REQUIRED)
   add_executable(navview src/navview.cpp)
-  target_link_libraries(navview PRIVATE vrst_types glad imgui freetype OpenGL::GL)
+  target_include_directories(navview SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
+  target_link_libraries(navview PRIVATE vrst_types glad imgui freetype OpenGL::GL Threads::Threads)
   target_compile_definitions(navview PRIVATE VRST_FONT_DIR="${VRST_FONT_DIR}")
   nav_warnings(navview)
 endif()
@@ -157,6 +187,7 @@ if(DOXYGEN_FOUND)
     "${CMAKE_SOURCE_DIR}/docs"
     "${CMAKE_SOURCE_DIR}/src"
     "${CMAKE_SOURCE_DIR}/ios"
+    "${CMAKE_SOURCE_DIR}/tests"
     "${CMAKE_BINARY_DIR}/generated/vrst_types.h"
     COMMENT "Generating Doxygen docs")
 else()
@@ -169,6 +200,10 @@ if(EXISTS "${NAV_TEST_PBF}")
   set(_out "${CMAKE_BINARY_DIR}/test_out")
   add_test(NAME convert COMMAND osm2nav "${NAV_TEST_PBF}" "${_out}")
   add_test(NAME check COMMAND navcheck "${_out}")
+  if(NAV_BUILD_TESTS)
+    add_test(NAME tiles COMMAND tile_test)
+    set_tests_properties(tiles PROPERTIES ENVIRONMENT "VRST_TEST_DIR=${_out}" FIXTURES_REQUIRED nav_data)
+  endif()
   set_tests_properties(convert PROPERTIES FIXTURES_SETUP nav_data)
   set_tests_properties(check PROPERTIES FIXTURES_REQUIRED nav_data)
 else()

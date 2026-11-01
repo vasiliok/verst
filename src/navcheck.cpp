@@ -1,7 +1,7 @@
 /// @file
 /// `navcheck <out_dir> [--dump-way <osm_way_id>]`
 ///
-/// Validates the four nav files. Exit code 0 = all checks pass.
+/// Validates the nav files (and map.dat when present). Exit code 0 = all checks pass.
 
 #include <algorithm>
 #include <cinttypes>
@@ -137,11 +137,13 @@ class Vrst_union_find {
 
 /// Opens each file on its own so every failure is reported, then checks that the
 /// files share one build_id and agree on the segment count.
-/// @param dir Directory with the four nav files.
+/// map.dat is checked too when it exists.
+/// @param dir Directory with the nav files.
 /// @param[out] d Receives the opened files.
-/// @return true if all four files opened, share one build_id and agree on the
-///         segment count.
-bool check_files(const fs::path& dir, Vrst_nav_data& d) {
+/// @param[out] has_map Set when map.dat exists and opened.
+/// @return true if all four routing files opened, all files share one build_id and
+///         the routing files agree on the segment count.
+bool check_files(const fs::path& dir, Vrst_nav_data& d, bool* has_map) {
   bool all_ok = true;
   auto try_open = [&](const char* name, auto&& open) {
     try {
@@ -156,10 +158,17 @@ bool check_files(const fs::path& dir, Vrst_nav_data& d) {
   try_open("edges.dat header", [&] { d.open_file(FileType::Edges, dir); });
   try_open("geom.dat header", [&] { d.open_file(FileType::Geom, dir); });
   try_open("names.dat header", [&] { d.open_file(FileType::Names, dir); });
+  *has_map = fs::exists(dir / file_name_for(FileType::Map));
+  if (*has_map) {
+    try_open("map.dat header", [&] { d.open_file(FileType::Map, dir); });
+  } else {
+    std::printf("[----] %-34s %s\n", "map.dat", "absent: roads only");
+  }
   if (!all_ok) return false;
 
   const Vrst_uint64 id = d.graph().file().build_id();
-  const bool same = d.edges().file().build_id() == id && d.geom().file().build_id() == id && d.names().file().build_id() == id;
+  const bool same = d.edges().file().build_id() == id && d.geom().file().build_id() == id &&
+                    d.names().file().build_id() == id && (!*has_map || d.map().file().build_id() == id);
   report(same, "same build_id", fmt("%016" PRIx64, id));
   const bool seg_counts = d.geom().seg_first_point().size() == Vrst_size(d.edges().num_segments()) + 1;
   report(seg_counts, "segment count edges/geom",
@@ -316,6 +325,47 @@ void check_attrs(const Vrst_nav_data& d) {
          fmt("%zu places, %" PRIu64 " bad", d.names().places().size(), bad_place));
 }
 
+/// Checks map.dat: prefix arrays, area kinds valid and sorted, triangle indices inside
+/// their area, line kinds and flags valid, all points valid and inside the bbox.
+/// @param d Opened files, map.dat included.
+void check_map(const Vrst_nav_data& d) {
+  const Vrst_map_layers& m = d.map();
+  Vrst_uint64 at = 0;
+  bool ok = check_offsets(m.area_first_point(), m.all_area_points().size(), &at);
+  report(ok, "AREA_FIRST_POINT monotonic, last", ok ? fmt("R=%u", m.num_areas()) : fmt("bad at %" PRIu64, at));
+  ok = check_offsets(m.area_first_index(), m.all_area_indices().size(), &at);
+  report(ok, "AREA_FIRST_INDEX monotonic, last", ok ? fmt("%zu triangles", m.all_area_indices().size() / 3)
+                                                      : fmt("bad at %" PRIu64, at));
+  ok = check_offsets(m.line_first_point(), m.all_line_points().size(), &at);
+  report(ok, "LINE_FIRST_POINT monotonic, last", ok ? fmt("L=%u", m.num_lines()) : fmt("bad at %" PRIu64, at));
+  if (g_failures != 0) return;  // the checks below index through these arrays
+
+  Vrst_uint64 bad_kind = 0, bad_tri = 0;
+  Vrst_uint8 prev = 0;
+  for (Vrst_uint32 a = 0; a < m.num_areas(); ++a) {
+    const Vrst_uint8 k = m.area_kinds()[a];
+    bad_kind += k >= kAreaKindCount || k < prev;
+    prev = k;
+    const Vrst_size n = m.area_points(a).size();
+    const std::span<const Vrst_uint32> idx = m.area_indices(a);
+    bad_tri += idx.size() % 3 != 0 || n < 3 || m.area_outer_size()[a] < 3 || m.area_outer_size()[a] > n;
+    for (const Vrst_uint32 i : idx) bad_tri += i >= n;
+  }
+  report(bad_kind == 0, "area kinds valid and sorted", fmt("%" PRIu64 " bad", bad_kind));
+  report(bad_tri == 0, "area triangles and outer ring inside", fmt("%" PRIu64 " bad", bad_tri));
+  Vrst_uint64 bad_line = 0;
+  for (Vrst_uint32 l = 0; l < m.num_lines(); ++l) {
+    const Vrst_line_attr& la = m.line_attr()[l];
+    bad_line += la.kind >= kLineKindCount || (la.flags & ~(kLineBridge | kLineTunnel)) != 0 || m.line_points(l).size() < 2;
+  }
+  report(bad_line == 0, "lines: kind, flags, >= 2 points", fmt("%" PRIu64 " bad", bad_line));
+  const Vrst_bbox bb = d.graph().bbox();
+  Vrst_uint64 outside = 0;
+  for (const auto pts : {m.all_area_points(), m.all_line_points()})
+    for (const Vrst_coord& c : pts) outside += !valid_coord(c) || !in_bbox(c, bb);
+  report(outside == 0, "map points valid, inside bbox", fmt("%" PRIu64 " bad", outside));
+}
+
 /// Prints sizes, road length, dead ends and connected components. main() runs it
 /// only when all checks passed.
 /// @param d Opened files.
@@ -398,7 +448,8 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  if (!check_files(dir, d)) {
+  bool has_map = false;
+  if (!check_files(dir, d, &has_map)) {
     std::printf("\nFAILED (%d)\n", g_failures);
     return 1;
   }
@@ -407,6 +458,7 @@ int main(int argc, char** argv) {
   check_geometry(d);
   check_coords(d);
   check_attrs(d);
+  if (has_map) check_map(d);
   if (g_failures == 0) stats(d);
   std::printf("\n%s\n", g_failures == 0 ? "ALL PASS" : ("FAILED (" + std::to_string(g_failures) + ")").c_str());
   return g_failures == 0 ? 0 : 1;

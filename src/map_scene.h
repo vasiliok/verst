@@ -231,7 +231,9 @@ class Vrst_map_mesh {
  public:
   /// Builds all arrays.
   /// @param d Opened nav files; only read during the call.
-  void build(const Vrst_nav_data& d) {
+  /// @param gpu_arrays false computes only the map center and extent, for front ends
+  ///        that draw tiles (map_tiles.h) instead of one buffer.
+  void build(const Vrst_nav_data& d, bool gpu_arrays = true) {
     const Vrst_graph& g = d.graph();
     const Vrst_edges& e = d.edges();
     const Vrst_geom& geo = d.geom();
@@ -249,6 +251,11 @@ class Vrst_map_mesh {
     if (P == 0) lo = hi = {0, 0};
     m_center = {(lo.x + hi.x) / 2, (lo.y + hi.y) / 2};
     m_half_extent = {(hi.x - lo.x) / 2, (hi.y - lo.y) / 2};
+    m_line_verts.clear();
+    m_line_indices.clear();
+    m_point_verts.clear();
+    m_dead_ends = 0;
+    if (!gpu_arrays) return;
 
     m_line_verts.assign(P, {});
     for (Vrst_uint32 s = 0; s < S; ++s) {

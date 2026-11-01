@@ -2,9 +2,10 @@
 /// verst iPhone app: a full-screen map drawn with OpenGL ES 3.0.
 ///
 /// A thin UIKit shell around the shared C++ core: Vrst_nav_data maps the bundled nav
-/// files, Vrst_map_mesh builds the geometry and Vrst_map_renderer draws it, exactly
-/// as in the desktop viewer. This file only adds the GL context (GLKView), touch
-/// gestures, a stats line and a toolbar.
+/// files (map.dat included), the tiles of map_tiles.h are built on worker threads and
+/// Vrst_tile_renderer draws them, exactly as in the desktop viewer. All map layers
+/// are always on. This file only adds the GL context (GLKView), touch gestures, the
+/// GPS position (CoreLocation), a stats line and a toolbar.
 ///
 /// Gestures: one-finger drag = pan, pinch = zoom (and pan with the two fingers),
 /// two-finger twist = rotate, double tap = zoom in, two-finger tap = zoom out.
@@ -13,31 +14,48 @@
 
 #include "gl_api.h"  // OpenGL ES 3.0; before GLKit so the ES3 header wins
 
+#import <CoreLocation/CoreLocation.h>
 #import <GLKit/GLKit.h>
 #import <UIKit/UIKit.h>
 
 #include <cmath>
 #include <exception>
+#include <memory>
 
 #include "glyph_atlas.h"
 #include "map_labels.h"
 #include "map_renderer.h"
 #include "map_scene.h"
+#include "map_tiles.h"
 #include "nav_files.h"
+#include "tile_renderer.h"
 
 using namespace nav;
 
+/// GPU byte budget of the tile cache; a phone has less memory to spare than a desktop.
+static constexpr Vrst_size kTileBudget = 96u << 20;
+
 /// Full-screen map controller. Owns the shared C++ map state and turns UIKit touch
 /// gestures into camera changes; draws only when something changed.
-@interface VrstMapController : GLKViewController <UIGestureRecognizerDelegate>
+@interface VrstMapController : GLKViewController <UIGestureRecognizerDelegate, CLLocationManagerDelegate>
 @end
 
 @implementation VrstMapController {
   /// Mapped nav files from the app bundle; spans into them stay valid while open.
   Vrst_nav_data _data;
-  /// GPU-ready geometry built from _data.
+  /// Map center and extent (the world origin); its GPU arrays are not built.
   Vrst_map_mesh _mesh;
-  /// Shared OpenGL renderer; initialised once the context exists.
+  /// Which roads, areas and lines touch which tile.
+  Vrst_tile_index _index;
+  /// Builds tile arrays from _data; used by the loader threads.
+  std::unique_ptr<Vrst_tile_builder> _builder;
+  /// Builds missing tiles in the background.
+  std::unique_ptr<Vrst_tile_loader> _loader;
+  /// GPU tile cache and map drawing.
+  Vrst_tile_renderer _tiles;
+  /// Frame counter for the tile cache.
+  Vrst_uint64 _frame;
+  /// Overlay renderer: GPS position marker and labels.
   Vrst_map_renderer _renderer;
   /// Place name labels, laid out on every draw.
   Vrst_map_labels _labels;
@@ -47,8 +65,16 @@ using namespace nav;
   BOOL _showLabels;
   /// Current camera.
   Vrst_view _view;
-  /// Display switches changed by the toolbar.
-  Vrst_draw_options _opt;
+  /// Display switches changed by the toolbar; map layers stay at their default (all on).
+  Vrst_tile_draw_options _opt;
+  /// GPS position updates.
+  CLLocationManager* _location;
+  /// A GPS position is known.
+  BOOL _hasFix;
+  /// Last GPS position.
+  Vrst_coord _fix;
+  /// Horizontal accuracy of _fix in metres.
+  Vrst_float64 _fixAccuracy;
   /// Start view center: kDefaultPoint or --center.
   Vrst_coord _startCenter;
   /// Start zoom in ground metres per screen point: kDefaultMetresPerPoint or --mpp.
@@ -103,7 +129,10 @@ using namespace nav;
   try {
     NSString* dir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"map"];
     _data.open(dir.UTF8String);
-    _mesh.build(_data);
+    _mesh.build(_data, false);
+    _index.build(_data);
+    _builder = std::make_unique<Vrst_tile_builder>(_data, _index, _mesh.center());
+    _loader = std::make_unique<Vrst_tile_loader>(*_builder, 2);
     _labels.build(_data, _mesh);
     NSString* fontDir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"fonts"];
     std::vector<std::string> fonts;
@@ -112,21 +141,25 @@ using namespace nav;
     _labels.measure(_atlas);
     _showLabels = YES;
     _loaded = YES;
-    _renderer.init(_mesh);
+    _renderer.init_overlays();
     _renderer.set_label_atlas(_atlas);
+    _tiles.init();
     _glReady = YES;
   } catch (const std::exception& e) {
     _error = [NSString stringWithFormat:@"cannot load map: %s", e.what()];
   }
   [self buildOverlay];
   [self addGestures];
+  [self startLocation];
 }
 
 /// Releases the GL objects while the context is still alive.
 - (void)dealloc {
+  _loader.reset();  // join the workers before the data they read goes away
   if (_glReady) {
     [EAGLContext setCurrentContext:_context];
     _renderer.destroy();
+    _tiles.destroy();
   }
 }
 
@@ -195,12 +228,21 @@ using namespace nav;
     [self resetView];
     _viewSet = YES;
   }
-  _opt.point_px = Vrst_float32(2.5 * [self pxPerPoint]);
-  _renderer.draw(_view, w, h, _opt);
+  const CGFloat px = [self pxPerPoint];
+  Vrst_tile_frame tf;
+  const std::vector<Vrst_uint64> keys =
+      select_tiles(_tiles, *_loader, _index, _view, w, h, _mesh.center(), ++_frame, kTileBudget, &tf);
+  _opt.point_px = Vrst_float32(2.5 * px);
+  _opt.px_ratio = px;
+  _tiles.draw(_view, w, h, keys, ground_metres_per_point(_view, _mesh.center(), px), _opt);
+  if (_hasFix) _renderer.draw_position(_view, w, h, _mesh.to_world(_fix), Vrst_float32(16 * px));
   if (_showLabels)
     _renderer.draw_labels(_labels.layout(_view, w, h, [self pxPerPoint], _atlas), w, h,
                           Vrst_float32(2.0 * [self pxPerPoint]));
   [self updateStats];
+  // Keep drawing while tiles are loading so they appear as soon as they are built;
+  // otherwise draw only on demand.
+  self.paused = tf.missing == 0 && _loader->pending() == 0;
 }
 
 /// Start view: _startCenter at _startMpp, or the whole map if it is outside the data.
@@ -298,10 +340,13 @@ using namespace nav;
   }
   if (!_viewSet) return;
   const Vrst_float64 lat = inverse_mercator(_mesh.center()).x * kPi / 180;
-  _stats.text = [NSString stringWithFormat:@" V %u  S %u  A %u  P %zu \n zoom %.2fx  %.2f m/pt  dead ends %u ",
+  NSString* gps = _hasFix ? [NSString stringWithFormat:@"GPS %.5f, %.5f  ±%.0f m", _fix.lat_e7 * 1e-7,
+                                                       _fix.lon_e7 * 1e-7, _fixAccuracy]
+                          : @"GPS waiting";
+  _stats.text = [NSString stringWithFormat:@" V %u  S %u  A %u  P %zu \n zoom %.2fx  %.2f m/pt  dead ends %zu \n %@ ",
                  _data.graph().num_vertices(), _data.edges().num_segments(), _data.graph().num_arcs(),
                  _data.geom().points().size(), _view.scale / _initialScale,
-                 [self pxPerPoint] * std::cos(lat) / _view.scale, _mesh.dead_ends()];
+                 [self pxPerPoint] * std::cos(lat) / _view.scale, _index.dead_ends(), gps];
 }
 
 /// Toolbar: whole map.
@@ -335,6 +380,47 @@ using namespace nav;
   _showLabels = !_showLabels;
   [self updateToggles];
   [self redraw];
+}
+
+// --- GPS position ------------------------------------------------------------------
+
+/// Asks for location permission (when in use) and starts position updates.
+- (void)startLocation {
+  _location = [[CLLocationManager alloc] init];
+  _location.delegate = self;
+  _location.desiredAccuracy = kCLLocationAccuracyBest;
+  _location.distanceFilter = 2;  // metres; a car moves more than this per update
+  [_location requestWhenInUseAuthorization];
+}
+
+/// Starts updates once the user allowed location access.
+/// @param manager Location manager.
+- (void)locationManagerDidChangeAuthorization:(CLLocationManager*)manager {
+  const CLAuthorizationStatus s = manager.authorizationStatus;
+  if (s == kCLAuthorizationStatusAuthorizedWhenInUse || s == kCLAuthorizationStatusAuthorizedAlways)
+    [manager startUpdatingLocation];
+}
+
+/// Stores the newest position and redraws the marker.
+/// @param manager Location manager.
+/// @param locations New positions, oldest first.
+- (void)locationManager:(CLLocationManager*)manager didUpdateLocations:(NSArray<CLLocation*>*)locations {
+  (void)manager;
+  CLLocation* l = locations.lastObject;
+  if (!l || l.horizontalAccuracy < 0) return;  // negative accuracy = invalid fix
+  _fix = {Vrst_int32(std::lround(l.coordinate.latitude * 1e7)), Vrst_int32(std::lround(l.coordinate.longitude * 1e7))};
+  _fixAccuracy = l.horizontalAccuracy;
+  _hasFix = YES;
+  [self redraw];
+}
+
+/// Location errors (no permission, no signal) keep the last marker; the stats line
+/// says "GPS waiting" until a first fix arrives.
+/// @param manager Location manager.
+/// @param error Error.
+- (void)locationManager:(CLLocationManager*)manager didFailWithError:(NSError*)error {
+  (void)manager;
+  (void)error;
 }
 
 // --- gestures ------------------------------------------------------------------

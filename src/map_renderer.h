@@ -42,6 +42,7 @@ class Vrst_map_renderer {
   /// @param mesh Built mesh; its arrays are copied to GPU buffers and may be freed.
   /// @throws std::runtime_error on a shader compile/link error or a GL error.
   void init(const Vrst_map_mesh& mesh) {
+    init_overlays();
     m_line_prog = link(shaders::kLineVs, shaders::kLineFs);
     m_point_prog = link(shaders::kPointVs, shaders::kPointFs);
     m_u_line_view = glGetUniformLocation(m_line_prog, "u_view");
@@ -49,11 +50,6 @@ class Vrst_map_renderer {
     m_u_oneway = glGetUniformLocation(m_line_prog, "u_oneway");
     m_u_point_view = glGetUniformLocation(m_point_prog, "u_view");
     m_u_point_px = glGetUniformLocation(m_point_prog, "u_point_px");
-    m_overlay_prog = link(shaders::kOverlayVs, shaders::kOverlayFs);
-    m_u_overlay_view = glGetUniformLocation(m_overlay_prog, "u_view");
-    m_u_overlay_px = glGetUniformLocation(m_overlay_prog, "u_point_px");
-    m_u_overlay_color = glGetUniformLocation(m_overlay_prog, "u_color");
-    m_u_overlay_round = glGetUniformLocation(m_overlay_prog, "u_round");
     glUseProgram(m_line_prog);
     glUniform3fv(glGetUniformLocation(m_line_prog, "u_colors"), kRoadClassCount, &kClassColors[0][0]);
 
@@ -71,6 +67,18 @@ class Vrst_map_renderer {
     glEnable(GL_MULTISAMPLE);         // ES multisampling is a property of the framebuffer
 #endif
     check_error("renderer init");
+  }
+
+  /// Compiles only the overlay program (GPS track, marker), for front ends that draw
+  /// the map itself with Vrst_tile_renderer and use this class for the track and the
+  /// labels. init() calls it too.
+  /// @throws std::runtime_error on a shader compile/link error.
+  void init_overlays() {
+    m_overlay_prog = link(shaders::kOverlayVs, shaders::kOverlayFs);
+    m_u_overlay_view = glGetUniformLocation(m_overlay_prog, "u_view");
+    m_u_overlay_px = glGetUniformLocation(m_overlay_prog, "u_point_px");
+    m_u_overlay_color = glGetUniformLocation(m_overlay_prog, "u_color");
+    m_u_overlay_round = glGetUniformLocation(m_overlay_prog, "u_round");
   }
 
   /// Clears the bound framebuffer and draws the map.
@@ -144,14 +152,43 @@ class Vrst_map_renderer {
       glUniform4f(m_u_overlay_color, 1.0f, 0.85f, 0.1f, 1.0f);
       glDrawArrays(GL_LINE_STRIP, 0, n);
     }
-    // The marker moves every frame: one point, rewritten in place.
-    const Vrst_gpu_point p{Vrst_float32(marker.x), Vrst_float32(marker.y), 0};
+    draw_point(marker, marker_px, 0.95f, 0.15f, 0.1f);
+  }
+
+  /// Draws the current GPS position: a blue dot with a white ring, the same size at
+  /// every zoom. Call after the map, before the labels.
+  /// @param v Camera.
+  /// @param fb_w Framebuffer width in px.
+  /// @param fb_h Framebuffer height in px.
+  /// @param pos Position, world coordinates (Vrst_map_mesh::to_world()).
+  /// @param px Dot diameter in framebuffer pixels.
+  void draw_position(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px) {
+    if (!m_marker_vao) {
+      m_marker_vao = make_vao({{0, 0, 0}}, &m_marker_vbo);
+      glBindVertexArray(0);
+    }
+    Vrst_float32 m[9];
+    view_matrix(v, fb_w, fb_h, m);
+    glUseProgram(m_overlay_prog);
+    glUniformMatrix3fv(m_u_overlay_view, 1, GL_FALSE, m);
+    draw_point(pos, px, 0.10f, 0.50f, 1.0f);
+  }
+
+  /// Draws one round marker with the overlay program, which must be in use with its
+  /// view matrix set. The marker moves every frame: one point, rewritten in place.
+  /// @param pos World position.
+  /// @param px Diameter in framebuffer pixels.
+  /// @param r Red.
+  /// @param g Green.
+  /// @param b Blue.
+  void draw_point(Vrst_vec2d pos, Vrst_float32 px, Vrst_float32 r, Vrst_float32 g, Vrst_float32 b) const {
+    const Vrst_gpu_point p{Vrst_float32(pos.x), Vrst_float32(pos.y), 0};
     glBindVertexArray(m_marker_vao);
     glBindBuffer(GL_ARRAY_BUFFER, m_marker_vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof p, &p);
     glUniform1i(m_u_overlay_round, 1);
-    glUniform1f(m_u_overlay_px, marker_px);
-    glUniform4f(m_u_overlay_color, 0.95f, 0.15f, 0.1f, 1.0f);
+    glUniform1f(m_u_overlay_px, px);
+    glUniform4f(m_u_overlay_color, r, g, b, 1.0f);
     glDrawArrays(GL_POINTS, 0, 1);
     glBindVertexArray(0);
   }
@@ -251,6 +288,13 @@ class Vrst_map_renderer {
       throw std::runtime_error(msg);
     }
   }
+
+  /// Compiles and links a program with kGlslHeader; shared with Vrst_tile_renderer.
+  /// @param vs Vertex shader body.
+  /// @param fs Fragment shader body.
+  /// @return Program object.
+  /// @throws std::runtime_error with the compile or link log.
+  static GLuint link_program(const char* vs, const char* fs) { return link(vs, fs); }
 
   /// GLSL version line (plus precision qualifiers on ES) prepended to every shader.
   static constexpr const char* kGlslHeader =

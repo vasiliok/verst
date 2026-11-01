@@ -3,6 +3,8 @@
 ///
 /// Converts OSM car roads into graph.dat / edges.dat / geom.dat / names.dat.
 /// Pass 1 reads ways, pass 2 reads node coordinates of road nodes only.
+/// Then the drawing-only layers (water, forest, land use, buildings, rivers,
+/// railways) are read in their own passes into map.dat (see osm_map_layers.h).
 
 #include <algorithm>
 #include <charconv>
@@ -32,6 +34,7 @@
 #include <osmium/osm/way.hpp>
 
 #include "format.h"
+#include "osm_map_layers.h"
 
 namespace fs = std::filesystem;
 using namespace nav;
@@ -883,6 +886,24 @@ int run(const std::string& input, const fs::path& out_dir) {
   const Vrst_uint64 sz_names = strs.write(out_dir / file_name_for(FileType::Names));
   timer.phase("write");
 
+  // --- map layers: map.dat --------------------------------------------------
+  Vrst_map_layer_builder layers;
+  layers.read(input);
+  layers.finish();
+  const Vrst_map_layer_data& ml = layers.data();
+  Vrst_file_writer map(FileType::Map, build_id);
+  map.add(SectionId::AreaFirstPoint, ml.area_first_point);
+  map.add(SectionId::AreaFirstIndex, ml.area_first_index);
+  map.add(SectionId::AreaKinds, ml.area_kinds);
+  map.add(SectionId::AreaPoints, ml.area_points);
+  map.add(SectionId::AreaIndices, ml.area_indices);
+  map.add(SectionId::LineFirstPoint, ml.line_first_point);
+  map.add(SectionId::LineAttr, ml.line_attr);
+  map.add(SectionId::LinePoints, ml.line_points);
+  map.add(SectionId::AreaOuterSize, ml.area_outer_size);
+  const Vrst_uint64 sz_map = map.write(out_dir / file_name_for(FileType::Map));
+  timer.phase("map layers");
+
   // --- stats ---------------------------------------------------------------
   const std::optional<Vrst_bbox> hb = source.header_bbox();
   auto kib = [](Vrst_uint64 b) { return b / 1024.0; };
@@ -905,6 +926,15 @@ int run(const std::string& input, const fs::path& out_dir) {
     std::printf("places L             %12zu  (%zu city, %zu town, %zu village, %zu hamlet)\n", places.size(),
                 per_kind[0], per_kind[1], per_kind[2], per_kind[3]);
   }
+  {
+    Vrst_size per_kind[kAreaKindCount] = {};
+    for (const Vrst_uint8 k : ml.area_kinds) ++per_kind[k];
+    std::printf("areas R              %12zu  (%zu water, %zu forest, %zu buildings: %zu rect, %zu outline)\n",
+                ml.area_kinds.size(), per_kind[int(AreaKind::Water)], per_kind[int(AreaKind::Forest)],
+                per_kind[int(AreaKind::Building)], layers.rectangles(), layers.outlines());
+    std::printf("area triangles       %12zu\n", ml.area_indices.size() / 3);
+    std::printf("lines L              %12zu  (%zu points)\n", ml.line_attr.size(), ml.line_points.size());
+  }
   std::printf("road length          %12.1f km\n", total_m / 1000);
   std::printf("node extent          lat [%.7f, %.7f] lon [%.7f, %.7f]\n", extent.min.lat_e7 * 1e-7,
               extent.max.lat_e7 * 1e-7, extent.min.lon_e7 * 1e-7, extent.max.lon_e7 * 1e-7);
@@ -916,6 +946,7 @@ int run(const std::string& input, const fs::path& out_dir) {
   std::printf("edges.dat            %12.1f KiB\n", kib(sz_edges));
   std::printf("geom.dat             %12.1f KiB\n", kib(sz_geom));
   std::printf("names.dat            %12.1f KiB\n", kib(sz_names));
+  std::printf("map.dat              %12.1f KiB\n", kib(sz_map));
   std::printf("total time           %12.1f ms\n", timer.total_ms());
   std::printf("peak RSS             %12.1f MiB\n", peak_rss_mb());
   return 0;

@@ -55,7 +55,7 @@ class Vrst_nav_file {
   /// @return Header at the start of the mapping; valid after open().
   const Vrst_file_header& header() const { return *header_ptr(); }
   /// Import id of this file.
-  /// @return Id shared by the four files written by one osm2nav run.
+  /// @return Id shared by all files written by one osm2nav run.
   Vrst_uint64 build_id() const { return header().build_id; }
   /// Path of the file, for error messages.
   /// @return Path given to open().
@@ -335,13 +335,132 @@ class Vrst_names {
   std::span<const Vrst_place> m_places;
 };
 
-/// All four files of one import, opened together.
+/// Typed view of map.dat: the drawing-only layers (water, forest, land use, buildings,
+/// rivers, railways). Optional: a directory without map.dat draws roads only.
+/// Areas are stored already cut into triangles, so the app never triangulates.
+class Vrst_map_layers {
+ public:
+  /// Maps map.dat and checks that the prefix arrays agree with the data arrays.
+  /// @param path Path of map.dat.
+  /// @throws std::runtime_error on a header, section or size mismatch.
+  void open(const std::string& path) {
+    m_file.open(path, FileType::Map);
+    m_area_first_point = m_file.section<Vrst_uint32>(SectionId::AreaFirstPoint);
+    m_area_first_index = m_file.section<Vrst_uint32>(SectionId::AreaFirstIndex);
+    m_area_kind = m_file.section<Vrst_uint8>(SectionId::AreaKinds);
+    m_area_points = m_file.section<Vrst_coord>(SectionId::AreaPoints);
+    m_area_indices = m_file.section<Vrst_uint32>(SectionId::AreaIndices);
+    m_line_first_point = m_file.section<Vrst_uint32>(SectionId::LineFirstPoint);
+    m_line_attr = m_file.section<Vrst_line_attr>(SectionId::LineAttr);
+    m_line_points = m_file.section<Vrst_coord>(SectionId::LinePoints);
+    m_area_outer_size = m_file.section<Vrst_uint32>(SectionId::AreaOuterSize);
+    const Vrst_size R = m_area_kind.size(), L = m_line_attr.size();
+    require(m_area_first_point.size() == R + 1, path, "AREA_FIRST_POINT size != R+1");
+    require(m_area_first_index.size() == R + 1, path, "AREA_FIRST_INDEX size != R+1");
+    require(m_area_outer_size.size() == R, path, "AREA_OUTER_SIZE size != R");
+    require(m_area_first_point.back() == m_area_points.size(), path, "AREA_FIRST_POINT last != points");
+    require(m_area_first_index.back() == m_area_indices.size(), path, "AREA_FIRST_INDEX last != indices");
+    require(m_line_first_point.size() == L + 1, path, "LINE_FIRST_POINT size != L+1");
+    require(m_line_first_point.back() == m_line_points.size(), path, "LINE_FIRST_POINT last != points");
+  }
+
+  /// Number of areas.
+  /// @return R.
+  Vrst_uint32 num_areas() const { return static_cast<Vrst_uint32>(m_area_kind.size()); }
+  /// Number of lines.
+  /// @return L.
+  Vrst_uint32 num_lines() const { return static_cast<Vrst_uint32>(m_line_attr.size()); }
+  /// Outline points of one area.
+  /// @param a Area id, less than R.
+  /// @return Points, outer ring first; the triangle indices refer to this span.
+  std::span<const Vrst_coord> area_points(Vrst_uint32 a) const {
+    return m_area_points.subspan(m_area_first_point[a], m_area_first_point[a + 1] - m_area_first_point[a]);
+  }
+  /// Triangles of one area.
+  /// @param a Area id, less than R.
+  /// @return 3 indices per triangle into area_points(a).
+  std::span<const Vrst_uint32> area_indices(Vrst_uint32 a) const {
+    return m_area_indices.subspan(m_area_first_index[a], m_area_first_index[a + 1] - m_area_first_index[a]);
+  }
+  /// Kind of one area.
+  /// @param a Area id, less than R.
+  /// @return AreaKind.
+  AreaKind area_kind(Vrst_uint32 a) const { return static_cast<AreaKind>(m_area_kind[a]); }
+  /// Outer ring of one area, without its holes.
+  /// @param a Area id, less than R.
+  /// @return The first points of area_points(a); the ring is closed implicitly.
+  std::span<const Vrst_coord> area_outer(Vrst_uint32 a) const { return area_points(a).first(m_area_outer_size[a]); }
+  /// Points of one line.
+  /// @param l Line id, less than L.
+  /// @return Points in way order.
+  std::span<const Vrst_coord> line_points(Vrst_uint32 l) const {
+    return m_line_points.subspan(m_line_first_point[l], m_line_first_point[l + 1] - m_line_first_point[l]);
+  }
+
+  /// @copydoc m_file
+  /// @return The mapped file.
+  const Vrst_nav_file& file() const { return m_file; }
+  /// @copydoc m_area_first_point
+  /// @return Span into the mapping, valid while this object is open.
+  std::span<const Vrst_uint32> area_first_point() const { return m_area_first_point; }
+  /// @copydoc m_area_first_index
+  /// @return Span into the mapping, valid while this object is open.
+  std::span<const Vrst_uint32> area_first_index() const { return m_area_first_index; }
+  /// @copydoc m_area_kind
+  /// @return Span into the mapping, valid while this object is open.
+  std::span<const Vrst_uint8> area_kinds() const { return m_area_kind; }
+  /// @copydoc m_area_points
+  /// @return Span into the mapping, valid while this object is open.
+  std::span<const Vrst_coord> all_area_points() const { return m_area_points; }
+  /// @copydoc m_area_indices
+  /// @return Span into the mapping, valid while this object is open.
+  std::span<const Vrst_uint32> all_area_indices() const { return m_area_indices; }
+  /// @copydoc m_area_outer_size
+  /// @return Span into the mapping, valid while this object is open.
+  std::span<const Vrst_uint32> area_outer_size() const { return m_area_outer_size; }
+  /// @copydoc m_line_first_point
+  /// @return Span into the mapping, valid while this object is open.
+  std::span<const Vrst_uint32> line_first_point() const { return m_line_first_point; }
+  /// @copydoc m_line_attr
+  /// @return Span into the mapping, valid while this object is open.
+  std::span<const Vrst_line_attr> line_attr() const { return m_line_attr; }
+  /// @copydoc m_line_points
+  /// @return Span into the mapping, valid while this object is open.
+  std::span<const Vrst_coord> all_line_points() const { return m_line_points; }
+
+ private:
+  /// Keeps map.dat mapped.
+  Vrst_nav_file m_file;
+  /// Start of area i in m_area_points, R+1 entries.
+  std::span<const Vrst_uint32> m_area_first_point;
+  /// Start of area i in m_area_indices, R+1 entries.
+  std::span<const Vrst_uint32> m_area_first_index;
+  /// AreaKind per area, sorted ascending (the draw order).
+  std::span<const Vrst_uint8> m_area_kind;
+  /// Outline points of all areas.
+  std::span<const Vrst_coord> m_area_points;
+  /// Triangle indices of all areas, each relative to its area's first point so they
+  /// fit any area size without 64-bit indices.
+  std::span<const Vrst_uint32> m_area_indices;
+  /// Outer ring size per area. Zoomed-out tiles simplify and re-triangulate the outer
+  /// ring only, and buildings draw it as their outline.
+  std::span<const Vrst_uint32> m_area_outer_size;
+  /// Start of line i in m_line_points, L+1 entries.
+  std::span<const Vrst_uint32> m_line_first_point;
+  /// Kind and flags per line.
+  std::span<const Vrst_line_attr> m_line_attr;
+  /// Points of all lines.
+  std::span<const Vrst_coord> m_line_points;
+};
+
+/// All files of one import, opened together.
 /// The normal entry point for tools: besides opening each file it checks that all
 /// share one build_id and agree on the segment count, the mismatches that each file
 /// on its own cannot detect.
 class Vrst_nav_data {
  public:
-  /// Opens all four files and checks that they belong together.
+  /// Opens the four routing files and checks that they belong together.
+  /// map.dat is opened too when it exists (has_map()).
   /// @param dir Directory with graph.dat, edges.dat, geom.dat and names.dat.
   /// @throws std::runtime_error if a file is broken, the build_ids differ or the
   ///         segment counts disagree.
@@ -350,8 +469,11 @@ class Vrst_nav_data {
     open_file(FileType::Edges, dir);
     open_file(FileType::Geom, dir);
     open_file(FileType::Names, dir);
+    m_has_map = std::filesystem::exists(dir / file_name_for(FileType::Map));
+    if (m_has_map) open_file(FileType::Map, dir);
     const Vrst_uint64 id = m_graph.file().build_id();
-    if (m_edges.file().build_id() != id || m_geom.file().build_id() != id || m_names.file().build_id() != id)
+    if (m_edges.file().build_id() != id || m_geom.file().build_id() != id || m_names.file().build_id() != id ||
+        (m_has_map && m_map.file().build_id() != id))
       throw std::runtime_error(dir.string() + ": files come from different builds (build_id mismatch)");
     if (m_geom.seg_first_point().size() != Vrst_size(m_edges.num_segments()) + 1)
       throw std::runtime_error(dir.string() + ": SEG_FIRST_POINT size != S+1");
@@ -369,6 +491,7 @@ class Vrst_nav_data {
       case FileType::Edges: m_edges.open(path); break;
       case FileType::Geom: m_geom.open(path); break;
       case FileType::Names: m_names.open(path); break;
+      case FileType::Map: m_map.open(path); break;
     }
   }
 
@@ -384,6 +507,12 @@ class Vrst_nav_data {
   /// @copydoc m_names
   /// @return The names.dat view.
   const Vrst_names& names() const { return m_names; }
+  /// @copydoc m_map
+  /// @return The map.dat view; empty spans when has_map() is false.
+  const Vrst_map_layers& map() const { return m_map; }
+  /// @copydoc m_has_map
+  /// @return true if map.dat was opened.
+  bool has_map() const { return m_has_map; }
 
  private:
   /// Routing hot data.
@@ -394,6 +523,10 @@ class Vrst_nav_data {
   Vrst_geom m_geom;
   /// Street names, refs and place labels.
   Vrst_names m_names;
+  /// Drawing-only layers (water, forest, buildings, railways).
+  Vrst_map_layers m_map;
+  /// Whether map.dat exists; older imports have only the four routing files.
+  bool m_has_map = false;
 };
 
 }  // namespace nav

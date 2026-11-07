@@ -1,5 +1,5 @@
 # verst iPhone app: UIKit shell + OpenGL ES 3.0 through GLKView, drawing the tiled
-# map with the shared src/map_tiles.h and src/tile_renderer.h. Configured from the
+# map with the shared vrst_core and vrst_render libraries. Configured from the
 # top-level CMakeLists.txt when CMAKE_SYSTEM_NAME is iOS.
 enable_language(OBJCXX)
 
@@ -26,11 +26,9 @@ set_source_files_properties(${_map_files} PROPERTIES MACOSX_PACKAGE_LOCATION map
 set_source_files_properties(${VRST_FONT_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION fonts)
 
 add_executable(verst_ios MACOSX_BUNDLE main.mm ${_map_files} ${VRST_FONT_FILES})
-target_link_libraries(verst_ios PRIVATE vrst_types freetype
-  "-framework Foundation" "-framework CoreGraphics" "-framework UIKit" "-framework GLKit" "-framework OpenGLES"
+target_link_libraries(verst_ios PRIVATE vrst_render
+  "-framework Foundation" "-framework CoreGraphics" "-framework UIKit" "-framework GLKit"
   "-framework QuartzCore" "-framework CoreLocation")
-target_include_directories(verst_ios PRIVATE "${CMAKE_SOURCE_DIR}/src")
-target_include_directories(verst_ios SYSTEM PRIVATE "${earcut_SOURCE_DIR}/include")
 target_compile_options(verst_ios PRIVATE -fobjc-arc -Wall -Wextra)
 set_target_properties(verst_ios PROPERTIES
   OUTPUT_NAME Verst

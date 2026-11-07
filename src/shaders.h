@@ -6,10 +6,12 @@
 /// use only features both languages share (flat uint varyings, gl_PointCoord).
 #pragma once
 
+#include <string_view>
+
 namespace nav::shaders {
 
 /// Road lines, vertex shader. `a_attr = road_class | flags << 16`.
-inline constexpr const char* kLineVs = R"(
+inline constexpr std::string_view kLineVs = R"(
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in uint a_attr;
 uniform mat3 u_view;
@@ -22,7 +24,7 @@ void main() {
 )";
 
 /// Road lines, fragment shader: class color, class mask and oneway highlight.
-inline constexpr const char* kLineFs = R"(
+inline constexpr std::string_view kLineFs = R"(
 flat in uint v_attr;
 uniform vec3 u_colors[16];
 uniform uint u_class_mask;
@@ -39,7 +41,7 @@ void main() {
 )";
 
 /// Graph vertices, vertex shader. `a_attr` = 1 for dead ends (undirected degree 1).
-inline constexpr const char* kPointVs = R"(
+inline constexpr std::string_view kPointVs = R"(
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in uint a_attr;
 uniform mat3 u_view;
@@ -54,7 +56,7 @@ void main() {
 )";
 
 /// Graph vertices, fragment shader: round dots, dead ends highlighted.
-inline constexpr const char* kPointFs = R"(
+inline constexpr std::string_view kPointFs = R"(
 flat in uint v_dead;
 out vec4 o_color;
 void main() {
@@ -65,7 +67,7 @@ void main() {
 )";
 
 /// Overlays (GPS track line, position marker), vertex shader. One color per draw call.
-inline constexpr const char* kOverlayVs = R"(
+inline constexpr std::string_view kOverlayVs = R"(
 layout(location = 0) in vec2 a_pos;
 uniform mat3 u_view;
 uniform float u_point_px;
@@ -78,7 +80,7 @@ void main() {
 
 /// Overlays, fragment shader. Lines use u_color; with u_round points become a filled
 /// circle in u_color with a white ring, so the marker stays visible on any road color.
-inline constexpr const char* kOverlayFs = R"(
+inline constexpr std::string_view kOverlayFs = R"(
 uniform vec4 u_color;
 uniform bool u_round;
 out vec4 o_color;
@@ -95,7 +97,7 @@ void main() {
 )";
 
 /// Label glyphs, vertex shader: framebuffer px (y down) -> NDC.
-inline constexpr const char* kTextVs = R"(
+inline constexpr std::string_view kTextVs = R"(
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in vec2 a_uv;
 uniform vec2 u_fb_size;
@@ -110,7 +112,7 @@ void main() {
 /// light text with a dark halo of u_halo_px screen pixels. fwidth() gives the change
 /// of the distance per screen pixel, so edges stay sharp and the halo keeps its width
 /// at every label size.
-inline constexpr const char* kTextFs = R"(
+inline constexpr std::string_view kTextFs = R"(
 in vec2 v_uv;
 uniform sampler2D u_atlas;
 uniform float u_halo_px;

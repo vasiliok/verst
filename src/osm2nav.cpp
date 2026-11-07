@@ -7,15 +7,18 @@
 /// railways) are read in their own passes into map.dat (see osm_map_layers.h).
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <random>
 #include <span>
@@ -173,10 +176,7 @@ class Vrst_osmium_source final : public Vrst_osm_source {
         const osmium::Location loc = n.location();
         if (!loc.valid()) continue;
         const osmium::TagList& tags = n.tags();
-        auto tag = [&](const char* key) {
-          const char* v = tags.get_value_by_key(key);
-          return v ? std::string_view(v) : std::string_view();
-        };
+        auto tag = [&]<Vrst_size N>(const char (&key)[N]) { return std::string_view(tags.get_value_by_key(key, "")); };
         // The string views point into the buffer and are valid during fn only.
         fn(Vrst_osm_node{static_cast<Vrst_uint64>(n.id()), Vrst_coord{loc.y(), loc.x()}, tag("place"), tag("name"),
                          tag("population")});
@@ -240,12 +240,12 @@ static_assert([] {
 
 /// Profile row for a highway=* value.
 /// @param highway Tag value.
-/// @return Row in kClasses, or nullptr when the value is empty or not a car road.
-const Vrst_class_def* find_class(std::string_view highway) {
-  if (highway.empty()) return nullptr;
+/// @return Copy of the row in kClasses, or nothing when the value is empty or not a car road.
+std::optional<Vrst_class_def> find_class(std::string_view highway) {
+  if (highway.empty()) return std::nullopt;
   for (const Vrst_class_def& c : kClasses)
-    if (c.highway == highway) return &c;
-  return nullptr;
+    if (c.highway == highway) return c;
+  return std::nullopt;
 }
 
 /// Parses an OSM maxspeed tag value: plain km/h, "mph" values, a few French zone
@@ -312,14 +312,14 @@ bool is_set(std::string_view v) { return !v.empty() && v != "no"; }
 /// @return The way summary, or nullopt when the way is not a car road. name_id and
 ///         ref_id are left 0 for the caller to fill.
 std::optional<Vrst_way_info> classify(const Vrst_osm_way& w) {
-  const Vrst_class_def* cd = find_class(w.tag("highway"));
+  std::optional<Vrst_class_def> cd = find_class(w.tag("highway"));
   const std::string_view mc = w.tag("motorcar");
   const std::string_view mv = w.tag("motor_vehicle");
   const std::string_view car = !mc.empty() ? mc : mv;  // most specific wins
 
   if (!cd) {
     if (w.tag("route") != "ferry" || !is_yes(car)) return std::nullopt;
-    cd = &kClasses[static_cast<int>(RoadClass::Ferry)];
+    cd = kClasses[static_cast<int>(RoadClass::Ferry)];
   }
   if (w.tag("area") == "yes") return std::nullopt;
   if (car == "no") return std::nullopt;
@@ -454,7 +454,7 @@ class Vrst_file_writer {
   /// @param data Elements; must stay alive until write().
   template <class T>
   void add(SectionId id, std::span<const T> data) {
-    m_sections.push_back({id, sizeof(T), data.size(), data.data()});
+    m_sections.push_back({id, sizeof(T), data.size(), std::as_bytes(data)});
   }
   /// Queues a vector as a section; see the span overload.
   /// @tparam T Element type, written as raw bytes.
@@ -471,7 +471,7 @@ class Vrst_file_writer {
   /// @throws std::runtime_error if the file cannot be created or written.
   Vrst_uint64 write(const fs::path& path) const {
     Vrst_file_header h{};
-    std::memcpy(h.magic, magic_for(m_type), 8);
+    magic_for(m_type).copy(h.magic, sizeof h.magic);
     h.format_version = kFormatVersion;
     h.file_type = static_cast<Vrst_uint32>(m_type);
     h.build_id = m_build_id;
@@ -488,22 +488,29 @@ class Vrst_file_writer {
 
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) throw std::runtime_error("cannot create " + path.string());
-    out.write(reinterpret_cast<const char*>(&h), sizeof h);
-    out.write(reinterpret_cast<const char*>(table.data()), table.size() * sizeof(Vrst_section_entry));
+    write_bytes(out, std::as_bytes(std::span<const Vrst_file_header, 1>(std::addressof(h), 1)));
+    write_bytes(out, std::as_bytes(std::span<const Vrst_section_entry>(table)));
     Vrst_uint64 pos = sizeof(Vrst_file_header) + table.size() * sizeof(Vrst_section_entry);
-    static constexpr char kZeros[kSectionAlign] = {};
+    static constexpr std::array<std::byte, kSectionAlign> kZeros{};
     for (Vrst_size i = 0; i < m_sections.size(); ++i) {
-      out.write(kZeros, static_cast<std::streamsize>(table[i].offset - pos));
-      const Vrst_uint64 bytes = m_sections[i].count * m_sections[i].elem_size;
-      out.write(static_cast<const char*>(m_sections[i].data), static_cast<std::streamsize>(bytes));
-      pos = table[i].offset + bytes;
+      write_bytes(out, std::span(kZeros).first(table[i].offset - pos));
+      write_bytes(out, m_sections[i].bytes);
+      pos = table[i].offset + m_sections[i].bytes.size();
     }
     if (!out.flush()) throw std::runtime_error("write failed: " + path.string());
     return pos;
   }
 
  private:
-  /// One section queued for writing: id, element size, count and a pointer to the data.
+  /// Writes raw bytes to a binary stream.
+  /// @param out Stream.
+  /// @param bytes Bytes to write.
+  static void write_bytes(std::ofstream& out, std::span<const std::byte> bytes) {
+    // ostream::write takes chars; this is the one place the bytes are reinterpreted.
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+
+  /// One section queued for writing: id, element size, count and a view of the data.
   /// Only a view: the caller keeps the data alive until write(). Lets `add<T>()` keep
   /// type information that write(), which only sees bytes, would otherwise lose.
   struct Vrst_section {
@@ -513,8 +520,8 @@ class Vrst_file_writer {
     Vrst_uint32 elem_size;
     /// Number of elements.
     Vrst_uint64 count;
-    /// First element; count * elem_size bytes are written from here.
-    const void* data;
+    /// The elements as count * elem_size bytes.
+    std::span<const std::byte> bytes;
   };
   /// Selects magic and file_type in the header.
   FileType m_type;
@@ -532,9 +539,9 @@ class Vrst_phase_timer {
  public:
   /// Prints the time since the previous phase (or the start) and starts the next one.
   /// @param name Phase label.
-  void phase(const char* name) {
+  void phase(std::string_view name) {
     const auto now = std::chrono::steady_clock::now();
-    std::printf("  %-22s %8.1f ms\n", name, std::chrono::duration<Vrst_float64, std::milli>(now - m_last).count());
+    std::printf("  %-22s %8.1f ms\n", std::string(name).c_str(), std::chrono::duration<Vrst_float64, std::milli>(now - m_last).count());
     m_last = now;
   }
   /// Time since the timer was created.

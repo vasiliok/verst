@@ -4,12 +4,14 @@
 /// Validates the nav files (and map.dat when present). Exit code 0 = all checks pass.
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <numeric>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "nav_files.h"
@@ -27,19 +29,21 @@ int g_failures = 0;
 /// @param ok Check result.
 /// @param name Check name, printed in the left column.
 /// @param detail Numbers that explain the result.
-void report(bool ok, const char* name, const std::string& detail) {
-  std::printf("[%s] %-34s %s\n", ok ? "PASS" : "FAIL", name, detail.c_str());
+void report(bool ok, std::string_view name, const std::string& detail) {
+  std::printf("[%s] %-34s %s\n", ok ? "PASS" : "FAIL", std::string(name).c_str(), detail.c_str());
   if (!ok) ++g_failures;
 }
 
 /// printf into a std::string, for report() details.
-/// @param f printf format.
+/// @tparam N Length of the format literal.
+/// @param f printf format, a string literal.
 /// @param args Values for f.
 /// @return Formatted text, cut at 511 characters.
-std::string fmt(const char* f, auto... args) {
-  char buf[512];
-  std::snprintf(buf, sizeof buf, f, args...);
-  return buf;
+template <Vrst_size N>
+std::string fmt(const char (&f)[N], auto... args) {
+  std::array<char, 512> buf{};
+  std::snprintf(buf.data(), buf.size(), f, args...);
+  return buf.data();
 }
 
 /// Fixed point to degrees.
@@ -80,17 +84,17 @@ Vrst_uint32 tail_of(const Vrst_graph& g, Vrst_uint32 i) {
 /// @param[out] bad_at Index of the first bad entry; the last index when only the
 ///             end value is wrong or all is well.
 /// @return true if off is a valid prefix array over last elements.
-bool check_offsets(std::span<const Vrst_uint32> off, Vrst_uint64 last, Vrst_uint64* bad_at) {
+bool check_offsets(std::span<const Vrst_uint32> off, Vrst_uint64 last, Vrst_uint64& bad_at) {
   if (off.empty() || off.front() != 0) {
-    *bad_at = 0;
+    bad_at = 0;
     return false;
   }
   for (Vrst_size i = 1; i < off.size(); ++i)
     if (off[i] < off[i - 1]) {
-      *bad_at = i;
+      bad_at = i;
       return false;
     }
-  *bad_at = off.size() - 1;
+  bad_at = off.size() - 1;
   return off.back() == last;
 }
 
@@ -143,9 +147,9 @@ class Vrst_union_find {
 /// @param[out] has_map Set when map.dat exists and opened.
 /// @return true if all four routing files opened, all files share one build_id and
 ///         the routing files agree on the segment count.
-bool check_files(const fs::path& dir, Vrst_nav_data& d, bool* has_map) {
+bool check_files(const fs::path& dir, Vrst_nav_data& d, bool& has_map) {
   bool all_ok = true;
-  auto try_open = [&](const char* name, auto&& open) {
+  auto try_open = [&](std::string_view name, auto&& open) {
     try {
       open();
       report(true, name, "magic, version, sections, elem_size ok");
@@ -158,8 +162,8 @@ bool check_files(const fs::path& dir, Vrst_nav_data& d, bool* has_map) {
   try_open("edges.dat header", [&] { d.open_file(FileType::Edges, dir); });
   try_open("geom.dat header", [&] { d.open_file(FileType::Geom, dir); });
   try_open("names.dat header", [&] { d.open_file(FileType::Names, dir); });
-  *has_map = fs::exists(dir / file_name_for(FileType::Map));
-  if (*has_map) {
+  has_map = fs::exists(dir / file_name_for(FileType::Map));
+  if (has_map) {
     try_open("map.dat header", [&] { d.open_file(FileType::Map, dir); });
   } else {
     std::printf("[----] %-34s %s\n", "map.dat", "absent: roads only");
@@ -168,7 +172,7 @@ bool check_files(const fs::path& dir, Vrst_nav_data& d, bool* has_map) {
 
   const Vrst_uint64 id = d.graph().file().build_id();
   const bool same = d.edges().file().build_id() == id && d.geom().file().build_id() == id &&
-                    d.names().file().build_id() == id && (!*has_map || d.map().file().build_id() == id);
+                    d.names().file().build_id() == id && (!has_map || d.map().file().build_id() == id);
   report(same, "same build_id", fmt("%016" PRIx64, id));
   const bool seg_counts = d.geom().seg_first_point().size() == Vrst_size(d.edges().num_segments()) + 1;
   report(seg_counts, "segment count edges/geom",
@@ -181,9 +185,9 @@ bool check_files(const fs::path& dir, Vrst_nav_data& d, bool* has_map) {
 void check_csr(const Vrst_graph& g) {
   const Vrst_uint32 A = g.num_arcs();
   Vrst_uint64 at = 0;
-  bool ok = check_offsets(g.fwd_first_out(), A, &at);
+  bool ok = check_offsets(g.fwd_first_out(), A, at);
   report(ok, "FWD_FIRST_OUT monotonic, last==A", ok ? fmt("V=%u A=%u", g.num_vertices(), A) : fmt("bad at %" PRIu64, at));
-  ok = check_offsets(g.bwd_first_in(), A, &at);
+  ok = check_offsets(g.bwd_first_in(), A, at);
   report(ok, "BWD_FIRST_IN monotonic, last==A", ok ? fmt("V=%u A=%u", g.num_vertices(), A) : fmt("bad at %" PRIu64, at));
 }
 
@@ -254,7 +258,7 @@ void check_geometry(const Vrst_nav_data& d) {
   const Vrst_geom& geo = d.geom();
   const Vrst_uint32 S = d.edges().num_segments();
   Vrst_uint64 at = 0;
-  const bool mono = check_offsets(geo.seg_first_point(), geo.points().size(), &at);
+  const bool mono = check_offsets(geo.seg_first_point(), geo.points().size(), at);
   report(mono, "SEG_FIRST_POINT monotonic, last==P",
          mono ? fmt("S=%u P=%zu", S, geo.points().size()) : fmt("bad at %" PRIu64, at));
   if (!mono) return;
@@ -331,12 +335,12 @@ void check_attrs(const Vrst_nav_data& d) {
 void check_map(const Vrst_nav_data& d) {
   const Vrst_map_layers& m = d.map();
   Vrst_uint64 at = 0;
-  bool ok = check_offsets(m.area_first_point(), m.all_area_points().size(), &at);
+  bool ok = check_offsets(m.area_first_point(), m.all_area_points().size(), at);
   report(ok, "AREA_FIRST_POINT monotonic, last", ok ? fmt("R=%u", m.num_areas()) : fmt("bad at %" PRIu64, at));
-  ok = check_offsets(m.area_first_index(), m.all_area_indices().size(), &at);
+  ok = check_offsets(m.area_first_index(), m.all_area_indices().size(), at);
   report(ok, "AREA_FIRST_INDEX monotonic, last", ok ? fmt("%zu triangles", m.all_area_indices().size() / 3)
                                                       : fmt("bad at %" PRIu64, at));
-  ok = check_offsets(m.line_first_point(), m.all_line_points().size(), &at);
+  ok = check_offsets(m.line_first_point(), m.all_line_points().size(), at);
   report(ok, "LINE_FIRST_POINT monotonic, last", ok ? fmt("L=%u", m.num_lines()) : fmt("bad at %" PRIu64, at));
   if (g_failures != 0) return;  // the checks below index through these arrays
 
@@ -401,21 +405,20 @@ void stats(const Vrst_nav_data& d) {
 /// @param d Opened files.
 /// @param way_id OSM way id.
 void dump_way(const Vrst_nav_data& d, Vrst_uint64 way_id) {
-  static const char* kClassNames[] = {"motorway",      "motorway_link", "trunk",          "trunk_link",
-                                      "primary",       "primary_link",  "secondary",      "secondary_link",
-                                      "tertiary",      "tertiary_link", "unclassified",   "residential",
-                                      "living_street", "service",       "ferry"};
-  static_assert(std::size(kClassNames) == kRoadClassCount);
+  static constexpr std::array<std::string_view, kRoadClassCount> kClassNames = {
+      "motorway", "motorway_link", "trunk",        "trunk_link",  "primary",       "primary_link",
+      "secondary", "secondary_link", "tertiary",   "tertiary_link", "unclassified", "residential",
+      "living_street", "service", "ferry"};
   bool found = false;
   for (Vrst_uint32 s = 0; s < d.edges().num_segments(); ++s) {
     if (d.edges().osm_way()[s] != way_id) continue;
     const Vrst_seg_attr& a = d.edges().attr()[s];
     const Vrst_seg_vertices sv = d.edges().vertices()[s];
     if (!found)
-      std::printf("way %" PRIu64 "  name=\"%.*s\" ref=\"%.*s\" class=%s maxspeed=%u flags=0x%x\n", way_id,
+      std::printf("way %" PRIu64 "  name=\"%.*s\" ref=\"%.*s\" class=%.*s maxspeed=%u flags=0x%x\n", way_id,
                   int(d.names().get(a.name_id).size()), d.names().get(a.name_id).data(),
-                  int(d.names().get(a.ref_id).size()), d.names().get(a.ref_id).data(), kClassNames[a.road_class],
-                  a.maxspeed_kmh, a.flags);
+                  int(d.names().get(a.ref_id).size()), d.names().get(a.ref_id).data(),
+                  int(kClassNames[a.road_class].size()), kClassNames[a.road_class].data(), a.maxspeed_kmh, a.flags);
     found = true;
     std::printf("segment %u  v%u -> v%u  %.1f m\n", s, sv.a, sv.b, a.length_dm / 10.0);
     for (Vrst_coord c : d.geom().segment_points(s)) std::printf("  %.7f %.7f\n", deg(c.lat_e7), deg(c.lon_e7));
@@ -444,12 +447,19 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "navcheck: %s\n", e.what());
       return 1;
     }
-    dump_way(d, std::strtoull(argv[3], nullptr, 10));
+    Vrst_uint64 way_id = 0;
+    try {
+      way_id = std::stoull(argv[3]);
+    } catch (const std::exception&) {
+      std::fprintf(stderr, "navcheck: bad way id %s\n", argv[3]);
+      return 2;
+    }
+    dump_way(d, way_id);
     return 0;
   }
 
   bool has_map = false;
-  if (!check_files(dir, d, &has_map)) {
+  if (!check_files(dir, d, has_map)) {
     std::printf("\nFAILED (%d)\n", g_failures);
     return 1;
   }

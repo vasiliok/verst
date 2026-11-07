@@ -166,13 +166,23 @@ TEST(VisibleTiles, NearestFirst) {
 
 // --- region tests (VRST_TEST_DIR) -------------------------------------------------
 
+/// Environment variable as text.
+/// @tparam N Length of the name literal.
+/// @param name Variable name.
+/// @return Its value, or "" when it is not set.
+template <Vrst_size N>
+std::string env(const char (&name)[N]) {
+  const char* v = std::getenv(name);  // C API; copied at once
+  return v ? v : "";
+}
+
 /// Opens the region once for all region tests and builds the index.
 class RegionTest : public ::testing::Test {
  protected:
   /// Opens VRST_TEST_DIR, builds the mesh center and the tile index once.
   static void SetUpTestSuite() {
-    const char* dir = std::getenv("VRST_TEST_DIR");
-    if (!dir || !*dir) return;
+    const std::string dir = env("VRST_TEST_DIR");
+    if (dir.empty()) return;
     s_data = std::make_unique<Vrst_nav_data>();
     s_data->open(dir);
     s_mesh = std::make_unique<Vrst_map_mesh>();
@@ -180,7 +190,7 @@ class RegionTest : public ::testing::Test {
     s_index = std::make_unique<Vrst_tile_index>();
     s_index->build(*s_data);
     s_builder = std::make_unique<Vrst_tile_builder>(*s_data, *s_index, s_mesh->center());
-    if (const char* e = std::getenv("VRST_TEST_EVERY")) s_every = Vrst_uint32(std::max(1, std::atoi(e)));
+    if (const std::string e = env("VRST_TEST_EVERY"); !e.empty()) s_every = Vrst_uint32(std::max(1, std::atoi(e.c_str())));
   }
   /// Frees the region.
   static void TearDownTestSuite() {

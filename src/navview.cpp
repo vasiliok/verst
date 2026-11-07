@@ -21,6 +21,7 @@
 #include <imgui_impl_opengl3.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -29,7 +30,10 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -160,8 +164,8 @@ void reset_view(Vrst_app& app) {
 
 /// Viewer state of a window, for the GLFW callbacks.
 /// @param w Window.
-/// @return State stored as the window user pointer.
-Vrst_app* app_of(GLFWwindow* w) { return static_cast<Vrst_app*>(glfwGetWindowUserPointer(w)); }
+/// @return State stored as the window user pointer (GLFW's C API keeps it untyped).
+Vrst_app& app_of(GLFWwindow* w) { return *static_cast<Vrst_app*>(glfwGetWindowUserPointer(w)); }
 
 /// Reads framebuffer size and pixel ratio after a resize or a move to another screen.
 /// @param win Window.
@@ -185,11 +189,11 @@ void update_size(GLFWwindow* win, Vrst_app& app) {
 /// @param mods Modifier bits; unused.
 void on_key(GLFWwindow* win, int key, [[maybe_unused]] int scancode, int action, [[maybe_unused]] int mods) {
   if (action == GLFW_RELEASE || ImGui::GetIO().WantCaptureKeyboard) return;
-  Vrst_app& app = *app_of(win);
+  Vrst_app& app = app_of(win);
   if (key >= GLFW_KEY_1 && key <= GLFW_KEY_9 && action == GLFW_PRESS) {
     const int g = key - GLFW_KEY_1;
     app.class_mask ^= kClassGroups[g];
-    std::printf("%-12s %s\n", kGroupNames[g], (app.class_mask & kClassGroups[g]) ? "on" : "off");
+    std::printf("%-12s %s\n", std::string(kGroupNames[g]).c_str(), (app.class_mask & kClassGroups[g]) ? "on" : "off");
     return;
   }
   switch (key) {
@@ -226,7 +230,7 @@ void on_key(GLFWwindow* win, int key, [[maybe_unused]] int scancode, int action,
 void on_mouse_button(GLFWwindow* win, int button, int action, [[maybe_unused]] int mods) {
   if (button != GLFW_MOUSE_BUTTON_LEFT) return;
   // Drags that start on the panel belong to ImGui; releases always end a map drag.
-  app_of(win)->dragging = action == GLFW_PRESS && !ImGui::GetIO().WantCaptureMouse;
+  app_of(win).dragging = action == GLFW_PRESS && !ImGui::GetIO().WantCaptureMouse;
 }
 
 /// GLFW cursor callback: pans while dragging and remembers the cursor for
@@ -235,7 +239,7 @@ void on_mouse_button(GLFWwindow* win, int button, int action, [[maybe_unused]] i
 /// @param x Cursor x in window coordinates; converted to framebuffer px.
 /// @param y Cursor y in window coordinates, from the top.
 void on_cursor(GLFWwindow* win, Vrst_float64 x, Vrst_float64 y) {
-  Vrst_app& app = *app_of(win);
+  Vrst_app& app = app_of(win);
   x *= app.px_ratio;
   y *= app.px_ratio;
   if (app.dragging) {
@@ -253,7 +257,7 @@ void on_cursor(GLFWwindow* win, Vrst_float64 x, Vrst_float64 y) {
 /// @param yoff Wheel steps; positive zooms in.
 void on_scroll(GLFWwindow* win, [[maybe_unused]] Vrst_float64 xoff, Vrst_float64 yoff) {
   if (ImGui::GetIO().WantCaptureMouse) return;
-  Vrst_app& app = *app_of(win);
+  Vrst_app& app = app_of(win);
   zoom_at(app.view, app.fb_w, app.fb_h, app.last_x, app.last_y, std::pow(1.25, yoff), app.initial_scale * 0.1, 2000.0);
 }
 
@@ -262,7 +266,7 @@ void on_scroll(GLFWwindow* win, [[maybe_unused]] Vrst_float64 xoff, Vrst_float64
 /// @param width New width; unused, update_size() reads both sizes itself.
 /// @param height New height; unused.
 void on_framebuffer_size(GLFWwindow* win, [[maybe_unused]] int width, [[maybe_unused]] int height) {
-  Vrst_app& app = *app_of(win);
+  Vrst_app& app = app_of(win);
   update_size(win, app);
 }
 
@@ -294,13 +298,12 @@ void draw_panel(Vrst_app& app) {
   ImGui::SeparatorText("Road classes");
   for (int i = 0; i < kClassGroupCount; ++i) {
     const int cls = std::countr_zero(kClassGroups[i]);
-    const Vrst_float32* c = kClassColors[cls];
+    const auto& c = kClassColors[cls];
     ImGui::ColorButton("##swatch", ImVec4(c[0], c[1], c[2], 1), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
     ImGui::SameLine();
     bool on = (app.class_mask & kClassGroups[i]) != 0;
-    char label[32];
-    std::snprintf(label, sizeof label, "%d  %s", i + 1, kGroupNames[i]);
-    if (ImGui::Checkbox(label, &on)) app.class_mask ^= kClassGroups[i];
+    const std::string label = std::to_string(i + 1) + "  " + std::string(kGroupNames[i]);
+    if (ImGui::Checkbox(label.c_str(), &on)) app.class_mask ^= kClassGroups[i];
   }
 
   ImGui::SeparatorText("Map layers");
@@ -361,13 +364,16 @@ void draw_panel(Vrst_app& app) {
 /// @param w Framebuffer width in px.
 /// @param h Framebuffer height in px.
 void save_bmp(const std::string& path, int w, int h) {
-  std::vector<Vrst_uint8> px(Vrst_size(w) * h * 3);
+  std::vector<char> px(Vrst_size(w) * h * 3);
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
   glReadBuffer(GL_BACK);
   glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, px.data());
   const Vrst_uint32 row = (Vrst_uint32(w) * 3 + 3) & ~3u, img = row * Vrst_uint32(h);
-  Vrst_uint8 hdr[54] = {'B', 'M'};
-  auto put32 = [&](int at, Vrst_uint32 v) { std::memcpy(hdr + at, &v, 4); };
+  std::array<char, 54> hdr = {'B', 'M'};
+  // BMP numbers are little-endian.
+  auto put32 = [&](int at, Vrst_uint32 v) {
+    for (int k = 0; k < 4; ++k) hdr[at + k] = char((v >> (8 * k)) & 0xff);
+  };
   put32(2, 54 + img);
   put32(10, 54);
   put32(14, 40);
@@ -377,11 +383,12 @@ void save_bmp(const std::string& path, int w, int h) {
   hdr[28] = 24;
   put32(34, img);
   std::ofstream f(path, std::ios::binary);
-  f.write(reinterpret_cast<char*>(hdr), 54);
-  const char pad[3] = {};
+  f.write(hdr.data(), hdr.size());
+  const std::array<char, 3> pad = {};
   for (int y = 0; y < h; ++y) {
-    f.write(reinterpret_cast<char*>(px.data() + Vrst_size(y) * w * 3), w * 3);
-    f.write(pad, row - Vrst_uint32(w) * 3);
+    const std::span<const char> line = std::span<const char>(px).subspan(Vrst_size(y) * w * 3, Vrst_size(w) * 3);
+    f.write(line.data(), std::streamsize(line.size()));
+    f.write(pad.data(), row - Vrst_uint32(w) * 3);
   }
 }
 
@@ -408,7 +415,7 @@ int run(const Vrst_options& opt) {
   app.labels.build(app.data, app.mesh);
   {
     std::vector<std::string> fonts;
-    for (const char* f : kLabelFontFiles) fonts.push_back(std::string(VRST_FONT_DIR) + "/" + f);
+    for (const std::string_view f : kLabelFontFiles) fonts.push_back(std::string(VRST_FONT_DIR) + "/" + std::string(f));
     app.atlas.build(fonts, app.labels.codepoints());
     app.labels.measure(app.atlas);
     std::printf("labels: %zu places, %zu glyphs, atlas %dx%d\n", app.labels.size(), app.atlas.size(),
@@ -509,7 +516,7 @@ int run(const Vrst_options& opt) {
     // Tiles: draw what is cached, ask the workers for the rest.
     Vrst_tile_frame tf;
     const std::vector<Vrst_uint64> draw_keys = select_tiles(tile_renderer, loader, app.tiles, app.view, app.fb_w,
-                                                            app.fb_h, app.mesh.center(), ++frame, kTileBudget, &tf);
+                                                            app.fb_h, app.mesh.center(), ++frame, kTileBudget, tf);
     app.level = tf.level;
     app.tiles_visible = tf.visible;
     app.tiles_missing = tf.missing;
@@ -587,32 +594,32 @@ int main(int argc, char** argv) {
   nav::viewer::Vrst_options opt;
   bool ok = argc >= 2;
   if (ok) opt.dir = argv[1];
-  auto number = [&](const char* s, nav::Vrst_float64* out) {
-    char* end = nullptr;
-    *out = std::strtod(s, &end);
-    return end != s && *end == '\0';
+  auto number = [](std::string_view s, nav::Vrst_float64& out) {
+    const std::optional<nav::Vrst_float64> v = nav::parse_float64(s);
+    if (v) out = *v;
+    return v.has_value();
   };
   for (int i = 2; ok && i < argc; ++i) {
     const std::string a = argv[i];
     nav::Vrst_float64 lat = 0, lon = 0;
     if (a == "--screenshot" && i + 1 < argc) {
       opt.screenshot = argv[++i];
-    } else if (a == "--center" && i + 2 < argc && number(argv[i + 1], &lat) && number(argv[i + 2], &lon) &&
+    } else if (a == "--center" && i + 2 < argc && number(argv[i + 1], lat) && number(argv[i + 2], lon) &&
                std::abs(lat) <= 90 && std::abs(lon) <= 180) {
       opt.center = {static_cast<nav::Vrst_int32>(std::lround(lat * 1e7)), static_cast<nav::Vrst_int32>(std::lround(lon * 1e7))};
       i += 2;
       opt.has_center = true;
-    } else if (a == "--mpp" && i + 1 < argc && number(argv[i + 1], &opt.metres_per_point) && opt.metres_per_point > 0) {
+    } else if (a == "--mpp" && i + 1 < argc && number(argv[i + 1], opt.metres_per_point) && opt.metres_per_point > 0) {
       ++i;
     } else if (a == "--gpx" && i + 1 < argc) {
       opt.gpx = argv[++i];
-    } else if (a == "--speed" && i + 1 < argc && number(argv[i + 1], &opt.speed) && opt.speed > 0) {
+    } else if (a == "--speed" && i + 1 < argc && number(argv[i + 1], opt.speed) && opt.speed > 0) {
       ++i;
-    } else if (a == "--rotate" && i + 1 < argc && number(argv[i + 1], &opt.rotate_deg)) {
+    } else if (a == "--rotate" && i + 1 < argc && number(argv[i + 1], opt.rotate_deg)) {
       ++i;
     } else if (a == "--tile-borders") {
       opt.tile_borders = true;
-    } else if (a == "--track-time" && i + 1 < argc && number(argv[i + 1], &opt.track_time) && opt.track_time >= 0) {
+    } else if (a == "--track-time" && i + 1 < argc && number(argv[i + 1], opt.track_time) && opt.track_time >= 0) {
       ++i;
     } else {
       ok = false;

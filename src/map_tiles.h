@@ -10,8 +10,6 @@
 /// MBTiles and MapLibre use.
 #pragma once
 
-#include <mapbox/earcut.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -236,61 +234,19 @@ class Vrst_tile_index {
   /// Sorts every road segment, area, line and vertex into the tiles of each level it
   /// belongs to, by bounding box.
   /// @param d Opened nav files; map.dat is used when present.
-  void build(const Vrst_nav_data& d) {
-    for (auto& m : m_tiles) m.clear();
-    auto add = [&](int level, const Vrst_box2d& b, auto member, Vrst_uint32 id) {
-      const int z = kTileLevels[level].z;
-      const Vrst_tile_id a = tile_at(z, {b.lo.x, b.hi.y}), c = tile_at(z, {b.hi.x, b.lo.y});
-      for (Vrst_int32 y = a.y; y <= c.y; ++y)
-        for (Vrst_int32 x = a.x; x <= c.x; ++x) (m_tiles[level][tile_key({z, x, y})].*member).push_back(id);
-    };
-    const Vrst_geom& geo = d.geom();
-    const Vrst_edges& e = d.edges();
-    for (Vrst_uint32 s = 0; s < e.num_segments(); ++s) {
-      const Vrst_box2d b = box_of(geo.points().subspan(geo.seg_first_point()[s], geo.seg_first_point()[s + 1] - geo.seg_first_point()[s]));
-      const Vrst_uint32 cls = bit(static_cast<RoadClass>(e.attr()[s].road_class));
-      for (int l = 0; l < kTileLevelCount; ++l)
-        if (kTileLevels[l].class_mask & cls) add(l, b, &Vrst_tile_items::segs, s);
-    }
-    if (d.has_map()) {
-      const Vrst_map_layers& m = d.map();
-      for (Vrst_uint32 a = 0; a < m.num_areas(); ++a) {
-        const Vrst_box2d b = box_of(m.area_outer(a));
-        const bool building = m.area_kind(a) == AreaKind::Building;
-        const Vrst_float64 size = std::max(b.hi.x - b.lo.x, b.hi.y - b.lo.y);
-        for (int l = 0; l < kTileLevelCount; ++l)
-          if (building ? kTileLevels[l].buildings : size >= kTileLevels[l].min_area_m) add(l, b, &Vrst_tile_items::areas, a);
-      }
-      for (Vrst_uint32 i = 0; i < m.num_lines(); ++i) {
-        const Vrst_box2d b = box_of(m.line_points(i));
-        const bool stream = m.line_attr()[i].kind == Vrst_uint8(LineKind::Stream);
-        for (int l = 0; l < kTileLevelCount; ++l)
-          if (!stream || kTileLevels[l].streams) add(l, b, &Vrst_tile_items::lines, i);
-      }
-    }
-    const Vrst_graph& g = d.graph();
-    std::vector<Vrst_uint8> degree(g.num_vertices(), 0);
-    for (const Vrst_seg_vertices& sv : e.vertices()) {
-      degree[sv.a] = Vrst_uint8(std::min(degree[sv.a] + 1, 2));
-      degree[sv.b] = Vrst_uint8(std::min(degree[sv.b] + 1, 2));
-    }
-    m_dead_end.assign(g.num_vertices(), 0);
-    for (Vrst_uint32 v = 0; v < g.num_vertices(); ++v) {
-      m_dead_end[v] = degree[v] == 1;
-      const Vrst_vec2d p = mercator(g.vertex_coord()[v]);
-      for (int l = 0; l < kTileLevelCount; ++l)
-        if (kTileLevels[l].vertices) add(l, {p, p}, &Vrst_tile_items::vertices, v);
-    }
-  }
+  void build(const Vrst_nav_data& d);
 
   /// Objects of one tile.
   /// @param t Tile; its zoom must be one of kTileLevels.
-  /// @return Items, or nullptr when nothing touches the tile.
-  const Vrst_tile_items* find(Vrst_tile_id t) const {
+  /// @return Items; empty lists when nothing touches the tile.
+  const Vrst_tile_items& find(Vrst_tile_id t) const;
+
+  /// Whether anything touches a tile.
+  /// @param t Tile; its zoom must be one of kTileLevels.
+  /// @return true when the index has items for it.
+  bool contains(Vrst_tile_id t) const {
     const int l = level_of_zoom(t.z);
-    if (l < 0) return nullptr;
-    const auto it = m_tiles[l].find(tile_key(t));
-    return it == m_tiles[l].end() ? nullptr : &it->second;
+    return l >= 0 && m_tiles[l].contains(tile_key(t));
   }
 
   /// Whether a graph vertex is a dead end (one segment), for the red dots.
@@ -305,12 +261,7 @@ class Vrst_tile_index {
   /// All non-empty tiles of a level, in no particular order.
   /// @param level Index into kTileLevels.
   /// @return Tiles.
-  std::vector<Vrst_tile_id> tile_ids(int level) const {
-    std::vector<Vrst_tile_id> out;
-    out.reserve(m_tiles[level].size());
-    for (const auto& [k, items] : m_tiles[level]) out.push_back(tile_of_key(k));
-    return out;
-  }
+  std::vector<Vrst_tile_id> tile_ids(int level) const;
 
   /// Number of non-empty tiles of a level.
   /// @param level Index into kTileLevels.
@@ -322,15 +273,7 @@ class Vrst_tile_index {
   /// and longitude, so only the two extreme corners are projected.
   /// @param pts Points.
   /// @return Box; empty input gives a box around 0,0.
-  static Vrst_box2d box_of(std::span<const Vrst_coord> pts) {
-    if (pts.empty()) return {{0, 0}, {0, 0}};
-    Vrst_coord lo = pts[0], hi = pts[0];
-    for (const Vrst_coord& c : pts) {
-      lo = {std::min(lo.lat_e7, c.lat_e7), std::min(lo.lon_e7, c.lon_e7)};
-      hi = {std::max(hi.lat_e7, c.lat_e7), std::max(hi.lon_e7, c.lon_e7)};
-    }
-    return {mercator(lo), mercator(hi)};
-  }
+  static Vrst_box2d box_of(std::span<const Vrst_coord> pts);
 
   /// Items per tile key, one map per level.
   std::unordered_map<Vrst_uint64, Vrst_tile_items> m_tiles[kTileLevelCount];
@@ -353,104 +296,26 @@ class Vrst_tile_builder {
   /// Builds one tile.
   /// @param id Tile; its zoom must be one of kTileLevels.
   /// @return Draw arrays; empty arrays when nothing touches the tile.
-  std::unique_ptr<Vrst_tile_data> build(Vrst_tile_id id) const {
-    auto out = std::make_unique<Vrst_tile_data>();
-    out->id = id;
-    const Vrst_box2d tb = tile_bounds(id);
-    out->origin = {tb.lo.x - m_center.x, tb.lo.y - m_center.y};
-    const Vrst_tile_items* items = m_index.find(id);
-    const Vrst_tile_level& level = kTileLevels[level_of_zoom(id.z)];
-    // Pieces a little outside the tile are kept, so wide lines meet across the border.
-    const Vrst_float64 margin = tile_side(id.z) * 0.02;
-    const Vrst_box2d keep{{tb.lo.x - margin, tb.lo.y - margin}, {tb.hi.x + margin, tb.hi.y + margin}};
-    std::vector<Vrst_line_instance> buckets[kTileLayerCount][kLineStyleCount];
-    std::vector<Vrst_gpu_point> fills[kAreaKindCount];
-    if (items) {
-      std::vector<Vrst_vec2d> pts;
-      // Roads.
-      const Vrst_geom& geo = m_data.geom();
-      for (const Vrst_uint32 s : items->segs) {
-        const Vrst_seg_attr& a = m_data.edges().attr()[s];
-        project(geo.points().subspan(geo.seg_first_point()[s], geo.seg_first_point()[s + 1] - geo.seg_first_point()[s]), &pts);
-        simplify(&pts, level.tolerance_m);
-        const int layer = a.flags & kSegTunnel ? kLayerTunnel : a.flags & kSegBridge ? kLayerBridge : kLayerGround;
-        const Vrst_uint32 attr = a.road_class | (a.flags & kSegOneway ? kTileLineOneway : 0);
-        add_pieces(pts, tb.lo, keep, attr, &buckets[layer][a.road_class]);
-      }
-      if (m_data.has_map()) {
-        const Vrst_map_layers& m = m_data.map();
-        for (const Vrst_uint32 l : items->lines) {
-          const Vrst_line_attr& la = m.line_attr()[l];
-          project(m.line_points(l), &pts);
-          simplify(&pts, level.tolerance_m);
-          const int layer = la.flags & kLineTunnel ? kLayerTunnel : la.flags & kLineBridge ? kLayerBridge : kLayerGround;
-          const int style = kStyleLineKind0 + la.kind;
-          add_pieces(pts, tb.lo, keep, Vrst_uint32(style), &buckets[layer][style]);
-        }
-        for (const Vrst_uint32 ar : items->areas) add_area(ar, level, tb.lo, keep, fills, buckets[kLayerGround]);
-      }
-      // Graph vertex dots, dead ends last so they are drawn on top.
-      for (int pass = 0; pass < 2; ++pass)
-        for (const Vrst_uint32 v : items->vertices) {
-          const bool dead = m_index.dead_end(v);
-          if (dead != (pass == 1)) continue;
-          const Vrst_vec2d p = mercator(m_data.graph().vertex_coord()[v]);
-          out->points.push_back({Vrst_float32(p.x - tb.lo.x), Vrst_float32(p.y - tb.lo.y), Vrst_uint32(dead)});
-        }
-    }
-    for (int k = 0; k < kAreaKindCount; ++k) {
-      out->fill_ranges[k] = {Vrst_uint32(out->fills.size()), Vrst_uint32(fills[k].size())};
-      out->fills.insert(out->fills.end(), fills[k].begin(), fills[k].end());
-    }
-    for (int layer = 0; layer < kTileLayerCount; ++layer)
-      for (int style = 0; style < kLineStyleCount; ++style) {
-        const std::vector<Vrst_line_instance>& b = buckets[layer][style];
-        out->line_ranges[layer][style] = {Vrst_uint32(out->lines.size()), Vrst_uint32(b.size())};
-        out->lines.insert(out->lines.end(), b.begin(), b.end());
-      }
-    return out;
-  }
+  std::unique_ptr<Vrst_tile_data> build(Vrst_tile_id id) const;
 
  private:
+  /// Line instances of one layer, one list per line style.
+  using Vrst_style_buckets = std::array<std::vector<Vrst_line_instance>, kLineStyleCount>;
+  /// Fill triangle vertices, one list per AreaKind.
+  using Vrst_area_buckets = std::array<std::vector<Vrst_gpu_point>, kAreaKindCount>;
+
   /// Projects geographic points to absolute Mercator.
   /// @param in Points.
   /// @param[out] out Receives the projected points (replaced).
-  static void project(std::span<const Vrst_coord> in, std::vector<Vrst_vec2d>* out) {
-    out->resize(in.size());
-    for (Vrst_size i = 0; i < in.size(); ++i) (*out)[i] = mercator(in[i]);
+  static void project(std::span<const Vrst_coord> in, std::vector<Vrst_vec2d>& out) {
+    out.resize(in.size());
+    for (Vrst_size i = 0; i < in.size(); ++i) out[i] = mercator(in[i]);
   }
 
   /// Douglas–Peucker simplification in place; the end points are always kept.
   /// @param pts Polyline, replaced by the kept points.
   /// @param tol Tolerance in Mercator metres; 0 leaves the line unchanged.
-  static void simplify(std::vector<Vrst_vec2d>* pts, Vrst_float64 tol) {
-    if (tol <= 0 || pts->size() <= 2) return;
-    const std::vector<Vrst_vec2d>& p = *pts;
-    std::vector<Vrst_uint8> keep(p.size(), 0);
-    keep.front() = keep.back() = 1;
-    std::vector<std::pair<Vrst_size, Vrst_size>> stack{{0, p.size() - 1}};
-    while (!stack.empty()) {
-      const auto [i, j] = stack.back();
-      stack.pop_back();
-      const Vrst_float64 dx = p[j].x - p[i].x, dy = p[j].y - p[i].y, len = std::hypot(dx, dy);
-      Vrst_float64 best = -1;
-      Vrst_size at = i;
-      for (Vrst_size k = i + 1; k < j; ++k) {
-        const Vrst_float64 px = p[k].x - p[i].x, py = p[k].y - p[i].y;
-        const Vrst_float64 dist = len > 0 ? std::abs(px * dy - py * dx) / len : std::hypot(px, py);
-        if (dist > best) best = dist, at = k;
-      }
-      if (best > tol) {
-        keep[at] = 1;
-        stack.push_back({i, at});
-        stack.push_back({at, j});
-      }
-    }
-    Vrst_size n = 0;
-    for (Vrst_size k = 0; k < p.size(); ++k)
-      if (keep[k]) (*pts)[n++] = p[k];
-    pts->resize(n);
-  }
+  static void simplify(std::vector<Vrst_vec2d>& pts, Vrst_float64 tol);
 
   /// Whether a segment's bounding box touches a box.
   /// @param a Segment start.
@@ -469,16 +334,7 @@ class Vrst_tile_builder {
   /// @param attr Style and flags for every piece.
   /// @param[out] out Receives the instances.
   static void add_pieces(const std::vector<Vrst_vec2d>& pts, Vrst_vec2d origin, const Vrst_box2d& keep, Vrst_uint32 attr,
-                         std::vector<Vrst_line_instance>* out) {
-    Vrst_float64 dist = 0;
-    for (Vrst_size i = 0; i + 1 < pts.size(); ++i) {
-      const Vrst_vec2d a = pts[i], b = pts[i + 1];
-      if (touches(a, b, keep))
-        out->push_back({Vrst_float32(a.x - origin.x), Vrst_float32(a.y - origin.y), Vrst_float32(b.x - origin.x),
-                        Vrst_float32(b.y - origin.y), Vrst_float32(dist), attr});
-      dist += std::hypot(b.x - a.x, b.y - a.y);
-    }
-  }
+                         std::vector<Vrst_line_instance>& out);
 
   /// Adds one map.dat area: its triangles that touch the tile and, for buildings, the
   /// outline. Base tiles use the stored triangles; coarser levels simplify the outer
@@ -490,40 +346,7 @@ class Vrst_tile_builder {
   /// @param[out] fills Triangle vertices per AreaKind.
   /// @param[out] lines Line buckets of the ground layer, for building outlines.
   void add_area(Vrst_uint32 a, const Vrst_tile_level& level, Vrst_vec2d origin, const Vrst_box2d& keep,
-                std::vector<Vrst_gpu_point>* fills, std::vector<Vrst_line_instance>* lines) const {
-    const Vrst_map_layers& m = m_data.map();
-    const AreaKind kind = m.area_kind(a);
-    std::vector<Vrst_vec2d> pts;
-    std::vector<Vrst_uint32> tris;
-    if (level.tolerance_m <= 0) {
-      project(m.area_points(a), &pts);
-      const std::span<const Vrst_uint32> idx = m.area_indices(a);
-      tris.assign(idx.begin(), idx.end());
-    } else {
-      project(m.area_outer(a), &pts);
-      pts.push_back(pts.front());  // closed, so simplification keeps both ends of the seam
-      simplify(&pts, level.tolerance_m);
-      pts.pop_back();
-      if (pts.size() < 3) return;
-      std::vector<std::vector<std::array<Vrst_float64, 2>>> poly(1);
-      for (const Vrst_vec2d& p : pts) poly[0].push_back({p.x, p.y});
-      tris = mapbox::earcut<Vrst_uint32>(poly);
-    }
-    std::vector<Vrst_gpu_point>& out = fills[int(kind)];
-    for (Vrst_size t = 0; t + 2 < tris.size(); t += 3) {
-      const Vrst_vec2d p0 = pts[tris[t]], p1 = pts[tris[t + 1]], p2 = pts[tris[t + 2]];
-      const Vrst_box2d tb{{std::min({p0.x, p1.x, p2.x}), std::min({p0.y, p1.y, p2.y})},
-                          {std::max({p0.x, p1.x, p2.x}), std::max({p0.y, p1.y, p2.y})}};
-      if (!touches(tb.lo, tb.hi, keep)) continue;
-      for (const Vrst_vec2d& p : {p0, p1, p2})
-        out.push_back({Vrst_float32(p.x - origin.x), Vrst_float32(p.y - origin.y), Vrst_uint32(kind)});
-    }
-    if (kind == AreaKind::Building) {
-      std::vector<Vrst_vec2d> ring(pts.begin(), pts.begin() + m.area_outer(a).size());
-      ring.push_back(ring.front());
-      add_pieces(ring, origin, keep, kStyleBuildingEdge, &lines[kStyleBuildingEdge]);
-    }
-  }
+                Vrst_area_buckets& fills, Vrst_style_buckets& lines) const;
 
   /// Nav files the tiles are built from.
   const Vrst_nav_data& m_data;
@@ -545,43 +368,19 @@ class Vrst_tile_loader {
     for (int i = 0; i < std::max(threads, 1); ++i) m_workers.emplace_back([this] { work(); });
   }
   /// Stops and joins the workers; tiles being built are finished first.
-  ~Vrst_tile_loader() {
-    {
-      std::lock_guard<std::mutex> lock(m_mutex);
-      m_stop = true;
-    }
-    m_wake.notify_all();
-    for (std::thread& t : m_workers) t.join();
-  }
+  ~Vrst_tile_loader();
   Vrst_tile_loader(const Vrst_tile_loader&) = delete;             ///< Owns threads: not copyable.
   Vrst_tile_loader& operator=(const Vrst_tile_loader&) = delete;  ///< Owns threads: not copyable.
 
   /// Replaces the queue with the tiles wanted now, most important first. Tiles being
   /// built or already finished are not queued again.
   /// @param wanted Missing tiles, nearest to the screen center first.
-  void request(const std::vector<Vrst_tile_id>& wanted) {
-    {
-      std::lock_guard<std::mutex> lock(m_mutex);
-      m_queue.clear();
-      for (const Vrst_tile_id& t : wanted)
-        if (!m_busy.count(tile_key(t))) m_queue.push_back(t);
-    }
-    m_wake.notify_all();
-  }
+  void request(const std::vector<Vrst_tile_id>& wanted);
 
   /// Takes finished tiles.
   /// @param max At most this many; uploading is the per-frame cost.
   /// @return Finished tiles, oldest first.
-  std::vector<std::unique_ptr<Vrst_tile_data>> take(Vrst_size max) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    std::vector<std::unique_ptr<Vrst_tile_data>> out;
-    while (!m_done.empty() && out.size() < max) {
-      m_busy.erase(tile_key(m_done.front()->id));
-      out.push_back(std::move(m_done.front()));
-      m_done.pop_front();
-    }
-    return out;
-  }
+  std::vector<std::unique_ptr<Vrst_tile_data>> take(Vrst_size max);
 
   /// Tiles queued or being built.
   /// @return Count.
@@ -592,22 +391,7 @@ class Vrst_tile_loader {
 
  private:
   /// Worker loop: take the first queued tile, build it, hand it over.
-  void work() {
-    for (;;) {
-      Vrst_tile_id id{};
-      {
-        std::unique_lock<std::mutex> lock(m_mutex);
-        m_wake.wait(lock, [this] { return m_stop || !m_queue.empty(); });
-        if (m_stop) return;
-        id = m_queue.front();
-        m_queue.pop_front();
-        m_busy.insert(tile_key(id));
-      }
-      std::unique_ptr<Vrst_tile_data> t = m_builder.build(id);
-      std::lock_guard<std::mutex> lock(m_mutex);
-      m_done.push_back(std::move(t));
-    }
-  }
+  void work();
 
   /// Builder shared by the workers.
   const Vrst_tile_builder& m_builder;
@@ -636,25 +420,6 @@ class Vrst_tile_loader {
 /// @param z Grid zoom.
 /// @return Tiles; empty when the view covers more than 4096 tiles (never with a
 ///         level from level_for()).
-inline std::vector<Vrst_tile_id> visible_tiles(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d map_center, int z) {
-  Vrst_vec2d lo{1e300, 1e300}, hi{-1e300, -1e300};
-  for (const auto& [sx, sy] : {std::pair{0, 0}, {fb_w, 0}, {0, fb_h}, {fb_w, fb_h}}) {
-    const Vrst_vec2d w = screen_to_world(v, fb_w, fb_h, sx, sy);
-    lo = {std::min(lo.x, w.x + map_center.x), std::min(lo.y, w.y + map_center.y)};
-    hi = {std::max(hi.x, w.x + map_center.x), std::max(hi.y, w.y + map_center.y)};
-  }
-  const Vrst_tile_id a = tile_at(z, {lo.x, hi.y}), c = tile_at(z, {hi.x, lo.y});
-  std::vector<Vrst_tile_id> out;
-  if (Vrst_int64(c.x - a.x + 1) * (c.y - a.y + 1) > 4096) return out;
-  for (Vrst_int32 y = a.y; y <= c.y; ++y)
-    for (Vrst_int32 x = a.x; x <= c.x; ++x) out.push_back({z, x, y});
-  const Vrst_vec2d mid{v.center.x + map_center.x, v.center.y + map_center.y};
-  const auto dist = [&](const Vrst_tile_id& t) {
-    const Vrst_box2d b = tile_bounds(t);
-    return std::hypot((b.lo.x + b.hi.x) / 2 - mid.x, (b.lo.y + b.hi.y) / 2 - mid.y);
-  };
-  std::sort(out.begin(), out.end(), [&](const Vrst_tile_id& p, const Vrst_tile_id& q) { return dist(p) < dist(q); });
-  return out;
-}
+std::vector<Vrst_tile_id> visible_tiles(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d map_center, int z);
 
 }  // namespace nav

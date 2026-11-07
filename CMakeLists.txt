@@ -80,17 +80,50 @@ FetchContent_Declare(earcut
   SOURCE_SUBDIR include)  # header only: no CMakeLists there, so its tests are not added
 FetchContent_MakeAvailable(earcut)
 
+find_package(Threads REQUIRED)
+
+# --- vrst_core: nav files, road mesh, tiles, GPS tracks (no GL) ---------------
+# Shared by every tool, the desktop viewer and the iPhone app.
+add_library(vrst_core STATIC
+  src/mapped_file.cpp
+  src/nav_files.cpp
+  src/map_scene.cpp
+  src/map_tiles.cpp
+  src/gpx_track.cpp)
+target_include_directories(vrst_core PUBLIC src)
+target_include_directories(vrst_core SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
+target_link_libraries(vrst_core PUBLIC vrst_types Threads::Threads)
+nav_warnings(vrst_core)
+
+# --- vrst_render: OpenGL map drawing and labels (desktop GL 3.3, iOS GLES 3.0) ---
+if(NAV_BUILD_VIEWER OR IOS)
+  add_library(vrst_render STATIC
+    src/glyph_atlas.cpp
+    src/map_labels.cpp
+    src/map_renderer.cpp
+    src/tile_renderer.cpp)
+  target_link_libraries(vrst_render PUBLIC vrst_core freetype)
+  if(IOS)
+    target_link_libraries(vrst_render PUBLIC "-framework OpenGLES")
+  else()
+    # Pre-generated GL 3.3 core loader (see third_party/glad/README).
+    add_library(glad STATIC third_party/glad/src/glad.c)
+    target_include_directories(glad PUBLIC third_party/glad/include)
+    target_link_libraries(vrst_render PUBLIC glad)
+  endif()
+  nav_warnings(vrst_render)
+endif()
+
 # --- iOS: only the app (cmake -G Xcode -DCMAKE_SYSTEM_NAME=iOS, see ios/README.md) ---
 if(IOS)
   add_subdirectory(ios)
   return()
 endif()
 
-find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 
 # --- osm2nav ---------------------------------------------------------------
-add_executable(osm2nav src/osm2nav.cpp)
+add_executable(osm2nav src/osm2nav.cpp src/osm_map_layers.cpp)
 target_include_directories(osm2nav SYSTEM PRIVATE
   third_party/libosmium/include
   third_party/protozero/include
@@ -109,15 +142,13 @@ if(NAV_BUILD_TESTS)
     GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(googletest)
   add_executable(tile_test tests/tile_test.cpp)
-  target_include_directories(tile_test PRIVATE src)
-  target_include_directories(tile_test SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
-  target_link_libraries(tile_test PRIVATE vrst_types GTest::gtest_main Threads::Threads)
+  target_link_libraries(tile_test PRIVATE vrst_core GTest::gtest_main)
   nav_warnings(tile_test)
 endif()
 
 # --- navcheck --------------------------------------------------------------
 add_executable(navcheck src/navcheck.cpp)
-target_link_libraries(navcheck PRIVATE vrst_types)
+target_link_libraries(navcheck PRIVATE vrst_core)
 nav_warnings(navcheck)
 
 # --- navview ---------------------------------------------------------------
@@ -137,10 +168,6 @@ if(NAV_BUILD_VIEWER)
     GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(glfw imgui)
 
-  # Pre-generated GL 3.3 core loader (see third_party/glad/README).
-  add_library(glad STATIC third_party/glad/src/glad.c)
-  target_include_directories(glad PUBLIC third_party/glad/include)
-
   # Dear ImGui has no CMake build: core + GLFW/OpenGL3 backends.
   add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -154,8 +181,7 @@ if(NAV_BUILD_VIEWER)
 
   find_package(OpenGL REQUIRED)
   add_executable(navview src/navview.cpp)
-  target_include_directories(navview SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
-  target_link_libraries(navview PRIVATE vrst_types glad imgui freetype OpenGL::GL Threads::Threads)
+  target_link_libraries(navview PRIVATE vrst_render imgui OpenGL::GL)
   target_compile_definitions(navview PRIVATE VRST_FONT_DIR="${VRST_FONT_DIR}")
   nav_warnings(navview)
 endif()

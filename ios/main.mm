@@ -136,7 +136,7 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
     _labels.build(_data, _mesh);
     NSString* fontDir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"fonts"];
     std::vector<std::string> fonts;
-    for (const char* f : kLabelFontFiles) fonts.push_back(std::string(fontDir.UTF8String) + "/" + f);
+    for (const std::string_view f : kLabelFontFiles) fonts.push_back(std::string(fontDir.UTF8String) + "/" + std::string(f));
     _atlas.build(fonts, _labels.codepoints());
     _labels.measure(_atlas);
     _showLabels = YES;
@@ -231,7 +231,7 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
   const CGFloat px = [self pxPerPoint];
   Vrst_tile_frame tf;
   const std::vector<Vrst_uint64> keys =
-      select_tiles(_tiles, *_loader, _index, _view, w, h, _mesh.center(), ++_frame, kTileBudget, &tf);
+      select_tiles(_tiles, *_loader, _index, _view, w, h, _mesh.center(), ++_frame, kTileBudget, tf);
   _opt.point_px = Vrst_float32(2.5 * px);
   _opt.px_ratio = px;
   _tiles.draw(_view, w, h, keys, ground_metres_per_point(_view, _mesh.center(), px), _opt);
@@ -309,7 +309,7 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
   NSMutableArray<UIAction*>* items = [NSMutableArray array];
   for (int i = 0; i < kClassGroupCount; ++i) {
     __weak VrstMapController* weak = self;
-    UIAction* a = [UIAction actionWithTitle:@(kGroupNames[i]) image:nil identifier:nil
+    UIAction* a = [UIAction actionWithTitle:@(std::string(kGroupNames[i]).c_str()) image:nil identifier:nil
                                     handler:^(__kindof UIAction*) { [weak toggleGroup:i]; }];
     a.state = (_opt.class_mask & kClassGroups[i]) ? UIMenuElementStateOn : UIMenuElementStateOff;
     [items addObject:a];

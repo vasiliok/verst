@@ -6,6 +6,7 @@
 #pragma once
 
 #include <bit>
+#include <string_view>
 
 #include "vrst_types.h"
 
@@ -33,22 +34,22 @@ inline constexpr char kMagicMap[8] = {'N', 'A', 'V', 'M', 'A', 'P', '\0', '\0'};
 
 /// Magic bytes of a file type.
 /// @param t File type.
-/// @return 8 bytes, not NUL-terminated; nullptr for an unknown type.
-inline const char* magic_for(FileType t) {
+/// @return The 8 magic bytes; empty for an unknown type.
+inline constexpr std::string_view magic_for(FileType t) {
   switch (t) {
-    case FileType::Graph: return kMagicGraph;
-    case FileType::Edges: return kMagicEdges;
-    case FileType::Geom: return kMagicGeom;
-    case FileType::Names: return kMagicNames;
-    case FileType::Map: return kMagicMap;
+    case FileType::Graph: return {kMagicGraph, 8};
+    case FileType::Edges: return {kMagicEdges, 8};
+    case FileType::Geom: return {kMagicGeom, 8};
+    case FileType::Names: return {kMagicNames, 8};
+    case FileType::Map: return {kMagicMap, 8};
   }
-  return nullptr;
+  return {};
 }
 
 /// File name of a file type inside an output directory.
 /// @param t File type.
-/// @return "graph.dat", "edges.dat", "geom.dat", "names.dat" or "map.dat"; nullptr for an unknown type.
-inline const char* file_name_for(FileType t) {
+/// @return "graph.dat", "edges.dat", "geom.dat", "names.dat" or "map.dat"; empty for an unknown type.
+inline constexpr std::string_view file_name_for(FileType t) {
   switch (t) {
     case FileType::Graph: return "graph.dat";
     case FileType::Edges: return "edges.dat";
@@ -56,7 +57,7 @@ inline const char* file_name_for(FileType t) {
     case FileType::Names: return "names.dat";
     case FileType::Map: return "map.dat";
   }
-  return nullptr;
+  return {};
 }
 
 /// Id of one array inside a nav file, stored in Vrst_section_entry::id.

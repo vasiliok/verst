@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <numeric>
 #include <string>
 #include <string_view>
@@ -32,18 +33,6 @@ int g_failures = 0;
 void report(bool ok, std::string_view name, const std::string& detail) {
   std::printf("[%s] %-34s %s\n", ok ? "PASS" : "FAIL", std::string(name).c_str(), detail.c_str());
   if (!ok) ++g_failures;
-}
-
-/// printf into a std::string, for report() details.
-/// @tparam N Length of the format literal.
-/// @param f printf format, a string literal.
-/// @param args Values for f.
-/// @return Formatted text, cut at 511 characters.
-template <Vrst_size N>
-std::string fmt(const char (&f)[N], auto... args) {
-  std::array<char, 512> buf{};
-  std::snprintf(buf.data(), buf.size(), f, args...);
-  return buf.data();
 }
 
 /// Fixed point to degrees.
@@ -173,10 +162,10 @@ bool check_files(const fs::path& dir, Vrst_nav_data& d, bool& has_map) {
   const Vrst_uint64 id = d.graph().file().build_id();
   const bool same = d.edges().file().build_id() == id && d.geom().file().build_id() == id &&
                     d.names().file().build_id() == id && (!has_map || d.map().file().build_id() == id);
-  report(same, "same build_id", fmt("%016" PRIx64, id));
+  report(same, "same build_id", std::format("{:016x}", id));
   const bool seg_counts = d.geom().seg_first_point().size() == Vrst_size(d.edges().num_segments()) + 1;
   report(seg_counts, "segment count edges/geom",
-         fmt("S=%u, SEG_FIRST_POINT=%zu", d.edges().num_segments(), d.geom().seg_first_point().size()));
+         std::format("S={}, SEG_FIRST_POINT={}", d.edges().num_segments(), d.geom().seg_first_point().size()));
   return same && seg_counts;
 }
 
@@ -186,9 +175,11 @@ void check_csr(const Vrst_graph& g) {
   const Vrst_uint32 A = g.num_arcs();
   Vrst_uint64 at = 0;
   bool ok = check_offsets(g.fwd_first_out(), A, at);
-  report(ok, "FWD_FIRST_OUT monotonic, last==A", ok ? fmt("V=%u A=%u", g.num_vertices(), A) : fmt("bad at %" PRIu64, at));
+  report(ok, "FWD_FIRST_OUT monotonic, last==A", ok ? std::format("V={} A={}", g.num_vertices(), A)
+                                                    : std::format("bad at {}", at));
   ok = check_offsets(g.bwd_first_in(), A, at);
-  report(ok, "BWD_FIRST_IN monotonic, last==A", ok ? fmt("V=%u A=%u", g.num_vertices(), A) : fmt("bad at %" PRIu64, at));
+  report(ok, "BWD_FIRST_IN monotonic, last==A", ok ? std::format("V={} A={}", g.num_vertices(), A)
+                                                   : std::format("bad at {}", at));
 }
 
 /// Checks every arc: head and segment ids in range, tail/head equal the segment ends,
@@ -216,16 +207,16 @@ void check_arcs(const Vrst_nav_data& d) {
       if (arcs_per_seg[s] < 255) ++arcs_per_seg[s];
     }
   }
-  report(bad_head == 0, "Vrst_fwd_arc.head < V", fmt("%" PRIu64 " bad", bad_head));
-  report(bad_seg == 0, "Vrst_fwd_arc.seg < S", fmt("%" PRIu64 " bad", bad_seg));
-  report(bad_seg_ends == 0, "Vrst_fwd_arc tail/head == seg a/b", fmt("%" PRIu64 " bad", bad_seg_ends));
+  report(bad_head == 0, "Vrst_fwd_arc.head < V", std::format("{} bad", bad_head));
+  report(bad_seg == 0, "Vrst_fwd_arc.seg < S", std::format("{} bad", bad_seg));
+  report(bad_seg_ends == 0, "Vrst_fwd_arc tail/head == seg a/b", std::format("{} bad", bad_seg_ends));
 
   Vrst_uint64 bad_oneway = 0;
   for (Vrst_uint32 s = 0; s < S; ++s) {
     const bool oneway = d.edges().attr()[s].flags & kSegOneway;
     if (arcs_per_seg[s] != (oneway ? 1 : 2)) ++bad_oneway;
   }
-  report(bad_oneway == 0, "arcs per segment match oneway", fmt("%" PRIu64 " bad", bad_oneway));
+  report(bad_oneway == 0, "arcs per segment match oneway", std::format("{} bad", bad_oneway));
 
   Vrst_uint64 bad_tail = 0, bad_ref = 0, bad_match = 0;
   std::vector<Vrst_uint8> seen(A, 0);
@@ -241,14 +232,14 @@ void check_arcs(const Vrst_nav_data& d) {
     }
   }
   const Vrst_uint64 unseen = static_cast<Vrst_uint64>(std::count(seen.begin(), seen.end(), 0));
-  report(bad_tail == 0, "Vrst_bwd_arc.tail < V", fmt("%" PRIu64 " bad", bad_tail));
-  report(bad_ref == 0, "Vrst_bwd_arc.fwd_arc < A", fmt("%" PRIu64 " bad", bad_ref));
+  report(bad_tail == 0, "Vrst_bwd_arc.tail < V", std::format("{} bad", bad_tail));
+  report(bad_ref == 0, "Vrst_bwd_arc.fwd_arc < A", std::format("{} bad", bad_ref));
   report(bad_match == 0 && unseen == 0, "Vrst_bwd_arc <-> Vrst_fwd_arc bijection",
-         fmt("%" PRIu64 " mismatched, %" PRIu64 " fwd arcs without bwd", bad_match, unseen));
+         std::format("{} mismatched, {} fwd arcs without bwd", bad_match, unseen));
 
   Vrst_uint64 zero_weight = 0;
   for (const Vrst_fwd_arc& a : g.fwd_arcs()) zero_weight += a.weight == 0;
-  report(zero_weight == 0, "arc weight >= 1", fmt("%" PRIu64 " zero", zero_weight));
+  report(zero_weight == 0, "arc weight >= 1", std::format("{} zero", zero_weight));
 }
 
 /// Checks that SEG_FIRST_POINT is a valid prefix array and that every segment has at
@@ -260,7 +251,7 @@ void check_geometry(const Vrst_nav_data& d) {
   Vrst_uint64 at = 0;
   const bool mono = check_offsets(geo.seg_first_point(), geo.points().size(), at);
   report(mono, "SEG_FIRST_POINT monotonic, last==P",
-         mono ? fmt("S=%u P=%zu", S, geo.points().size()) : fmt("bad at %" PRIu64, at));
+         mono ? std::format("S={} P={}", S, geo.points().size()) : std::format("bad at {}", at));
   if (!mono) return;
 
   Vrst_uint64 short_segs = 0, bad_ends = 0;
@@ -275,8 +266,8 @@ void check_geometry(const Vrst_nav_data& d) {
         pts.front() != d.graph().vertex_coord()[sv.a] || pts.back() != d.graph().vertex_coord()[sv.b])
       ++bad_ends;
   }
-  report(short_segs == 0, "segments have >= 2 points", fmt("%" PRIu64 " bad", short_segs));
-  report(bad_ends == 0, "segment ends == vertex coords", fmt("%" PRIu64 " bad", bad_ends));
+  report(short_segs == 0, "segments have >= 2 points", std::format("{} bad", short_segs));
+  report(bad_ends == 0, "segment ends == vertex coords", std::format("{} bad", bad_ends));
 }
 
 /// Checks that all vertex and shape coordinates are valid WGS84 and inside the
@@ -293,9 +284,9 @@ void check_coords(const Vrst_nav_data& d) {
   };
   for (Vrst_coord c : d.graph().vertex_coord()) test(c);
   for (Vrst_coord c : d.geom().points()) test(c);
-  report(invalid == 0, "no invalid coords", fmt("%" PRIu64 " invalid", invalid));
+  report(invalid == 0, "no invalid coords", std::format("{} invalid", invalid));
   report(outside == 0, "coords inside bbox",
-         fmt("%" PRIu64 " outside lat [%.7f, %.7f] lon [%.7f, %.7f]", outside, deg(bb.min.lat_e7),
+         std::format("{} outside lat [{:.7f}, {:.7f}] lon [{:.7f}, {:.7f}]", outside, deg(bb.min.lat_e7),
              deg(bb.max.lat_e7), deg(bb.min.lon_e7), deg(bb.max.lon_e7)));
 }
 
@@ -310,11 +301,11 @@ void check_attrs(const Vrst_nav_data& d) {
     bad_name += (a.name_id >= N) + (a.ref_id >= N);
     bad_class += a.road_class >= kRoadClassCount;
   }
-  report(bad_name == 0, "name_id/ref_id < N", fmt("N=%u, %" PRIu64 " bad", N, bad_name));
-  report(bad_class == 0, "road_class valid", fmt("%" PRIu64 " bad", bad_class));
+  report(bad_name == 0, "name_id/ref_id < N", std::format("N={}, {} bad", N, bad_name));
+  report(bad_class == 0, "road_class valid", std::format("{} bad", bad_class));
   bool offs_ok = d.names().offsets().front() == 0 && d.names().offsets()[1] == 0;
   for (Vrst_size i = 1; i < d.names().offsets().size(); ++i) offs_ok &= d.names().offsets()[i] >= d.names().offsets()[i - 1];
-  report(offs_ok, "STR_OFFSETS monotonic, id 0 empty", fmt("data %zu bytes", d.names().data().size()));
+  report(offs_ok, "STR_OFFSETS monotonic, id 0 empty", std::format("data {} bytes", d.names().data().size()));
 
   const Vrst_bbox bb = d.graph().bbox();
   Vrst_uint64 bad_place = 0;
@@ -326,7 +317,7 @@ void check_attrs(const Vrst_nav_data& d) {
     prev_kind = pl.kind;
   }
   report(bad_place == 0, "places named, valid kind, sorted, inside bbox",
-         fmt("%zu places, %" PRIu64 " bad", d.names().places().size(), bad_place));
+         std::format("{} places, {} bad", d.names().places().size(), bad_place));
 }
 
 /// Checks map.dat: prefix arrays, area kinds valid and sorted, triangle indices inside
@@ -336,12 +327,14 @@ void check_map(const Vrst_nav_data& d) {
   const Vrst_map_layers& m = d.map();
   Vrst_uint64 at = 0;
   bool ok = check_offsets(m.area_first_point(), m.all_area_points().size(), at);
-  report(ok, "AREA_FIRST_POINT monotonic, last", ok ? fmt("R=%u", m.num_areas()) : fmt("bad at %" PRIu64, at));
+  report(ok, "AREA_FIRST_POINT monotonic, last", ok ? std::format("R={}", m.num_areas())
+                                                    : std::format("bad at {}", at));
   ok = check_offsets(m.area_first_index(), m.all_area_indices().size(), at);
-  report(ok, "AREA_FIRST_INDEX monotonic, last", ok ? fmt("%zu triangles", m.all_area_indices().size() / 3)
-                                                      : fmt("bad at %" PRIu64, at));
+  report(ok, "AREA_FIRST_INDEX monotonic, last", ok ? std::format("{} triangles", m.all_area_indices().size() / 3)
+                                                      : std::format("bad at {}", at));
   ok = check_offsets(m.line_first_point(), m.all_line_points().size(), at);
-  report(ok, "LINE_FIRST_POINT monotonic, last", ok ? fmt("L=%u", m.num_lines()) : fmt("bad at %" PRIu64, at));
+  report(ok, "LINE_FIRST_POINT monotonic, last", ok ? std::format("L={}", m.num_lines())
+                                                    : std::format("bad at {}", at));
   if (g_failures != 0) return;  // the checks below index through these arrays
 
   Vrst_uint64 bad_kind = 0, bad_tri = 0;
@@ -355,19 +348,19 @@ void check_map(const Vrst_nav_data& d) {
     bad_tri += idx.size() % 3 != 0 || n < 3 || m.area_outer_size()[a] < 3 || m.area_outer_size()[a] > n;
     for (const Vrst_uint32 i : idx) bad_tri += i >= n;
   }
-  report(bad_kind == 0, "area kinds valid and sorted", fmt("%" PRIu64 " bad", bad_kind));
-  report(bad_tri == 0, "area triangles and outer ring inside", fmt("%" PRIu64 " bad", bad_tri));
+  report(bad_kind == 0, "area kinds valid and sorted", std::format("{} bad", bad_kind));
+  report(bad_tri == 0, "area triangles and outer ring inside", std::format("{} bad", bad_tri));
   Vrst_uint64 bad_line = 0;
   for (Vrst_uint32 l = 0; l < m.num_lines(); ++l) {
     const Vrst_line_attr& la = m.line_attr()[l];
     bad_line += la.kind >= kLineKindCount || (la.flags & ~(kLineBridge | kLineTunnel)) != 0 || m.line_points(l).size() < 2;
   }
-  report(bad_line == 0, "lines: kind, flags, >= 2 points", fmt("%" PRIu64 " bad", bad_line));
+  report(bad_line == 0, "lines: kind, flags, >= 2 points", std::format("{} bad", bad_line));
   const Vrst_bbox bb = d.graph().bbox();
   Vrst_uint64 outside = 0;
   for (const auto pts : {m.all_area_points(), m.all_line_points()})
     for (const Vrst_coord& c : pts) outside += !valid_coord(c) || !in_bbox(c, bb);
-  report(outside == 0, "map points valid, inside bbox", fmt("%" PRIu64 " bad", outside));
+  report(outside == 0, "map points valid, inside bbox", std::format("{} bad", outside));
 }
 
 /// Prints sizes, road length, dead ends and connected components. main() runs it

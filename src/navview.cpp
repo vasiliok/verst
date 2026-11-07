@@ -98,6 +98,8 @@ struct Vrst_app {
   Vrst_size tiles_visible = 0;
   /// Tiles on screen that were not built yet.
   Vrst_size tiles_missing = 0;
+  /// Tiles whose build failed since start (Vrst_tile_loader::failed()).
+  Vrst_size tiles_failed = 0;
   /// Current pan / zoom / rotation.
   Vrst_view view;
   /// Framebuffer size in pixels. Differs from the window size on HiDPI; the viewport
@@ -289,6 +291,8 @@ void draw_panel(Vrst_app& app) {
               app.data.geom().points().size());
   ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
   ImGui::Text("tiles   z%d  %zu on screen, %zu loading", kTileLevels[app.level].z, app.tiles_visible, app.tiles_missing);
+  if (app.tiles_failed > 0)
+    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1), "tiles failed: %zu", app.tiles_failed);
   const Vrst_vec2d ll = cursor_latlon(app);
   ImGui::Text("cursor  %.6f, %.6f", ll.x, ll.y);
   const Vrst_float64 center_lat = inverse_mercator(app.mesh.center()).x * kPi / 180;
@@ -445,7 +449,12 @@ int run(const Vrst_options& opt) {
     throw std::runtime_error("cannot create OpenGL 3.3 core window");
   }
   glfwMakeContextCurrent(win);
-  if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress)))
+  // glad wants void* (*)(const char*); calling glfwGetProcAddress through that type is
+  // undefined behaviour (UBSan), so adapt it with a function of the right type.
+  constexpr GLADloadproc kLoadGl = [](const char* name) -> void* {
+    return reinterpret_cast<void*>(glfwGetProcAddress(name));
+  };
+  if (!gladLoadGLLoader(kLoadGl))
     throw std::runtime_error("gladLoadGL failed");
   glfwSwapInterval(1);
   glfwSetWindowUserPointer(win, &app);
@@ -520,6 +529,7 @@ int run(const Vrst_options& opt) {
     app.level = tf.level;
     app.tiles_visible = tf.visible;
     app.tiles_missing = tf.missing;
+    app.tiles_failed = loader.failed();
     const Vrst_float64 ground_mpp = ground_metres_per_point(app.view, app.mesh.center(), app.px_ratio);
     app.tile_opt.class_mask = app.class_mask;
     app.tile_opt.oneway = app.oneway;

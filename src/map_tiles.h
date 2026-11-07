@@ -15,6 +15,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -361,12 +362,18 @@ class Vrst_tile_builder {
 /// collects finished ones (take()); requests that are no longer wanted are dropped.
 class Vrst_tile_loader {
  public:
+  /// Builds one tile. When it throws or returns null, the loader counts the tile in failed().
+  using Vrst_build_fn = std::function<std::unique_ptr<Vrst_tile_data>(Vrst_tile_id)>;
+
   /// Starts the worker threads.
   /// @param builder Tile builder; must outlive the loader.
   /// @param threads Number of worker threads, at least 1.
-  Vrst_tile_loader(const Vrst_tile_builder& builder, int threads) : m_builder(builder) {
-    for (int i = 0; i < std::max(threads, 1); ++i) m_workers.emplace_back([this] { work(); });
-  }
+  Vrst_tile_loader(const Vrst_tile_builder& builder, int threads)
+      : Vrst_tile_loader([&builder](Vrst_tile_id id) { return builder.build(id); }, threads) {}
+  /// Starts the worker threads with any build function (tests use a failing one).
+  /// @param build Builds one tile; called from the worker threads at the same time.
+  /// @param threads Number of worker threads, at least 1.
+  Vrst_tile_loader(Vrst_build_fn build, int threads);
   /// Stops and joins the workers; tiles being built are finished first.
   ~Vrst_tile_loader();
   Vrst_tile_loader(const Vrst_tile_loader&) = delete;             ///< Owns threads: not copyable.
@@ -389,12 +396,20 @@ class Vrst_tile_loader {
     return m_queue.size() + m_busy.size() - m_done.size();
   }
 
+  /// Tiles whose build threw or returned null. They are dropped, so a later request()
+  /// tries them again.
+  /// @return Count since the loader started.
+  Vrst_size failed() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_failed;
+  }
+
  private:
   /// Worker loop: take the first queued tile, build it, hand it over.
   void work();
 
-  /// Builder shared by the workers.
-  const Vrst_tile_builder& m_builder;
+  /// Build function shared by the workers.
+  Vrst_build_fn m_build;
   /// Guards the queues.
   mutable std::mutex m_mutex;
   /// Wakes workers when tiles are queued or on stop.
@@ -407,6 +422,8 @@ class Vrst_tile_loader {
   std::deque<std::unique_ptr<Vrst_tile_data>> m_done;
   /// Set by the destructor.
   bool m_stop = false;
+  /// Builds that failed; see failed().
+  Vrst_size m_failed = 0;
   /// Worker threads.
   std::vector<std::thread> m_workers;
 };

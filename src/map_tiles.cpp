@@ -3,6 +3,9 @@
 /// Declarations and documentation are in map_tiles.h.
 #include "map_tiles.h"
 
+#include <exception>
+#include <utility>
+
 #include <mapbox/earcut.hpp>
 
 namespace nav {
@@ -214,6 +217,10 @@ void Vrst_tile_builder::add_area(Vrst_uint32 a, const Vrst_tile_level& level, Vr
   }
 }
 
+Vrst_tile_loader::Vrst_tile_loader(Vrst_build_fn build, int threads) : m_build(std::move(build)) {
+  for (int i = 0; i < std::max(threads, 1); ++i) m_workers.emplace_back([this] { work(); });
+}
+
 Vrst_tile_loader::~Vrst_tile_loader() {
   {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -255,9 +262,19 @@ void Vrst_tile_loader::work() {
       m_queue.pop_front();
       m_busy.insert(tile_key(id));
     }
-    std::unique_ptr<Vrst_tile_data> t = m_builder.build(id);
+    std::unique_ptr<Vrst_tile_data> t;
+    try {
+      t = m_build(id);
+    } catch (const std::exception&) {
+      // a broken tile must not end the thread (std::terminate) or stay busy forever
+    }
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_done.push_back(std::move(t));
+    if (t) {
+      m_done.push_back(std::move(t));
+    } else {
+      m_busy.erase(tile_key(id));
+      ++m_failed;
+    }
   }
 }
 

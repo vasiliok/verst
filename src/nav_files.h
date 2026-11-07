@@ -48,7 +48,7 @@ class Vrst_nav_file {
   /// @param id Section to look up.
   /// @return Span over the section inside the mapping.
   /// @throws std::runtime_error if the section is missing or its elem_size differs.
-  template <class T>
+  template <Vrst_plain_data T>
   std::span<const T> section(SectionId id) const {
     for (const Vrst_section_entry& s : m_table) {
       if (s.id != static_cast<Vrst_uint32>(id)) continue;
@@ -67,7 +67,7 @@ class Vrst_nav_file {
   /// @param offset Byte offset of the first element.
   /// @param count Number of elements.
   /// @return Span inside the mapping.
-  template <class T>
+  template <Vrst_plain_data T>
   std::span<const T> typed(Vrst_uint64 offset, Vrst_size count) const {
     return {reinterpret_cast<const T*>(m_file.bytes().subspan(offset).data()), count};
   }

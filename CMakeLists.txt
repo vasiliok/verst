@@ -16,9 +16,23 @@ function(nav_warnings target)
   if(MSVC)
     target_compile_options(${target} PRIVATE /W4)
   else()
-    target_compile_options(${target} PRIVATE -Wall -Wextra)
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
   endif()
 endfunction()
+
+# --- sanitizers: -DNAV_SANITIZE=address (ASan + UBSan) or thread (TSan) ---------
+# Applied to every target, third-party code included, so the runtime sees all of it.
+set(NAV_SANITIZE "OFF" CACHE STRING "Sanitizer build: OFF, address or thread")
+set_property(CACHE NAV_SANITIZE PROPERTY STRINGS OFF address thread)
+if(NAV_SANITIZE STREQUAL "address")
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined)
+  add_link_options(-fsanitize=address,undefined)
+elseif(NAV_SANITIZE STREQUAL "thread")
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=thread)
+elseif(NOT NAV_SANITIZE STREQUAL "OFF")
+  message(FATAL_ERROR "NAV_SANITIZE must be OFF, address or thread, not '${NAV_SANITIZE}'")
+endif()
 
 # --- scalar types: src/vrst_types.h.in -> <build>/generated/vrst_types.h -------
 set(VRST_TYPE_INT8    "std::int8_t"   CACHE STRING "C++ type for Vrst_int8")

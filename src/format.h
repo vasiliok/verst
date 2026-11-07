@@ -7,6 +7,7 @@
 
 #include <bit>
 #include <string_view>
+#include <type_traits>
 
 #include "vrst_types.h"
 
@@ -19,6 +20,13 @@ namespace nav {
 inline constexpr Vrst_uint32 kFormatVersion = 3;  // 2: names.dat Places section, 3: map.dat
 /// Section offset alignment in bytes: one cache line, and enough for any element type.
 inline constexpr Vrst_uint64 kSectionAlign = 64;
+
+/// A type that may be stored in a section as raw bytes: copied with memcpy semantics and
+/// with a fixed layout, so the bytes written by osm2nav read back as the same values.
+/// Rejects types that own memory (std::string, std::vector) at compile time.
+/// @tparam T Section element type.
+template <class T>
+concept Vrst_plain_data = std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>;
 
 /// Which nav file a file is; stored in Vrst_file_header::file_type.
 /// Each loader states the type it expects, so passing edges.dat where graph.dat is

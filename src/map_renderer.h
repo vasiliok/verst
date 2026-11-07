@@ -40,6 +40,10 @@ struct Vrst_draw_options {
 /// destructor does not touch GL, because the context may already be gone.
 class Vrst_map_renderer {
  public:
+  Vrst_map_renderer() = default;                                    ///< Empty; init() creates the GL objects.
+  Vrst_map_renderer(const Vrst_map_renderer&) = delete;             ///< Owns GL objects: not copyable.
+  Vrst_map_renderer& operator=(const Vrst_map_renderer&) = delete;  ///< Owns GL objects: not copyable.
+
   /// Compiles the shaders and uploads the mesh. Call once with the context current.
   /// @param mesh Built mesh; its arrays are copied to GPU buffers and may be freed.
   /// @throws std::runtime_error on a shader compile/link error or a GL error.

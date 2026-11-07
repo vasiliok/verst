@@ -452,7 +452,7 @@ class Vrst_file_writer {
   /// @tparam T Element type, written as raw bytes.
   /// @param id Section id.
   /// @param data Elements; must stay alive until write().
-  template <class T>
+  template <Vrst_plain_data T>
   void add(SectionId id, std::span<const T> data) {
     m_sections.push_back({id, sizeof(T), data.size(), std::as_bytes(data)});
   }
@@ -460,7 +460,7 @@ class Vrst_file_writer {
   /// @tparam T Element type, written as raw bytes.
   /// @param id Section id.
   /// @param data Elements; the vector must stay alive and unchanged until write().
-  template <class T>
+  template <Vrst_plain_data T>
   void add(SectionId id, const std::vector<T>& data) {
     add(id, std::span<const T>(data));
   }

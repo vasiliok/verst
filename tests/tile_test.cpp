@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <memory>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -174,6 +175,33 @@ template <Vrst_size N>
 std::string env(const char (&name)[N]) {
   const char* v = std::getenv(name);  // C API; copied at once
   return v ? v : "";
+}
+
+/// A build that throws neither ends the worker nor blocks the tile: the other tiles still
+/// arrive, the failure is counted, and asking for the tile again retries it.
+TEST(TileLoader, FailedBuildIsCountedAndRetried) {
+  const Vrst_tile_loader::Vrst_build_fn build = [](Vrst_tile_id id) {
+    if (id.x == 1) throw std::runtime_error("broken tile");
+    std::unique_ptr<Vrst_tile_data> t = std::make_unique<Vrst_tile_data>();
+    t->id = id;
+    return t;
+  };
+  Vrst_tile_loader loader(build, 2);
+  const auto wait_idle = [&loader] {
+    const auto t0 = std::chrono::steady_clock::now();
+    while (loader.pending() > 0 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  };
+  loader.request({{14, 0, 0}, {14, 1, 0}, {14, 2, 0}, {14, 3, 0}});
+  wait_idle();
+  EXPECT_EQ(loader.take(16).size(), 3u);
+  EXPECT_EQ(loader.failed(), 1u);
+  EXPECT_EQ(loader.pending(), 0u);
+
+  loader.request({{14, 1, 0}});  // not stuck as busy: built (and failing) again
+  wait_idle();
+  EXPECT_EQ(loader.failed(), 2u);
+  EXPECT_TRUE(loader.take(16).empty());
 }
 
 /// Opens the region once for all region tests and builds the index.

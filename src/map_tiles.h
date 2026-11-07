@@ -225,6 +225,10 @@ struct Vrst_tile_data {
   Vrst_tile_range line_ranges[kTileLayerCount][kLineStyleCount];
   /// Graph vertex dots; attr 1 = dead end.
   std::vector<Vrst_gpu_point> points;
+  /// Build time on the worker thread in ms (set by Vrst_tile_loader, for the session log).
+  Vrst_float64 build_ms = 0;
+  /// Index of the worker thread that built the tile.
+  int worker = 0;
 };
 
 /// Content of one tile: ids of the objects that touch it.
@@ -415,7 +419,8 @@ class Vrst_tile_loader {
 
  private:
   /// Worker loop: take the first queued tile, build it, hand it over.
-  void work();
+  /// @param worker Index of this worker thread, stored in Vrst_tile_data::worker.
+  void work(int worker);
 
   /// Build function shared by the workers.
   Vrst_build_fn m_build;

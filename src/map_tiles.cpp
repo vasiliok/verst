@@ -4,6 +4,7 @@
 #include "map_tiles.h"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <utility>
 
@@ -236,7 +237,7 @@ void Vrst_tile_builder::add_area(Vrst_uint32 a, const Vrst_tile_level& level, Vr
 }
 
 Vrst_tile_loader::Vrst_tile_loader(Vrst_build_fn build, int threads) : m_build(std::move(build)) {
-  for (int i = 0; i < std::max(threads, 1); ++i) m_workers.emplace_back([this] { work(); });
+  for (int i = 0; i < std::max(threads, 1); ++i) m_workers.emplace_back([this, i] { work(i); });
 }
 
 Vrst_tile_loader::~Vrst_tile_loader() {
@@ -270,7 +271,7 @@ std::vector<std::unique_ptr<Vrst_tile_data>> Vrst_tile_loader::take(Vrst_size ma
   return out;
 }
 
-void Vrst_tile_loader::work() {
+void Vrst_tile_loader::work(int worker) {
   // A broken tile must neither end the thread (std::terminate) nor stay busy forever:
   // a failed build counts as null.
   const auto try_build = [this](Vrst_tile_id tile) -> std::unique_ptr<Vrst_tile_data> {
@@ -290,7 +291,12 @@ void Vrst_tile_loader::work() {
       m_queue.pop_front();
       m_busy.insert(tile_key(id));
     }
+    const auto start = std::chrono::steady_clock::now();
     std::unique_ptr<Vrst_tile_data> t = try_build(id);
+    if (t) {
+      t->build_ms = std::chrono::duration<Vrst_float64, std::milli>(std::chrono::steady_clock::now() - start).count();
+      t->worker = worker;
+    }
     const std::scoped_lock lock(m_mutex);
     if (t) {
       m_done.push_back(std::move(t));

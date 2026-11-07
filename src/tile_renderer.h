@@ -222,6 +222,9 @@ class Vrst_tile_renderer {
   /// @copydoc m_draw_calls
   /// @return Count.
   int draw_calls() const { return m_draw_calls; }
+  /// @copydoc m_uploaded
+  /// @return Bytes.
+  Vrst_uint64 uploaded() const { return m_uploaded; }
 
   /// Line width per style in framebuffer px for a zoom. Roads grow when zooming in
   /// (a street is wider than a pixel at 1 m/pt) and shrink when zooming out, but
@@ -288,6 +291,9 @@ class Vrst_tile_renderer {
   std::unordered_map<Vrst_uint64, Vrst_gpu_tile> m_tiles;
   /// Vertex data bytes of all cached tiles.
   Vrst_size m_bytes = 0;
+  /// Bytes uploaded by add() since init(); the difference between two frames is the
+  /// upload cost of a frame.
+  Vrst_uint64 m_uploaded = 0;
   /// Draw calls of the last draw().
   int m_draw_calls = 0;
   /// Line program (instanced quads).
@@ -310,7 +316,16 @@ class Vrst_tile_renderer {
   GLuint m_border_vbo = 0;
 };
 
-/// What select_tiles() did in one frame, for status displays.
+/// One tile uploaded by select_tiles(), for the session log.
+struct Vrst_tile_upload {
+  Vrst_tile_id id{};           ///< The tile.
+  Vrst_size bytes = 0;         ///< Vertex data uploaded.
+  Vrst_float64 build_ms = 0;   ///< Build time on the worker (Vrst_tile_data::build_ms).
+  int worker = 0;              ///< Worker that built it.
+  Vrst_float64 upload_ms = 0;  ///< Time of Vrst_tile_renderer::add() on this thread.
+};
+
+/// What select_tiles() did in one frame, for status displays and the session log.
 struct Vrst_tile_frame {
   /// Level drawn (index into kTileLevels).
   int level = 0;
@@ -318,6 +333,14 @@ struct Vrst_tile_frame {
   Vrst_size visible = 0;
   /// Visible tiles not built yet; the loader was asked for them.
   Vrst_size missing = 0;
+  /// Cached tiles of other levels drawn in place of missing ones.
+  Vrst_size fallback = 0;
+  /// Tiles uploaded to the GPU in this frame, in upload order.
+  std::vector<Vrst_tile_upload> uploads;
+  /// Tiles deleted from the GPU cache in this frame.
+  Vrst_size evicted = 0;
+  /// Time spent deleting them, in ms.
+  Vrst_float64 evict_ms = 0;
 };
 
 /// Per-frame tile work shared by the front ends: uploads finished tiles, picks the

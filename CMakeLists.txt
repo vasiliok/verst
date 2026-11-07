@@ -107,7 +107,8 @@ add_library(vrst_core STATIC
   src/nav_files.cpp
   src/map_scene.cpp
   src/map_tiles.cpp
-  src/gpx_track.cpp)
+  src/gpx_track.cpp
+  src/session_log.cpp)
 target_include_directories(vrst_core PUBLIC src)
 target_include_directories(vrst_core SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
 target_link_libraries(vrst_core PUBLIC vrst_types Threads::Threads)

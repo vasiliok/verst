@@ -24,6 +24,10 @@
   <string>Shows your position on the map.</string>
   <key>LSRequiresIPhoneOS</key>
   <true/>
+  <key>UIFileSharingEnabled</key>
+  <true/>
+  <key>LSSupportsOpeningDocumentsInPlace</key>
+  <true/>
   <key>UILaunchScreen</key>
   <dict/>
   <key>UIStatusBarStyle</key>

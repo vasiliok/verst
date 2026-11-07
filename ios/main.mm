@@ -10,7 +10,8 @@
 /// Gestures: one-finger drag = pan, pinch = zoom (and pan with the two fingers),
 /// two-finger twist = rotate, double tap = zoom in, two-finger tap = zoom out.
 /// Launch arguments `--center <lat> <lon>` and `--mpp <metres>` set the start view,
-/// like navview.
+/// like navview; `--log-dir <dir>` puts the session logs elsewhere (Simulator). VrstDebugOverlay (clock, frame numbers, touches and gesture names)
+/// is on at start for screen recordings; a tap on the stats box hides or shows it.
 
 #include "gl_api.h"  // OpenGL ES 3.0; before GLKit so the ES3 header wins
 
@@ -18,6 +19,11 @@
 #import <GLKit/GLKit.h>
 #import <UIKit/UIKit.h>
 
+#import "debug_overlay.h"
+
+#include <sys/utsname.h>
+
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <memory>
@@ -28,12 +34,17 @@
 #include "map_scene.h"
 #include "map_tiles.h"
 #include "nav_files.h"
+#include "session_log.h"
 #include "tile_renderer.h"
 
 using namespace nav;
 
 /// GPU byte budget of the tile cache; a phone has less memory to spare than a desktop.
 static constexpr Vrst_size kTileBudget = 96u << 20;
+/// Session log files kept on the phone; older ones are deleted at launch.
+static constexpr Vrst_size kKeepSessions = 20;
+/// A display-link gap longer than this (ms) is logged as a main-thread stall.
+static constexpr double kStallMs = 34;
 
 /// Full-screen map controller. Owns the shared C++ map state and turns UIKit touch
 /// gestures into camera changes; draws only when something changed.
@@ -102,6 +113,22 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
   UIBarButtonItem* _roadsItem;  ///< Road class menu button.
   /// Load error shown instead of the map, or nil.
   NSString* _error;
+  /// Clock, frame numbers, touches and gesture names for screen recordings.
+  VrstDebugOverlay* _debug;
+  /// View scale when the running pinch began, for its "×factor" text.
+  Vrst_float64 _pinchStartScale;
+  /// Rotation of the running twist so far, in radians.
+  Vrst_float64 _rotationSum;
+  /// Vrst_tile_renderer::uploaded() after the previous frame.
+  Vrst_uint64 _lastUploaded;
+  /// Session log: frames, touches, gestures, tiles, stalls (Documents/logs).
+  Vrst_session_log _log;
+  /// CACurrentMediaTime() at launch; every `t` in the log and on the clock is relative to it.
+  CFTimeInterval _t0;
+  /// When the first redraw since the last frame was asked for; 0 = none pending.
+  CFTimeInterval _queuedAt;
+  /// UITouch.timestamp of the newest touch change seen.
+  CFTimeInterval _lastTouchAt;
 }
 
 /// Uses a GLKView as the root view.
@@ -112,6 +139,8 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
 /// Creates the GL context, loads the map and builds the overlay and gestures.
 - (void)viewDidLoad {
   [super viewDidLoad];
+  _t0 = CACurrentMediaTime();
+  [self openLog];
   _startCenter = kDefaultPoint;
   _startMpp = kDefaultMetresPerPoint;
   [self parseArguments];
@@ -127,10 +156,21 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
   [EAGLContext setCurrentContext:_context];
 
   try {
+    CFTimeInterval step = CACurrentMediaTime();
+    // Milliseconds since the previous step, for the "load" record.
+    const auto lap = [&step] {
+      const CFTimeInterval now = CACurrentMediaTime();
+      const double ms = (now - step) * 1000;
+      step = now;
+      return ms;
+    };
     NSString* dir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"map"];
     _data.open(dir.UTF8String);
+    const double open_ms = lap();
     _mesh.build(_data, false);
+    const double mesh_ms = lap();
     _index.build(_data);
+    const double index_ms = lap();
     _builder = std::make_unique<Vrst_tile_builder>(_data, _index, _mesh.center());
     _loader = std::make_unique<Vrst_tile_loader>(*_builder, 2);
     _labels.build(_data, _mesh);
@@ -139,18 +179,90 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
     for (const std::string_view f : kLabelFontFiles) fonts.push_back(std::string(fontDir.UTF8String) + "/" + std::string(f));
     _atlas.build(fonts, _labels.codepoints());
     _labels.measure(_atlas);
+    const double labels_ms = lap();
     _showLabels = YES;
     _loaded = YES;
     _renderer.init_overlays();
     _renderer.set_label_atlas(_atlas);
     _tiles.init();
     _glReady = YES;
+    _log.record("load", [self now])
+        .num("open_ms", open_ms, 1)
+        .num("mesh_ms", mesh_ms, 1)
+        .num("index_ms", index_ms, 1)
+        .num("labels_ms", labels_ms, 1)
+        .num("gl_ms", lap(), 1)
+        .count("vertices", _data.graph().num_vertices())
+        .count("places", _data.names().places().size());
   } catch (const std::exception& e) {
     _error = [NSString stringWithFormat:@"cannot load map: %s", e.what()];
+    _log.record("error", [self now]).text("what", e.what());
   }
   [self buildOverlay];
   [self addGestures];
   [self startLocation];
+}
+
+/// Seconds since launch: the `t` of the log and of the overlay clock.
+/// @return Seconds.
+- (double)now {
+  return CACurrentMediaTime() - _t0;
+}
+
+/// Opens the session log in Documents/logs (or the `--log-dir <dir>` launch argument, which
+/// lets a Simulator run write straight into a Mac folder) and writes the launch record;
+/// listens for memory warnings, background / foreground and thermal state changes.
+- (void)openLog {
+  NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+  NSString* dir = [docs stringByAppendingPathComponent:@"logs"];
+  NSArray<NSString*>* args = NSProcessInfo.processInfo.arguments;
+  const NSUInteger at = [args indexOfObject:@"--log-dir"];
+  if (at != NSNotFound && at + 1 < args.count) dir = args[at + 1];
+  try {
+    _log.open(std::string(dir.UTF8String), kKeepSessions);
+  } catch (const std::exception& e) {
+    NSLog(@"verst: session log off: %s", e.what());  // the app works without it
+    return;
+  }
+  utsname u{};
+  uname(&u);
+  NSDictionary* info = NSBundle.mainBundle.infoDictionary;
+  const CGSize screen = UIScreen.mainScreen.nativeBounds.size;
+  _log.record("system", 0)
+      .text("event", "launch")
+      .text("device", u.machine)
+      .text("ios", UIDevice.currentDevice.systemVersion.UTF8String)
+      .text("app", [info[@"CFBundleShortVersionString"] UTF8String] ?: "")
+      .text("build", [info[@"CFBundleVersion"] UTF8String] ?: "")
+      .num("screen_w", screen.width, 0)
+      .num("screen_h", screen.height, 0)
+      .num("scale", UIScreen.mainScreen.scale, 1)
+      .num("max_fps", static_cast<double>(UIScreen.mainScreen.maximumFramesPerSecond), 0)
+      .num("thermal", static_cast<double>(NSProcessInfo.processInfo.thermalState), 0);
+  NSNotificationCenter* nc = NSNotificationCenter.defaultCenter;
+  __weak VrstMapController* weak = self;
+  [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:nil
+              usingBlock:^(NSNotification*) { [weak logSystem:"background"]; }];
+  [nc addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:nil
+              usingBlock:^(NSNotification*) { [weak logSystem:"foreground"]; }];
+  [nc addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
+              usingBlock:^(NSNotification*) { [weak logSystem:"thermal"]; }];
+}
+
+/// Logs a system event and writes the log to the file at once (the app may be
+/// suspended right after going to the background).
+/// @param event Event name.
+- (void)logSystem:(const char*)event {
+  _log.record("system", [self now])
+      .text("event", event)
+      .num("thermal", static_cast<double>(NSProcessInfo.processInfo.thermalState), 0);
+  _log.flush();
+}
+
+/// Memory warning from iOS: logged, nothing else changes yet.
+- (void)didReceiveMemoryWarning {
+  [super didReceiveMemoryWarning];
+  [self logSystem:"memory_warning"];
 }
 
 /// Releases the GL objects while the context is still alive.
@@ -203,6 +315,7 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
 
 /// Asks for one redraw.
 - (void)redraw {
+  if (_queuedAt == 0) _queuedAt = CACurrentMediaTime();
   [self.view setNeedsDisplay];
 }
 
@@ -217,6 +330,7 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
 /// @param rect Dirty rectangle; the whole map is always redrawn.
 - (void)glkView:(GLKView*)view drawInRect:(CGRect)rect {
   (void)rect;
+  const CFTimeInterval drawStart = CACurrentMediaTime();
   if (!_glReady) {
     glClearColor(kBackground[0], kBackground[1], kBackground[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -229,20 +343,99 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
     _viewSet = YES;
   }
   const CGFloat px = [self pxPerPoint];
+  CFTimeInterval mark = drawStart;
+  // Milliseconds since the previous phase, for the "frame" record.
+  const auto phase = [&mark] {
+    const CFTimeInterval now = CACurrentMediaTime();
+    const double ms = (now - mark) * 1000;
+    mark = now;
+    return ms;
+  };
   Vrst_tile_frame tf;
   const std::vector<Vrst_uint64> keys =
       select_tiles(_tiles, *_loader, _index, _view, w, h, _mesh.center(), ++_frame, kTileBudget, tf);
+  const double select_ms = phase();
   _opt.point_px = Vrst_float32(2.5 * px);
   _opt.px_ratio = px;
   _tiles.draw(_view, w, h, keys, ground_metres_per_point(_view, _mesh.center(), px), _opt);
+  const double tiles_ms = phase();
   if (_hasFix) _renderer.draw_position(_view, w, h, _mesh.to_world(_fix), Vrst_float32(16 * px));
+  const double position_ms = phase();
   if (_showLabels)
     _renderer.draw_labels(_labels.layout(_view, w, h, [self pxPerPoint], _atlas), w, h,
                           Vrst_float32(2.0 * [self pxPerPoint]));
+  const double labels_ms = phase();
   [self updateStats];
+  const Vrst_uint64 uploaded = _tiles.uploaded();
+  [_debug frameDrawnInMs:(CACurrentMediaTime() - drawStart) * 1000
+                 visible:tf.visible
+                 missing:tf.missing
+                building:_loader->pending()
+             uploadBytes:static_cast<NSUInteger>(uploaded - _lastUploaded)];
+  const double stats_ms = phase();
   // Keep drawing while tiles are loading so they appear as soon as they are built;
   // otherwise draw only on demand.
   self.paused = tf.missing == 0 && _loader->pending() == 0;
+  [self logFrame:tf
+         start:drawStart
+        phases:{select_ms, tiles_ms, position_ms, labels_ms, stats_ms}
+      uploaded:uploaded - _lastUploaded];
+  _lastUploaded = uploaded;
+}
+
+/// Writes the "frame" record and one "tile" record per uploaded tile.
+/// @param tf What select_tiles() did.
+/// @param start CACurrentMediaTime() when the draw callback began.
+/// @param ms Phase times: tile select + uploads, tile draw, position, labels, stats.
+/// @param bytes Tile bytes uploaded in this frame.
+- (void)logFrame:(const Vrst_tile_frame&)tf
+           start:(CFTimeInterval)start
+          phases:(std::array<double, 5>)ms
+        uploaded:(Vrst_uint64)bytes {
+  const CFTimeInterval end = CACurrentMediaTime();
+  double upload_ms = 0;
+  for (const Vrst_tile_upload& u : tf.uploads) upload_ms += u.upload_ms;
+  {
+    Vrst_log_record r = _log.record("frame", end - _t0);
+    r.count("n", _frame)
+        .num("start", start - _t0, 4)
+        .num("ms", (end - start) * 1000, 2)
+        .num("select_ms", ms[0], 2)
+        .num("tiles_ms", ms[1], 2)
+        .num("position_ms", ms[2], 2)
+        .num("labels_ms", ms[3], 2)
+        .num("stats_ms", ms[4], 2)
+        .num("upload_ms", upload_ms, 2)
+        .count("uploads", tf.uploads.size())
+        .count("upload_bytes", bytes)
+        .count("evicted", tf.evicted)
+        .num("evict_ms", tf.evict_ms, 2)
+        .count("level", static_cast<Vrst_uint64>(tf.level))
+        .count("visible", tf.visible)
+        .count("missing", tf.missing)
+        .count("fallback", tf.fallback)
+        .count("building", _loader->pending())
+        .count("cached", _tiles.size())
+        .count("draw_calls", static_cast<Vrst_uint64>(_tiles.draw_calls()))
+        .count("labels", _showLabels ? _labels.placed() : 0)
+        .num("scale", _view.scale, 6)
+        .num("angle", _view.angle, 4)
+        .num("cx", _view.center.x, 1)
+        .num("cy", _view.center.y, 1)
+        .flag("continuous", !self.paused);
+    if (_queuedAt > 0) r.num("queued", _queuedAt - _t0, 4);
+    if (_lastTouchAt > 0) r.num("touch", _lastTouchAt - _t0, 4);
+  }  // the frame record is appended here, before its tiles
+  _queuedAt = 0;
+  for (const Vrst_tile_upload& u : tf.uploads)
+    _log.record("tile", end - _t0)
+        .count("z", static_cast<Vrst_uint64>(u.id.z))
+        .count("x", static_cast<Vrst_uint64>(u.id.x))
+        .count("y", static_cast<Vrst_uint64>(u.id.y))
+        .count("bytes", u.bytes)
+        .num("build_ms", u.build_ms, 2)
+        .count("worker", static_cast<Vrst_uint64>(u.worker))
+        .num("upload_ms", u.upload_ms, 2);
 }
 
 /// Start view: _startCenter at _startMpp, or the whole map if it is outside the data.
@@ -260,6 +453,14 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
 
 /// Stats label at the top and toolbar at the bottom, both inside the safe area.
 - (void)buildOverlay {
+  _debug = [[VrstDebugOverlay alloc] initWithFrame:self.view.bounds];
+  _debug.translatesAutoresizingMaskIntoConstraints = NO;
+  _debug.startTime = _t0;
+  __weak VrstMapController* weak = self;
+  _debug.touchHandler = ^(UITouch* t, NSUInteger finger, BOOL ended) { [weak logTouch:t finger:finger ended:ended]; };
+  _debug.tickHandler = ^(CFTimeInterval now, double gapMs) { [weak onTick:now gap:gapMs]; };
+  [self.view addSubview:_debug];
+
   _stats = [[UILabel alloc] init];
   _stats.translatesAutoresizingMaskIntoConstraints = NO;
   _stats.numberOfLines = 0;
@@ -269,6 +470,8 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
   _stats.layer.cornerRadius = 6;
   _stats.layer.masksToBounds = YES;
   [self.view addSubview:_stats];
+  _stats.userInteractionEnabled = YES;
+  [_stats addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onStatsTap)]];
 
   UIToolbar* bar = [[UIToolbar alloc] init];
   bar.translatesAutoresizingMaskIntoConstraints = NO;
@@ -295,6 +498,12 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
   [NSLayoutConstraint activateConstraints:@[
     [_stats.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],
     [_stats.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:8],
+    [_debug.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+    [_debug.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    [_debug.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+    [_debug.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    [_debug.panel.topAnchor constraintEqualToAnchor:_stats.bottomAnchor constant:6],
+    [_debug.panel.leadingAnchor constraintEqualToAnchor:_stats.leadingAnchor],
     [bar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
     [bar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
     [bar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
@@ -351,12 +560,16 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
 
 /// Toolbar: whole map.
 - (void)onFit {
+  [_debug showGesture:@"BUTTON Fit"];
+  _log.record("ui", [self now]).text("event", "button_fit");
   [self fitView];
   [self redraw];
 }
 
 /// Toolbar: start view.
 - (void)onStart {
+  [_debug showGesture:@"BUTTON Start"];
+  _log.record("ui", [self now]).text("event", "button_start");
   [self resetView];
   [self redraw];
 }
@@ -364,6 +577,7 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
 /// Toolbar: oneway highlight.
 - (void)onOneway {
   _opt.oneway = !_opt.oneway;
+  [_debug showGesture:_opt.oneway ? @"BUTTON Oneway on" : @"BUTTON Oneway off"];
   [self updateToggles];
   [self redraw];
 }
@@ -371,13 +585,106 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
 /// Toolbar: vertex dots.
 - (void)onDots {
   _opt.show_vertices = !_opt.show_vertices;
+  [_debug showGesture:_opt.show_vertices ? @"BUTTON Dots on" : @"BUTTON Dots off"];
   [self updateToggles];
   [self redraw];
+}
+
+/// Logs one touch change.
+/// @param t The touch.
+/// @param finger Finger number (1 = first finger down).
+/// @param ended YES when the finger lifted or the touch was cancelled.
+- (void)logTouch:(UITouch*)t finger:(NSUInteger)finger ended:(BOOL)ended {
+  const CGPoint p = [t locationInView:self.view];
+  _lastTouchAt = std::max(_lastTouchAt, t.timestamp);
+  static constexpr const char* kPhase[] = {"began", "moved", "stationary", "ended", "cancelled"};
+  const auto phase = static_cast<std::size_t>(t.phase);
+  _log.record("touch", [self now])
+      .count("finger", finger)
+      .text("phase", ended ? "ended" : (phase < std::size(kPhase) ? kPhase[phase] : "other"))
+      .num("x", p.x, 1)
+      .num("y", p.y, 1)
+      .num("touch", t.timestamp - _t0, 4);
+}
+
+/// Display-link tick: logs main-thread stalls and writes the log about once a second.
+/// @param now CACurrentMediaTime() of the tick.
+/// @param gapMs Time since the previous tick in ms.
+- (void)onTick:(CFTimeInterval)now gap:(double)gapMs {
+  if (gapMs > kStallMs) _log.record("stall", now - _t0).num("gap_ms", gapMs, 1);
+  _log.flush_if_due(now - _t0);
+}
+
+/// Logs a gesture event.
+/// @param kind Gesture name, e.g. "pinch".
+/// @param g Its recognizer, for the state.
+/// @param value Gesture value (zoom factor so far, speed, degrees) or NAN for none.
+- (void)logGesture:(const char*)kind recognizer:(UIGestureRecognizer*)g value:(double)value {
+  static constexpr const char* kState[] = {"possible", "began", "changed", "ended", "cancelled", "failed"};
+  const auto state = static_cast<std::size_t>(g.state);
+  Vrst_log_record r = _log.record("gesture", [self now]);
+  r.text("kind", kind).text("state", state < std::size(kState) ? kState[state] : "other").count("touches",
+                                                                                                    g.numberOfTouches);
+  if (!std::isnan(value)) r.num("value", value, 3);
+}
+
+/// Tap on the stats box: debug menu (overlay, send logs, delete logs).
+- (void)onStatsTap {
+  _log.flush();
+  const std::vector<std::filesystem::path> files = _log.files();
+  NSString* sizes = [NSString stringWithFormat:@"%lu sessions, %.1f MB", (unsigned long)files.size(),
+                                               static_cast<double>(_log.total_bytes()) / 1048576.0];
+  UIAlertController* menu = [UIAlertController alertControllerWithTitle:@"Debug" message:sizes
+                                                         preferredStyle:UIAlertControllerStyleActionSheet];
+  __weak VrstMapController* weak = self;
+  [menu addAction:[UIAlertAction actionWithTitle:_debug.hidden ? @"Show overlay" : @"Hide overlay"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction*) { [weak toggleOverlay]; }]];
+  [menu addAction:[UIAlertAction actionWithTitle:@"Send this session…" style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction*) { [weak shareLogs:NO]; }]];
+  [menu addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Send all sessions (%lu)…",
+                                                                            (unsigned long)files.size()]
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction*) { [weak shareLogs:YES]; }]];
+  [menu addAction:[UIAlertAction actionWithTitle:@"Delete older sessions" style:UIAlertActionStyleDestructive
+                                         handler:^(UIAlertAction*) { [weak deleteOldLogs]; }]];
+  [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+  menu.popoverPresentationController.sourceView = _stats;
+  [self presentViewController:menu animated:YES completion:nil];
+}
+
+/// Hides or shows the debug overlay; logging goes on either way.
+- (void)toggleOverlay {
+  _debug.hidden = !_debug.hidden;
+  _log.record("ui", [self now]).text("event", _debug.hidden ? "overlay_hidden" : "overlay_shown");
+}
+
+/// Opens the share sheet (AirDrop, Mail, Files …) with session log files.
+/// @param all YES for every stored session, NO for the current one only.
+- (void)shareLogs:(BOOL)all {
+  _log.record("ui", [self now]).text("event", all ? "share_all" : "share_current");
+  _log.flush();
+  NSMutableArray<NSURL*>* urls = [NSMutableArray array];
+  const std::vector<std::filesystem::path> files = all ? _log.files() : std::vector{_log.path()};
+  for (const std::filesystem::path& f : files)
+    [urls addObject:[NSURL fileURLWithPath:@(f.string().c_str())]];
+  if (urls.count == 0) return;
+  UIActivityViewController* share = [[UIActivityViewController alloc] initWithActivityItems:urls
+                                                                      applicationActivities:nil];
+  share.popoverPresentationController.sourceView = _stats;
+  [self presentViewController:share animated:YES completion:nil];
+}
+
+/// Deletes every session file except the current one.
+- (void)deleteOldLogs {
+  _log.delete_old();
+  _log.record("ui", [self now]).text("event", "deleted_old_logs");
 }
 
 /// Toolbar: place names.
 - (void)onNames {
   _showLabels = !_showLabels;
+  [_debug showGesture:_showLabels ? @"BUTTON Names on" : @"BUTTON Names off"];
   [self updateToggles];
   [self redraw];
 }
@@ -439,6 +746,7 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
   UITapGestureRecognizer* two = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onTwoFingerTap:)];
   two.numberOfTouchesRequired = 2;
   for (UIGestureRecognizer* g in @[ pan, pinch, rot, dbl, two ]) [self.view addGestureRecognizer:g];
+  [_debug trackTouchesOf:self.view];
 }
 
 /// Lets pinch and rotation run together, like in Apple Maps.
@@ -468,6 +776,11 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
   const CGFloat s = [self pxPerPoint];
   pan_by(_view, t.x * s, t.y * s);
   [g setTranslation:CGPointZero inView:self.view];
+  const CGPoint vel = [g velocityInView:self.view];
+  [self logGesture:"pan" recognizer:g value:std::hypot(vel.x, vel.y)];
+  if (g.state == UIGestureRecognizerStateBegan) [_debug showGesture:@"PAN"];
+  if (g.state == UIGestureRecognizerStateEnded)
+    [_debug showGesture:[NSString stringWithFormat:@"PAN end %.0f pt/s", std::hypot(vel.x, vel.y)]];
   [self redraw];
 }
 
@@ -476,6 +789,7 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
 - (void)onPinch:(UIPinchGestureRecognizer*)g {
   if (!_viewSet) return;
   const CGPoint c = [g locationInView:self.view];
+  if (g.state == UIGestureRecognizerStateBegan) _pinchStartScale = _view.scale;
   if (g.state == UIGestureRecognizerStateBegan || g.numberOfTouches != _lastTouches) {
     _lastCentroid = c;  // a lifted or added finger moves the centroid; do not jump
     _lastTouches = g.numberOfTouches;
@@ -485,6 +799,12 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
   _lastCentroid = c;
   [self zoomBy:g.scale at:c];
   g.scale = 1;
+  [self logGesture:"pinch" recognizer:g value:_view.scale / _pinchStartScale];
+  NSString* zoom = [NSString stringWithFormat:@"PINCH ×%.2f", _view.scale / _pinchStartScale];
+  if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled)
+    [_debug showGesture:zoom];
+  else
+    [_debug updateGesture:zoom];
   [self redraw];
 }
 
@@ -495,7 +815,13 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
   const CGPoint c = [g locationInView:self.view];
   const CGFloat s = [self pxPerPoint];
   rotate_at(_view, [self fbWidth], [self fbHeight], c.x * s, c.y * s, -g.rotation);
+  if (g.state == UIGestureRecognizerStateBegan) _rotationSum = 0;
+  _rotationSum += g.rotation;
   g.rotation = 0;
+  [self logGesture:"rotate" recognizer:g value:_rotationSum * 180 / kPi];
+  // Pinch and twist run together; name the twist only once it is clearly one.
+  if (g.state == UIGestureRecognizerStateEnded && std::abs(_rotationSum) > 0.05)
+    [_debug showGesture:[NSString stringWithFormat:@"ROTATE %+.0f°", _rotationSum * 180 / kPi]];
   [self redraw];
 }
 
@@ -503,6 +829,8 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
 /// @param g Tap recognizer.
 - (void)onDoubleTap:(UITapGestureRecognizer*)g {
   if (!_viewSet) return;
+  [self logGesture:"double_tap" recognizer:g value:NAN];
+  [_debug showGesture:@"DOUBLE TAP → zoom in 2×"];
   [self zoomBy:2.0 at:[g locationInView:self.view]];
   [self redraw];
 }
@@ -511,6 +839,8 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
 /// @param g Tap recognizer.
 - (void)onTwoFingerTap:(UITapGestureRecognizer*)g {
   if (!_viewSet) return;
+  [self logGesture:"two_finger_tap" recognizer:g value:NAN];
+  [_debug showGesture:@"2-FINGER TAP → zoom out 2×"];
   [self zoomBy:0.5 at:[g locationInView:self.view]];
   [self redraw];
 }

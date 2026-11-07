@@ -4,6 +4,7 @@
 #include "tile_renderer.h"
 
 #include <algorithm>
+#include <chrono>
 
 namespace nav {
 
@@ -65,6 +66,7 @@ void Vrst_tile_renderer::add(const Vrst_tile_data& t, Vrst_uint64 frame) {
   g.bytes = t.fills.size() * sizeof(Vrst_gpu_point) + t.points.size() * sizeof(Vrst_gpu_point) +
             t.lines.size() * sizeof(Vrst_line_instance);
   m_bytes += g.bytes;
+  m_uploaded += g.bytes;
   m_tiles.emplace(key, g);
 }
 
@@ -300,8 +302,17 @@ void Vrst_tile_renderer::release(Vrst_gpu_tile& g) {
 std::vector<Vrst_uint64> select_tiles(Vrst_tile_renderer& r, Vrst_tile_loader& loader, const Vrst_tile_index& index,
                                       const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d map_center, Vrst_uint64 frame,
                                       Vrst_size budget, Vrst_tile_frame& stats) {
-  for (const std::unique_ptr<Vrst_tile_data>& t : loader.take(8)) r.add(*t, frame);
   Vrst_tile_frame f;
+  using Vrst_clock = std::chrono::steady_clock;
+  const auto ms_since = [](Vrst_clock::time_point a) {
+    return std::chrono::duration<Vrst_float64, std::milli>(Vrst_clock::now() - a).count();
+  };
+  for (const std::unique_ptr<Vrst_tile_data>& t : loader.take(8)) {
+    const Vrst_uint64 before = r.uploaded();
+    const Vrst_clock::time_point start = Vrst_clock::now();
+    r.add(*t, frame);
+    f.uploads.push_back({t->id, static_cast<Vrst_size>(r.uploaded() - before), t->build_ms, t->worker, ms_since(start)});
+  }
   f.level = level_for(1.0 / v.scale);
   std::vector<Vrst_tile_id> missing;
   std::vector<Vrst_uint64> fine, coarse;
@@ -324,9 +335,14 @@ std::vector<Vrst_uint64> select_tiles(Vrst_tile_renderer& r, Vrst_tile_loader& l
     }
   }
   f.missing = missing.size();
+  f.fallback = coarse.size();
   loader.request(missing);
+  const Vrst_size cached = r.size();
+  const Vrst_clock::time_point evict_start = Vrst_clock::now();
   r.evict(budget, frame);
-  stats = f;
+  f.evict_ms = ms_since(evict_start);
+  f.evicted = cached - r.size();
+  stats = std::move(f);
   coarse.insert(coarse.end(), fine.begin(), fine.end());  // fallbacks under the fine tiles
   return coarse;
 }

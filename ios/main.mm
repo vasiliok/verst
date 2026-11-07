@@ -147,6 +147,10 @@ static constexpr double kStallMs = 34;
   CGSize _laidOutSize;
   /// CACurrentMediaTime() when a test scenario last moved the camera; 0 = never.
   CFTimeInterval _lastMoveAt;
+  /// Pinch recognizer: may run together with _rotateRecognizer, nothing else.
+  UIPinchGestureRecognizer* _pinchRecognizer;
+  /// Two-finger twist recognizer; see _pinchRecognizer.
+  UIRotationGestureRecognizer* _rotateRecognizer;
 }
 
 /// Uses a GLKView as the root view.
@@ -966,19 +970,25 @@ static constexpr double kStallMs = 34;
   dbl.numberOfTapsRequired = 2;
   UITapGestureRecognizer* two = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onTwoFingerTap:)];
   two.numberOfTouchesRequired = 2;
+  // Lifting two fingers after a quick pinch must not also count as a two-finger tap:
+  // that zoomed out 2x and undid the pinch (session log 2026-11-07: all 107 taps fired at
+  // the same moment a pinch ended). The tap waits until pinch and twist have failed.
+  [two requireGestureRecognizerToFail:pinch];
+  [two requireGestureRecognizerToFail:rot];
+  _pinchRecognizer = pinch;
+  _rotateRecognizer = rot;
   for (UIGestureRecognizer* g in @[ pan, pinch, rot, dbl, two ]) [self.view addGestureRecognizer:g];
   [_debug trackTouchesOf:self.view];
 }
 
-/// Lets pinch and rotation run together, like in Apple Maps.
+/// Lets pinch and rotation run together, like in Apple Maps; no other pair, so a tap
+/// cannot fire on top of a pinch.
 /// @param a First recognizer.
 /// @param b Second recognizer.
-/// @return YES for any pair.
+/// @return YES only for pinch + rotation.
 - (BOOL)gestureRecognizer:(UIGestureRecognizer*)a
     shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer*)b {
-  (void)a;
-  (void)b;
-  return YES;
+  return (a == _pinchRecognizer && b == _rotateRecognizer) || (a == _rotateRecognizer && b == _pinchRecognizer);
 }
 
 /// Zoom limits: 0.1x the fit scale out, 2000 px per metre in.

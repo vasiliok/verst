@@ -1,0 +1,23 @@
+# cities: scroll Dijon -> Beaune -> Chalon -> Autun -> Dijon, zooming in and out at each city,
+# without waiting for tiles, like a user exploring the region (about 50 s).
+goto 47.322 5.041 40
+wait_tiles 15
+zoom 8 2
+wait 0.5
+zoom 0.125 2
+pan 384 -827 4   # Dijon -> Beaune
+zoom 8 2
+wait 0.5
+zoom 0.125 2
+pan -30 -679 3   # Beaune -> Chalon
+zoom 8 2
+wait 0.5
+zoom 0.125 2
+pan 1056 473 4   # Chalon -> Autun
+zoom 8 2
+wait 0.5
+zoom 0.125 2
+zoom 0.2 1.5            # wide view, 200 m/pt
+pan -281 206 3   # Autun -> Dijon
+zoom 5 1.5
+wait_tiles 20

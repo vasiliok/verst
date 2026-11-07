@@ -1,0 +1,24 @@
+# zoom-fast: big quick zooms and taps without waiting (about 15 s)
+goto 47.322 5.041 5
+wait_tiles 20
+zoom 0.0625 1
+zoom 16 1
+zoom 0.0625 0.5
+zoom 16 0.5
+zoom_out
+wait 0.2
+zoom_out
+wait 0.2
+zoom_out
+wait 0.2
+zoom_out
+wait 0.2
+zoom_in
+wait 0.2
+zoom_in
+wait 0.2
+zoom_in
+wait 0.2
+zoom_in
+wait 0.2
+wait_tiles 20

@@ -1,0 +1,14 @@
+# pan-dijon: slow, medium and fast scrolls, flings in 4 directions (about 30 s)
+goto 47.322 5.041 5
+wait_tiles 20
+pan 0 -250 3
+pan 0 250 3
+pan -250 0 1
+pan 250 0 1
+pan 0 -400 0.4
+pan 0 400 0.4
+fling -800 0 1.5
+fling 800 0 1.5
+fling 0 -800 1.5
+fling 0 800 1.5
+wait_tiles 10

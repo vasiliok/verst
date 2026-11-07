@@ -237,7 +237,11 @@ void Vrst_tile_builder::add_area(Vrst_uint32 a, const Vrst_tile_level& level, Vr
 }
 
 Vrst_tile_loader::Vrst_tile_loader(Vrst_build_fn build, int threads) : m_build(std::move(build)) {
-  for (int i = 0; i < std::max(threads, 1); ++i) m_workers.emplace_back([this, i] { work(i); });
+  const auto n = static_cast<Vrst_size>(std::max(threads, 1));
+  m_worker_tile.assign(n, std::nullopt);
+  m_worker_since.assign(n, Vrst_clock::now());
+  m_worker_built.assign(n, 0);
+  for (int i = 0; i < static_cast<int>(n); ++i) m_workers.emplace_back([this, i] { work(i); });
 }
 
 Vrst_tile_loader::~Vrst_tile_loader() {
@@ -253,9 +257,15 @@ Vrst_tile_loader::~Vrst_tile_loader() {
 void Vrst_tile_loader::request(const std::vector<Vrst_tile_id>& wanted) {
   {
     const std::scoped_lock lock(m_mutex);
+    std::unordered_set<Vrst_uint64> before;
+    for (const Vrst_tile_id& t : m_queue) before.insert(tile_key(t));
     m_queue.clear();
-    for (const Vrst_tile_id& t : wanted)
-      if (!m_busy.contains(tile_key(t))) m_queue.push_back(t);
+    for (const Vrst_tile_id& t : wanted) {
+      if (m_busy.contains(tile_key(t))) continue;
+      m_queue.push_back(t);
+      if (before.erase(tile_key(t)) == 0) ++m_requested;  // new in the queue
+    }
+    m_dropped += before.size();  // were queued, no longer wanted
   }
   m_wake.notify_all();
 }
@@ -290,6 +300,10 @@ void Vrst_tile_loader::work(int worker) {
       id = m_queue.front();
       m_queue.pop_front();
       m_busy.insert(tile_key(id));
+      const auto w = static_cast<Vrst_size>(worker);
+      m_worker_tile[w] = id;
+      m_worker_since[w] = Vrst_clock::now();
+      note({Vrst_loader_event_kind::Start, id, worker, 0, 0});
     }
     const auto start = std::chrono::steady_clock::now();
     std::unique_ptr<Vrst_tile_data> t = try_build(id);
@@ -298,13 +312,70 @@ void Vrst_tile_loader::work(int worker) {
       t->worker = worker;
     }
     const std::scoped_lock lock(m_mutex);
+    const auto w = static_cast<Vrst_size>(worker);
+    m_worker_tile[w] = std::nullopt;
+    const Vrst_float64 ms = std::chrono::duration<Vrst_float64, std::milli>(Vrst_clock::now() - start).count();
     if (t) {
+      ++m_worker_built[w];
+      note({Vrst_loader_event_kind::Done, id, worker, ms, 0});
       m_done.push_back(std::move(t));
     } else {
+      note({Vrst_loader_event_kind::Failed, id, worker, ms, 0});
       m_busy.erase(tile_key(id));
       ++m_failed;
     }
   }
+}
+
+Vrst_loader_status Vrst_tile_loader::status() const {
+  const std::scoped_lock lock(m_mutex);
+  Vrst_loader_status s;
+  s.queued = m_queue.size();
+  s.done = m_done.size();
+  s.building = m_busy.size() - m_done.size();
+  s.requested = m_requested;
+  s.dropped = m_dropped;
+  s.failed = m_failed;
+  const Vrst_clock::time_point now = Vrst_clock::now();
+  for (Vrst_size w = 0; w < m_worker_tile.size(); ++w) {
+    Vrst_worker_state ws;
+    ws.built = m_worker_built[w];
+    s.built += ws.built;
+    if (m_worker_tile[w]) {
+      ws.busy = true;
+      ws.tile = *m_worker_tile[w];
+      ws.busy_ms = std::chrono::duration<Vrst_float64, std::milli>(now - m_worker_since[w]).count();
+    }
+    s.workers.push_back(ws);
+  }
+  return s;
+}
+
+void Vrst_tile_loader::record_events(bool on) {
+  const std::scoped_lock lock(m_mutex);
+  m_record = on;
+  if (!on) m_events.clear();
+}
+
+void Vrst_tile_loader::note(const Vrst_loader_event& e) {
+  if (m_record && m_events.size() < kMaxEvents) m_events.push_back({e, Vrst_clock::now()});
+}
+
+std::vector<Vrst_loader_event> Vrst_tile_loader::take_events() {
+  std::vector<Vrst_timed_event> taken;
+  {
+    const std::scoped_lock lock(m_mutex);
+    taken.swap(m_events);
+  }
+  const Vrst_clock::time_point now = Vrst_clock::now();
+  std::vector<Vrst_loader_event> out;
+  out.reserve(taken.size());
+  for (const Vrst_timed_event& te : taken) {
+    Vrst_loader_event e = te.event;
+    e.age_ms = std::chrono::duration<Vrst_float64, std::milli>(now - te.at).count();
+    out.push_back(e);
+  }
+  return out;
 }
 
 std::vector<Vrst_tile_id> visible_tiles(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d map_center, int z) {

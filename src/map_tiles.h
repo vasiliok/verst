@@ -12,11 +12,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -368,6 +370,38 @@ class Vrst_tile_builder {
   Vrst_vec2d m_center;
 };
 
+/// What a loader worker did, for the session log (Vrst_tile_loader::take_events()).
+enum class Vrst_loader_event_kind { Start, Done, Failed };
+
+/// One worker event of the tile loader.
+struct Vrst_loader_event {
+  Vrst_loader_event_kind kind = Vrst_loader_event_kind::Start;  ///< What happened.
+  Vrst_tile_id tile{};                                          ///< The tile.
+  int worker = 0;                                               ///< Worker index.
+  Vrst_float64 build_ms = 0;                                    ///< Done / Failed: build time.
+  Vrst_float64 age_ms = 0;  ///< How long before take_events() it happened.
+};
+
+/// What one loader worker is doing now.
+struct Vrst_worker_state {
+  bool busy = false;         ///< Building a tile.
+  Vrst_tile_id tile{};       ///< The tile, when busy.
+  Vrst_float64 busy_ms = 0;  ///< Time spent on it so far, when busy.
+  Vrst_size built = 0;       ///< Tiles this worker finished since start.
+};
+
+/// Snapshot of the tile loader queue, for the session log (Vrst_tile_loader::status()).
+struct Vrst_loader_status {
+  Vrst_size queued = 0;     ///< Tiles waiting for a worker.
+  Vrst_size building = 0;   ///< Tiles being built now.
+  Vrst_size done = 0;       ///< Tiles finished, not taken yet.
+  Vrst_size requested = 0;  ///< Tiles added to the queue since start.
+  Vrst_size dropped = 0;    ///< Queued tiles removed by request() before a worker took them.
+  Vrst_size built = 0;      ///< Tiles finished since start.
+  Vrst_size failed = 0;     ///< Builds that failed since start.
+  std::vector<Vrst_worker_state> workers;  ///< One entry per worker thread.
+};
+
 /// Builds tiles on background threads, so panning into a new area never stalls a
 /// frame. The front end asks for the tiles it misses every frame (request()) and
 /// collects finished ones (take()); requests that are no longer wanted are dropped.
@@ -417,7 +451,30 @@ class Vrst_tile_loader {
     return m_failed;
   }
 
+  /// Snapshot of the queue and of every worker, for the session log.
+  /// @return Status now.
+  Vrst_loader_status status() const;
+
+  /// Turns recording of worker events on or off (off by default, so a front end that
+  /// never calls take_events() does not collect them).
+  /// @param on Record events.
+  void record_events(bool on);
+  /// Takes the worker events recorded since the last call.
+  /// @return Events, oldest first, with their age.
+  std::vector<Vrst_loader_event> take_events();
+
  private:
+  /// Clock of the worker timing.
+  using Vrst_clock = std::chrono::steady_clock;
+  /// A worker event with its time, before take_events() turns it into an age.
+  struct Vrst_timed_event {
+    Vrst_loader_event event;     ///< The event.
+    Vrst_clock::time_point at;   ///< When it happened.
+  };
+  /// Records a worker event when recording is on; the caller holds m_mutex.
+  /// @param e Event.
+  void note(const Vrst_loader_event& e);
+
   /// Worker loop: take the first queued tile, build it, hand it over.
   /// @param worker Index of this worker thread, stored in Vrst_tile_data::worker.
   void work(int worker);
@@ -438,6 +495,22 @@ class Vrst_tile_loader {
   bool m_stop = false;
   /// Builds that failed; see failed().
   Vrst_size m_failed = 0;
+  /// Tiles added to the queue since start; see Vrst_loader_status::requested.
+  Vrst_size m_requested = 0;
+  /// Queued tiles dropped by request(); see Vrst_loader_status::dropped.
+  Vrst_size m_dropped = 0;
+  /// Per worker: tile being built, or nullopt when idle.
+  std::vector<std::optional<Vrst_tile_id>> m_worker_tile;
+  /// Per worker: when the current build began.
+  std::vector<Vrst_clock::time_point> m_worker_since;
+  /// Per worker: tiles finished.
+  std::vector<Vrst_size> m_worker_built;
+  /// Record worker events (record_events()).
+  bool m_record = false;
+  /// Recorded worker events not taken yet; capped at kMaxEvents.
+  std::vector<Vrst_timed_event> m_events;
+  /// Most events kept between two take_events() calls.
+  static constexpr Vrst_size kMaxEvents = 4096;
   /// Worker threads.
   std::vector<std::thread> m_workers;
 };

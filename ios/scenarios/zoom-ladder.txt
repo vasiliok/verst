@@ -1,0 +1,31 @@
+# zoom-ladder: 2 -> 256 m/pt and back, waiting for tiles at each step (about 60 s)
+goto 47.322 5.041 2
+wait_tiles 20
+zoom 0.5 1
+wait_tiles 10
+zoom 0.5 1
+wait_tiles 10
+zoom 0.5 1
+wait_tiles 10
+zoom 0.5 1
+wait_tiles 10
+zoom 0.5 1
+wait_tiles 10
+zoom 0.5 1
+wait_tiles 10
+zoom 0.5 1
+wait_tiles 10
+zoom 2 1
+wait_tiles 10
+zoom 2 1
+wait_tiles 10
+zoom 2 1
+wait_tiles 10
+zoom 2 1
+wait_tiles 10
+zoom 2 1
+wait_tiles 10
+zoom 2 1
+wait_tiles 10
+zoom 2 1
+wait_tiles 10

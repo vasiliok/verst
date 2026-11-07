@@ -10,7 +10,8 @@
 /// Gestures: one-finger drag = pan, pinch = zoom (and pan with the two fingers),
 /// two-finger twist = rotate, double tap = zoom in, two-finger tap = zoom out.
 /// Launch arguments `--center <lat> <lon>` and `--mpp <metres>` set the start view,
-/// like navview; `--log-dir <dir>` puts the session logs elsewhere (Simulator). VrstDebugOverlay (clock, frame numbers, touches and gesture names)
+/// like navview; `--log-dir <dir>` puts the session logs elsewhere (Simulator);
+/// `--scenario <name>` plays a test scenario (scenario.h) after the first frame. VrstDebugOverlay (clock, frame numbers, touches and gesture names)
 /// is on at start for screen recordings; a tap on the stats box hides or shows it.
 
 #include "gl_api.h"  // OpenGL ES 3.0; before GLKit so the ES3 header wins
@@ -27,6 +28,8 @@
 #include <cmath>
 #include <exception>
 #include <memory>
+#include <optional>
+#include <stdexcept>
 
 #include "glyph_atlas.h"
 #include "map_labels.h"
@@ -34,6 +37,7 @@
 #include "map_scene.h"
 #include "map_tiles.h"
 #include "nav_files.h"
+#include "scenario.h"
 #include "session_log.h"
 #include "tile_renderer.h"
 
@@ -129,6 +133,20 @@ static constexpr double kStallMs = 34;
   CFTimeInterval _queuedAt;
   /// UITouch.timestamp of the newest touch change seen.
   CFTimeInterval _lastTouchAt;
+  /// Test scenario playing (or played); see scenario.h.
+  std::optional<Vrst_scenario> _scenario;
+  /// Scenario named by `--scenario`, started after the first frame; nil when none.
+  NSString* _launchScenario;
+  /// Missing tiles in the last frame, for wait_tiles steps.
+  Vrst_size _lastMissing;
+  /// Scenario steps logged so far; a slow frame can pass several steps at once.
+  Vrst_size _loggedSteps;
+  /// `t` of the last "queue" record.
+  double _lastQueueLog;
+  /// View size at the last layout pass; a redraw is needed only when it changes.
+  CGSize _laidOutSize;
+  /// CACurrentMediaTime() when a test scenario last moved the camera; 0 = never.
+  CFTimeInterval _lastMoveAt;
 }
 
 /// Uses a GLKView as the root view.
@@ -141,6 +159,7 @@ static constexpr double kStallMs = 34;
   [super viewDidLoad];
   _t0 = CACurrentMediaTime();
   [self openLog];
+  [self writeExampleScenario];
   _startCenter = kDefaultPoint;
   _startMpp = kDefaultMetresPerPoint;
   [self parseArguments];
@@ -173,6 +192,7 @@ static constexpr double kStallMs = 34;
     const double index_ms = lap();
     _builder = std::make_unique<Vrst_tile_builder>(_data, _index, _mesh.center());
     _loader = std::make_unique<Vrst_tile_loader>(*_builder, 2);
+    _loader->record_events(true);  // "build" records in the session log
     _labels.build(_data, _mesh);
     NSString* fontDir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"fonts"];
     std::vector<std::string> fonts;
@@ -289,6 +309,9 @@ static constexpr double kStallMs = 34;
       if (std::abs(lat) <= 90 && std::abs(lon) <= 180)
         _startCenter = {Vrst_int32(std::lround(lat * 1e7)), Vrst_int32(std::lround(lon * 1e7))};
       i += 2;
+    } else if ([a[i] isEqualToString:@"--scenario"] && i + 1 < a.count) {
+      _launchScenario = a[i + 1];
+      ++i;
     } else if ([a[i] isEqualToString:@"--mpp"] && i + 1 < a.count) {
       if (a[i + 1].doubleValue > 0) _startMpp = a[i + 1].doubleValue;
       ++i;
@@ -319,9 +342,13 @@ static constexpr double kStallMs = 34;
   [self.view setNeedsDisplay];
 }
 
-/// Redraws after rotation or any other size change.
+/// Redraws after rotation or any other size change. Only then: a layout pass also runs
+/// whenever a label text changes, and redrawing for it made every frame ask for the next.
 - (void)viewDidLayoutSubviews {
   [super viewDidLayoutSubviews];
+  const CGSize size = self.view.bounds.size;
+  if (CGSizeEqualToSize(size, _laidOutSize)) return;
+  _laidOutSize = size;
   [self redraw];
 }
 
@@ -376,6 +403,12 @@ static constexpr double kStallMs = 34;
   // Keep drawing while tiles are loading so they appear as soon as they are built;
   // otherwise draw only on demand.
   self.paused = tf.missing == 0 && _loader->pending() == 0;
+  _lastMissing = tf.missing;
+  if (_launchScenario) {
+    NSString* name = _launchScenario;
+    _launchScenario = nil;
+    [self startScenario:name];
+  }
   [self logFrame:tf
          start:drawStart
         phases:{select_ms, tiles_ms, position_ms, labels_ms, stats_ms}
@@ -423,8 +456,10 @@ static constexpr double kStallMs = 34;
         .num("cx", _view.center.x, 1)
         .num("cy", _view.center.y, 1)
         .flag("continuous", !self.paused);
+    if (_scenario && _scenario->running()) r.count("step", _scenario->step_index());
     if (_queuedAt > 0) r.num("queued", _queuedAt - _t0, 4);
     if (_lastTouchAt > 0) r.num("touch", _lastTouchAt - _t0, 4);
+    if (_lastMoveAt > 0) r.num("move", _lastMoveAt - _t0, 4);
   }  // the frame record is appended here, before its tiles
   _queuedAt = 0;
   for (const Vrst_tile_upload& u : tf.uploads)
@@ -597,6 +632,12 @@ static constexpr double kStallMs = 34;
 - (void)logTouch:(UITouch*)t finger:(NSUInteger)finger ended:(BOOL)ended {
   const CGPoint p = [t locationInView:self.view];
   _lastTouchAt = std::max(_lastTouchAt, t.timestamp);
+  if (t.phase == UITouchPhaseBegan && _scenario && _scenario->running()) {
+    _scenario->stop();  // the user takes over
+    UIApplication.sharedApplication.idleTimerDisabled = NO;
+    _log.record("scenario", [self now]).text("event", "cancelled").text("name", _scenario->name());
+    [_debug showGesture:@"TEST stopped by touch"];
+  }
   static constexpr const char* kPhase[] = {"began", "moved", "stationary", "ended", "cancelled"};
   const auto phase = static_cast<std::size_t>(t.phase);
   _log.record("touch", [self now])
@@ -612,7 +653,43 @@ static constexpr double kStallMs = 34;
 /// @param gapMs Time since the previous tick in ms.
 - (void)onTick:(CFTimeInterval)now gap:(double)gapMs {
   if (gapMs > kStallMs) _log.record("stall", now - _t0).num("gap_ms", gapMs, 1);
+  if (_scenario && _scenario->running() && _viewSet) [self playScenarioAt:now - _t0];
+  if (_loader) [self logLoaderAt:now - _t0];
   _log.flush_if_due(now - _t0);
+}
+
+/// Logs the tile loader: every worker start / end since the last tick ("build"), and a
+/// snapshot of the queue and the workers 4 times a second ("queue").
+/// @param t Seconds since launch.
+- (void)logLoaderAt:(double)t {
+  static constexpr const char* kKind[] = {"start", "done", "failed"};
+  for (const Vrst_loader_event& e : _loader->take_events()) {
+    Vrst_log_record r = _log.record("build", t - e.age_ms / 1000);
+    r.text("event", kKind[static_cast<int>(e.kind)])
+        .count("worker", static_cast<Vrst_uint64>(e.worker))
+        .count("z", static_cast<Vrst_uint64>(e.tile.z))
+        .count("x", static_cast<Vrst_uint64>(e.tile.x))
+        .count("y", static_cast<Vrst_uint64>(e.tile.y));
+    if (e.kind != Vrst_loader_event_kind::Start) r.num("ms", e.build_ms, 2);
+  }
+  if (t - _lastQueueLog < 0.25) return;
+  _lastQueueLog = t;
+  const Vrst_loader_status s = _loader->status();
+  Vrst_log_record r = _log.record("queue", t);
+  r.count("queued", s.queued)
+      .count("building", s.building)
+      .count("done", s.done)
+      .count("requested", s.requested)
+      .count("dropped", s.dropped)
+      .count("built", s.built)
+      .count("failed", s.failed);
+  for (Vrst_size w = 0; w < s.workers.size(); ++w) {
+    const Vrst_worker_state& ws = s.workers[w];
+    const std::string key = "w" + std::to_string(w);
+    r.text(key, ws.busy ? std::to_string(ws.tile.z) + "/" + std::to_string(ws.tile.x) + "/" + std::to_string(ws.tile.y)
+                        : "idle");
+    if (ws.busy) r.num(key + "_ms", ws.busy_ms, 0);
+  }
 }
 
 /// Logs a gesture event.
@@ -646,11 +723,155 @@ static constexpr double kStallMs = 34;
                                                                             (unsigned long)files.size()]
                                            style:UIAlertActionStyleDefault
                                          handler:^(UIAlertAction*) { [weak shareLogs:YES]; }]];
+  if (_scenario && _scenario->running()) {
+    [menu addAction:[UIAlertAction actionWithTitle:@"Stop test" style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction*) { [weak stopScenario]; }]];
+  } else {
+    for (NSString* name in [self scenarioNames])
+      [menu addAction:[UIAlertAction actionWithTitle:[@"Run test: " stringByAppendingString:name]
+                                               style:UIAlertActionStyleDefault
+                                             handler:^(UIAlertAction*) { [weak startScenario:name]; }]];
+  }
   [menu addAction:[UIAlertAction actionWithTitle:@"Delete older sessions" style:UIAlertActionStyleDestructive
                                          handler:^(UIAlertAction*) { [weak deleteOldLogs]; }]];
   [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
   menu.popoverPresentationController.sourceView = _stats;
   [self presentViewController:menu animated:YES completion:nil];
+}
+
+// --- test scenarios ----------------------------------------------------------------
+
+/// Directory of user scenario files: Documents/scenarios (visible in the Files app).
+/// @return Path.
+- (NSString*)scenarioDir {
+  NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+  return [docs stringByAppendingPathComponent:@"scenarios"];
+}
+
+/// Writes the built-in scenario as `standard-example.txt` into the scenario directory,
+/// once, so there is a file to copy and edit in the Files app.
+- (void)writeExampleScenario {
+  NSString* dir = [self scenarioDir];
+  NSString* file = [dir stringByAppendingPathComponent:@"standard-example.txt"];
+  NSFileManager* fm = NSFileManager.defaultManager;
+  if ([fm fileExistsAtPath:file]) return;
+  [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+  NSString* text = [[NSString alloc] initWithBytes:kStandardScenario.data()
+                                            length:kStandardScenario.size()
+                                          encoding:NSUTF8StringEncoding];
+  [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
+/// Directory of the scenarios shipped with the app (ios/scenarios in the repo).
+/// @return Path inside the app bundle.
+- (NSString*)bundledScenarioDir {
+  return [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"scenarios"];
+}
+
+/// Scenarios the menu offers: "standard" (built in), the bundled ones by name, then every
+/// .txt the user put in Documents/scenarios, by file name.
+/// @return Names for startScenario:.
+- (NSArray<NSString*>*)scenarioNames {
+  NSMutableArray<NSString*>* names = [NSMutableArray arrayWithObject:@"standard"];
+  NSFileManager* fm = NSFileManager.defaultManager;
+  for (NSString* f in [[fm contentsOfDirectoryAtPath:[self bundledScenarioDir] error:nil]
+           sortedArrayUsingSelector:@selector(compare:)])
+    if ([f.pathExtension isEqualToString:@"txt"]) [names addObject:f.stringByDeletingPathExtension];
+  for (NSString* f in [[fm contentsOfDirectoryAtPath:[self scenarioDir] error:nil]
+           sortedArrayUsingSelector:@selector(compare:)])
+    if ([f.pathExtension isEqualToString:@"txt"]) [names addObject:f];
+  return names;
+}
+
+/// File of a scenario name: a bundled `<name>.txt`, a file in Documents/scenarios, or a
+/// full path.
+/// @param name Scenario name.
+/// @return Path; the file may not exist.
+- (NSString*)scenarioPath:(NSString*)name {
+  if (name.absolutePath) return name;
+  NSString* bundled = [[self bundledScenarioDir] stringByAppendingPathComponent:[name stringByAppendingPathExtension:@"txt"]];
+  if ([NSFileManager.defaultManager fileExistsAtPath:bundled]) return bundled;
+  return [[self scenarioDir] stringByAppendingPathComponent:name];
+}
+
+/// Starts a scenario: "standard", a file in the scenario directory, or a full path.
+/// A bad file is reported on screen and in the log, and nothing starts.
+/// @param name Scenario name.
+- (void)startScenario:(NSString*)name {
+  try {
+    if ([name isEqualToString:@"standard"]) {
+      _scenario = Vrst_scenario::parse("standard", kStandardScenario);
+    } else {
+      NSString* path = [self scenarioPath:name];
+      NSString* text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+      if (!text) throw std::runtime_error(std::string("cannot read scenario ") + path.UTF8String);
+      _scenario = Vrst_scenario::parse(name.UTF8String, text.UTF8String);
+    }
+  } catch (const std::exception& e) {
+    _log.record("scenario", [self now]).text("event", "error").text("what", e.what());
+    [_debug showGesture:@"TEST error (see log)"];
+    return;
+  }
+  _scenario->start([self now]);
+  _loggedSteps = 0;
+  UIApplication.sharedApplication.idleTimerDisabled = YES;  // no auto-lock while the test plays
+  _log.record("scenario", [self now])
+      .text("event", "start")
+      .text("name", _scenario->name())
+      .count("steps", _scenario->steps().size())
+      .num("max_s", _scenario->max_seconds(), 1);
+  [self logScenarioStep];
+  [self redraw];
+}
+
+/// Stops the playing scenario (menu).
+- (void)stopScenario {
+  if (!_scenario || !_scenario->running()) return;
+  _scenario->stop();
+  UIApplication.sharedApplication.idleTimerDisabled = NO;
+  _log.record("scenario", [self now]).text("event", "stopped").text("name", _scenario->name());
+  [_debug showGesture:@"TEST stopped"];
+}
+
+/// Logs every step begun since the last call (up to the one playing now) and shows the
+/// current one.
+- (void)logScenarioStep {
+  const Vrst_size now_index = std::min(_scenario->step_index(), _scenario->steps().size() - 1);
+  for (; _loggedSteps <= now_index && _loggedSteps < _scenario->steps().size(); ++_loggedSteps)
+    _log.record("scenario", [self now])
+        .text("event", "step")
+        .count("step", _loggedSteps)
+        .text("text", _scenario->steps()[_loggedSteps].text);
+  if (_scenario->step_index() >= _scenario->steps().size()) return;
+  [_debug showGesture:[NSString stringWithFormat:@"TEST %lu/%lu  %s", (unsigned long)now_index + 1,
+                                                 (unsigned long)_scenario->steps().size(),
+                                                 _scenario->steps()[now_index].text.c_str()]];
+}
+
+/// Plays the scenario up to a time and redraws when the camera moved.
+/// @param t Seconds since launch.
+- (void)playScenarioAt:(double)t {
+  Vrst_scenario_frame f;
+  f.fb_w = [self fbWidth];
+  f.fb_h = [self fbHeight];
+  f.px_per_point = [self pxPerPoint];
+  f.min_scale = _initialScale * 0.1;  // same limits as the gestures (zoomBy:at:)
+  f.max_scale = 2000.0;
+  f.tiles_ready = _lastMissing == 0;
+  const Vrst_scenario_tick tick = _scenario->advance(t, _view, f);
+  if (tick.jump)
+    _view = _mesh.start_view(_data.graph().bbox(), tick.jump->at, tick.jump->mpp, f.px_per_point, f.fb_w, f.fb_h);
+  if (tick.step_changed) [self logScenarioStep];
+  if (tick.finished) {
+    _loggedSteps = _scenario->steps().size();
+    UIApplication.sharedApplication.idleTimerDisabled = NO;
+    _log.record("scenario", t).text("event", "finished").text("name", _scenario->name());
+    [_debug showGesture:@"TEST finished"];
+  }
+  if (tick.moved) {
+    _lastMoveAt = CACurrentMediaTime();
+    [self redraw];
+  }
 }
 
 /// Hides or shows the debug overlay; logging goes on either way.

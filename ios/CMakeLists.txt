@@ -25,7 +25,11 @@ set_source_files_properties(${_map_files} PROPERTIES MACOSX_PACKAGE_LOCATION map
 # Label fonts (downloaded by the top-level CMakeLists): <app>/fonts/*.ttf.
 set_source_files_properties(${VRST_FONT_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION fonts)
 
-add_executable(verst_ios MACOSX_BUNDLE main.mm debug_overlay.mm ${_map_files} ${VRST_FONT_FILES})
+# Test scenarios (src/scenario.h): <app>/scenarios/*.txt, offered in the debug menu.
+file(GLOB _scenarios "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/*.txt")
+set_source_files_properties(${_scenarios} PROPERTIES MACOSX_PACKAGE_LOCATION scenarios)
+
+add_executable(verst_ios MACOSX_BUNDLE main.mm debug_overlay.mm ${_map_files} ${VRST_FONT_FILES} ${_scenarios})
 target_link_libraries(verst_ios PRIVATE vrst_render
   "-framework Foundation" "-framework CoreGraphics" "-framework UIKit" "-framework GLKit"
   "-framework QuartzCore" "-framework CoreLocation")

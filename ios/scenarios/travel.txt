@@ -1,0 +1,34 @@
+# travel: steady scroll west at street zoom for 30 s, like driving (about 45 s)
+goto 47.322 5.041 3
+wait_tiles 20
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+pan -150 0 1
+wait_tiles 20

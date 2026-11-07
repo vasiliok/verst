@@ -1,0 +1,16 @@
+# taps: double-tap and two-finger-tap zoom jumps (about 15 s)
+goto 47.322 5.041 20
+wait_tiles 20
+zoom_in
+wait 1
+zoom_in
+wait 1
+zoom_in
+wait 1
+zoom_out
+wait 1
+zoom_out
+wait 1
+zoom_out
+wait 1
+wait_tiles 10

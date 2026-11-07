@@ -108,6 +108,7 @@ add_library(vrst_core STATIC
   src/map_scene.cpp
   src/map_tiles.cpp
   src/gpx_track.cpp
+  src/scenario.cpp
   src/session_log.cpp)
 target_include_directories(vrst_core PUBLIC src)
 target_include_directories(vrst_core SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
@@ -160,7 +161,7 @@ if(NAV_BUILD_TESTS)
     GIT_TAG v1.15.2
     GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(googletest)
-  add_executable(tile_test tests/tile_test.cpp)
+  add_executable(tile_test tests/tile_test.cpp tests/scenario_test.cpp)
   target_link_libraries(tile_test PRIVATE vrst_core GTest::gtest_main)
   nav_warnings(tile_test)
 endif()

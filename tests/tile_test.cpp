@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -195,6 +196,49 @@ TEST(TileLoader, FailedBuildIsCountedAndRetried) {
   wait_idle();
   EXPECT_EQ(loader.failed(), 2u);
   EXPECT_TRUE(loader.take(16).empty());
+}
+
+/// The queue snapshot names the tile each worker is busy with, counts dropped requests,
+/// and the event list shows each build's start and end.
+TEST(TileLoader, StatusAndEventsShowTheQueue) {
+  std::atomic<bool> release{false};
+  const Vrst_tile_loader::Vrst_build_fn build = [&release](Vrst_tile_id id) {
+    while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::unique_ptr<Vrst_tile_data> t = std::make_unique<Vrst_tile_data>();
+    t->id = id;
+    return t;
+  };
+  Vrst_tile_loader loader(build, 1);
+  loader.record_events(true);
+  loader.request({{14, 1, 1}, {14, 2, 2}, {14, 3, 3}});
+  Vrst_loader_status s;
+  for (int i = 0; i < 1000 && !(s = loader.status()).workers[0].busy; ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(s.workers[0].busy);
+  EXPECT_EQ(s.workers[0].tile.x, 1);
+  EXPECT_EQ(s.queued, 2u);
+  EXPECT_EQ(s.building, 1u);
+  EXPECT_EQ(s.requested, 3u);
+
+  loader.request({{14, 3, 3}});  // the user moved on: tile 2 is no longer wanted
+  s = loader.status();
+  EXPECT_EQ(s.dropped, 1u);
+  EXPECT_EQ(s.queued, 1u);
+
+  release = true;
+  const auto t0 = std::chrono::steady_clock::now();
+  while (loader.pending() > 0 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5))
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_EQ(loader.take(16).size(), 2u);
+  const std::vector<Vrst_loader_event> ev = loader.take_events();
+  ASSERT_EQ(ev.size(), 4u);  // start + done for tiles 1 and 3
+  EXPECT_EQ(ev[0].kind, Vrst_loader_event_kind::Start);
+  EXPECT_EQ(ev[1].kind, Vrst_loader_event_kind::Done);
+  EXPECT_EQ(ev[1].tile.x, 1);
+  EXPECT_EQ(ev[3].tile.x, 3);
+  EXPECT_GE(ev[0].age_ms, ev[3].age_ms);
+  EXPECT_TRUE(loader.take_events().empty());
+  EXPECT_EQ(loader.status().built, 2u);
 }
 
 // --- region tests (VRST_TEST_DIR) -------------------------------------------------

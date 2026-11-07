@@ -1,0 +1,4 @@
+# idle: does the app calm down when nothing happens? (about 25 s)
+goto 47.322 5.041 10
+wait_tiles 20
+wait 20

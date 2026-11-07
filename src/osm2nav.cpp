@@ -123,6 +123,11 @@ class Vrst_osm_source {
  public:
   /// Virtual: sources are owned and used through this base class.
   virtual ~Vrst_osm_source() = default;
+  Vrst_osm_source() = default;                                   ///< Base of the readers.
+  Vrst_osm_source(const Vrst_osm_source&) = delete;             ///< Polymorphic base: no slicing copies.
+  Vrst_osm_source& operator=(const Vrst_osm_source&) = delete;  ///< Polymorphic base: no slicing copies.
+  Vrst_osm_source(Vrst_osm_source&&) = delete;                  ///< Polymorphic base: not movable.
+  Vrst_osm_source& operator=(Vrst_osm_source&&) = delete;       ///< Polymorphic base: not movable.
   /// Bounding box from the file header, if the file has one. Only printed in the stats.
   /// @return Box, or nullopt when the header has none.
   virtual std::optional<Vrst_bbox> header_bbox() = 0;
@@ -569,9 +574,9 @@ Vrst_float64 peak_rss_mb() {
   rusage ru{};
   getrusage(RUSAGE_SELF, &ru);
 #ifdef __APPLE__
-  return ru.ru_maxrss / (1024.0 * 1024.0);  // bytes
+  return static_cast<Vrst_float64>(ru.ru_maxrss) / (1024.0 * 1024.0);  // bytes
 #else
-  return ru.ru_maxrss / 1024.0;  // KiB
+  return static_cast<Vrst_float64>(ru.ru_maxrss) / 1024.0;  // KiB
 #endif
 #endif
 }
@@ -919,7 +924,7 @@ int run(const std::string& input, const fs::path& out_dir) {
 
   // --- stats ---------------------------------------------------------------
   const std::optional<Vrst_bbox> hb = source.header_bbox();
-  const auto kib = [](Vrst_uint64 b) { return b / 1024.0; };
+  const auto kib = [](Vrst_uint64 b) { return static_cast<Vrst_float64>(b) / 1024.0; };
   std::printf("\n");
   std::printf("ways read            %12llu\n", static_cast<unsigned long long>(ways_read));
   std::printf("ways kept            %12zu\n", ways.size());

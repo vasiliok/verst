@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -169,18 +170,6 @@ TEST(VisibleTiles, NearestFirst) {
   EXPECT_EQ(tile_key(tiles.front()), tile_key(mid));
 }
 
-// --- region tests (VRST_TEST_DIR) -------------------------------------------------
-
-/// Environment variable as text.
-/// @tparam N Length of the name literal.
-/// @param name Variable name.
-/// @return Its value, or "" when it is not set.
-template <Vrst_size N>
-std::string env(const char (&name)[N]) {
-  const char* v = std::getenv(name);  // C API; copied at once
-  return v ? v : "";
-}
-
 /// A build that throws neither ends the worker nor blocks the tile: the other tiles still
 /// arrive, the failure is counted, and asking for the tile again retries it.
 TEST(TileLoader, FailedBuildIsCountedAndRetried) {
@@ -208,6 +197,20 @@ TEST(TileLoader, FailedBuildIsCountedAndRetried) {
   EXPECT_TRUE(loader.take(16).empty());
 }
 
+// --- region tests (VRST_TEST_DIR) -------------------------------------------------
+
+namespace {
+
+/// Environment variable as text.
+/// @tparam N Length of the name literal.
+/// @param name Variable name.
+/// @return Its value, or "" when it is not set.
+template <Vrst_size N>
+std::string env(const char (&name)[N]) {
+  const char* v = std::getenv(name);  // C API; copied at once
+  return v ? v : "";
+}
+
 /// Opens the region once for all region tests and builds the index.
 class RegionTest : public ::testing::Test {
  protected:
@@ -222,8 +225,9 @@ class RegionTest : public ::testing::Test {
     s_index = std::make_unique<Vrst_tile_index>();
     s_index->build(*s_data);
     s_builder = std::make_unique<Vrst_tile_builder>(*s_data, *s_index, s_mesh->center());
-    if (const std::string e = env("VRST_TEST_EVERY"); !e.empty())
-      s_every = static_cast<Vrst_uint32>(std::max(1, std::atoi(e.c_str())));
+    const std::string every = env("VRST_TEST_EVERY");
+    Vrst_uint32 n = 0;
+    if (std::from_chars(every.data(), every.data() + every.size(), n).ec == std::errc{} && n > 0) s_every = n;
   }
   /// Frees the region.
   static void TearDownTestSuite() {
@@ -248,6 +252,8 @@ std::unique_ptr<Vrst_map_mesh> RegionTest::s_mesh;
 std::unique_ptr<Vrst_tile_index> RegionTest::s_index;
 std::unique_ptr<Vrst_tile_builder> RegionTest::s_builder;
 Vrst_uint32 RegionTest::s_every = 1;
+
+}  // namespace
 
 /// Every tile of every level is well formed: contiguous draw ranges, kinds and
 /// styles match their range, the level's class and building filters hold, and all

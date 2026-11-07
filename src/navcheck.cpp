@@ -387,7 +387,7 @@ void stats(const Vrst_nav_data& d) {
   std::printf("\nstats:\n");
   std::printf("  V=%u  S=%u  A=%u  P=%zu  N=%u\n", V, d.edges().num_segments(), d.graph().num_arcs(),
               d.geom().points().size(), d.names().size());
-  std::printf("  road length          %.1f km\n", length_dm / 1e4);
+  std::printf("  road length          %.1f km\n", static_cast<Vrst_float64>(length_dm) / 1e4);
   std::printf("  dead-end vertices    %td\n", dead_ends);
   std::printf("  components           %u\n", components);
   std::printf("  largest component    %u vertices (%.1f%%)\n", largest, V ? 100.0 * largest / V : 0.0);
@@ -422,12 +422,14 @@ void dump_way(const Vrst_nav_data& d, Vrst_uint64 way_id) {
 
 }  // namespace
 
-/// navcheck entry point.
+namespace {
+
+/// Runs navcheck; main() only adds the last-resort catch.
 /// @param argc Argument count.
 /// @param argv `<out_dir> [--dump-way <osm_way_id>]`.
 /// @return 0 when all checks pass (or the dump ran), 1 on a failed check or load
 ///         error, 2 on wrong usage.
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
   if (argc != 2 && !(argc == 4 && std::string(argv[2]) == "--dump-way")) {
     std::fprintf(stderr, "usage: %s <out_dir> [--dump-way <osm_way_id>]\n", argv[0]);
     return 2;
@@ -466,4 +468,20 @@ int main(int argc, char** argv) {
   if (g_failures == 0) stats(d);
   std::printf("\n%s\n", g_failures == 0 ? "ALL PASS" : ("FAILED (" + std::to_string(g_failures) + ")").c_str());
   return g_failures == 0 ? 0 : 1;
+}
+
+}  // namespace
+
+/// navcheck entry point.
+/// @param argc Argument count.
+/// @param argv `<out_dir> [--dump-way <osm_way_id>]`.
+/// @return 0 when all checks pass (or the dump ran), 1 on a failed check or any other
+///         error, 2 on wrong usage.
+int main(int argc, char** argv) {
+  try {
+    return run(argc, argv);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "navcheck: %s\n", e.what());
+    return 1;
+  }
 }

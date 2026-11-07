@@ -55,6 +55,8 @@ namespace nav::viewer {
 #define VRST_FONT_DIR "fonts"  ///< Label font directory; CMake sets it to `<build>/fonts`.
 #endif
 
+namespace {
+
 /// Command-line options of navview, filled by main().
 struct Vrst_options {
   /// Directory with the four nav files.
@@ -391,10 +393,10 @@ void save_bmp(const std::string& path, int w, int h) {
   f.write(hdr.data(), hdr.size());
   const std::array<char, 3> pad = {};
   for (int y = 0; y < h; ++y) {
-    const Vrst_size row = static_cast<Vrst_size>(w) * 3;
-    const std::span<const char> line = std::span<const char>(px).subspan(static_cast<Vrst_size>(y) * row, row);
+    const Vrst_size bytes = static_cast<Vrst_size>(w) * 3;  // pixel bytes of a row, without padding
+    const std::span<const char> line = std::span<const char>(px).subspan(static_cast<Vrst_size>(y) * bytes, bytes);
     f.write(line.data(), static_cast<std::streamsize>(line.size()));
-    f.write(pad.data(), row - static_cast<Vrst_uint32>(w) * 3);
+    f.write(pad.data(), static_cast<std::streamsize>(row - bytes));
   }
 }
 
@@ -421,6 +423,7 @@ int run(const Vrst_options& opt) {
   app.labels.build(app.data, app.mesh);
   {
     std::vector<std::string> fonts;
+    fonts.reserve(std::size(kLabelFontFiles));
     for (const std::string_view f : kLabelFontFiles) fonts.push_back(std::string(VRST_FONT_DIR) + "/" + std::string(f));
     app.atlas.build(fonts, app.labels.codepoints());
     app.labels.measure(app.atlas);
@@ -563,7 +566,7 @@ int run(const Vrst_options& opt) {
       glFinish();
       std::printf("render %.1f ms (%d frames, %zu tiles drawn, %d draw calls, %.0f MB tiles)\n",
                   shot_ms / (kShotFrames - 2), kShotFrames - 2, draw_keys.size(),
-                  tile_renderer.draw_calls(), tile_renderer.bytes() / 1048576.0);
+                  tile_renderer.draw_calls(), static_cast<Vrst_float64>(tile_renderer.bytes()) / 1048576.0);
       Vrst_map_renderer::check_error("screenshot");
       save_bmp(screenshot, app.fb_w, app.fb_h);
       std::printf("saved %s (%dx%d)\n", screenshot.c_str(), app.fb_w, app.fb_h);
@@ -596,13 +599,16 @@ int run(const Vrst_options& opt) {
   return 0;
 }
 
+}  // namespace
 }  // namespace nav::viewer
 
-/// navview entry point.
+namespace {
+
+/// Parses the arguments and runs the viewer; main() only adds the last-resort catch.
 /// @param argc Argument count.
 /// @param argv `<out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--rotate <deg>] [--tile-borders] [--screenshot <file.bmp>]`.
 /// @return 0 on success, 1 on error, 2 on wrong usage.
-int main(int argc, char** argv) {
+int start(int argc, char** argv) {
   nav::viewer::Vrst_options opt;
   bool ok = argc >= 2;
   if (ok) opt.dir = argv[1];
@@ -642,8 +648,18 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "usage: %s <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--rotate <deg>] [--tile-borders] [--screenshot <file.bmp>]\n", argv[0]);
     return 2;
   }
+  return nav::viewer::run(opt);
+}
+
+}  // namespace
+
+/// navview entry point.
+/// @param argc Argument count.
+/// @param argv `<out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--rotate <deg>] [--tile-borders] [--screenshot <file.bmp>]`.
+/// @return 0 on success, 1 on error, 2 on wrong usage.
+int main(int argc, char** argv) {
   try {
-    return nav::viewer::run(opt);
+    return start(argc, argv);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "navview: %s\n", e.what());
     return 1;

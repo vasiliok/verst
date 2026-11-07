@@ -203,18 +203,18 @@ static_assert(sizeof(Vrst_line_instance) == 24);
 
 /// First element and count of one draw range inside a tile buffer.
 struct Vrst_tile_range {
-  Vrst_uint32 first;  ///< First element.
-  Vrst_uint32 count;  ///< Number of elements.
+  Vrst_uint32 first = 0;  ///< First element.
+  Vrst_uint32 count = 0;  ///< Number of elements.
 };
 
 /// Everything one tile draws, built on the CPU (any thread) and uploaded by
 /// Vrst_tile_renderer. Arrays are sorted into draw ranges.
 struct Vrst_tile_data {
   /// The tile.
-  Vrst_tile_id id;
+  Vrst_tile_id id{};
   /// South-west tile corner in world coordinates (Mercator relative to the map
   /// center, like Vrst_view::center). All tile coordinates are relative to it.
-  Vrst_vec2d origin;
+  Vrst_vec2d origin{};
   /// Area triangles, 3 vertices each; attr = AreaKind.
   std::vector<Vrst_gpu_point> fills;
   /// Range of fills per AreaKind.
@@ -385,6 +385,8 @@ class Vrst_tile_loader {
   ~Vrst_tile_loader();
   Vrst_tile_loader(const Vrst_tile_loader&) = delete;             ///< Owns threads: not copyable.
   Vrst_tile_loader& operator=(const Vrst_tile_loader&) = delete;  ///< Owns threads: not copyable.
+  Vrst_tile_loader(Vrst_tile_loader&&) = delete;                  ///< Workers point at this: not movable.
+  Vrst_tile_loader& operator=(Vrst_tile_loader&&) = delete;       ///< Workers point at this: not movable.
 
   /// Replaces the queue with the tiles wanted now, most important first. Tiles being
   /// built or already finished are not queued again.

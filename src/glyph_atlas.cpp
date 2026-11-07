@@ -8,6 +8,7 @@
 #include FT_MODULE_H
 
 #include <algorithm>
+#include <memory>
 
 namespace nav {
 
@@ -16,59 +17,57 @@ void Vrst_glyph_atlas::build(const std::vector<std::string>& font_paths, std::ve
   std::ranges::sort(codepoints);
   codepoints.erase(std::ranges::unique(codepoints).begin(), codepoints.end());
 
-  FT_Library lib = nullptr;
-  if (FT_Init_FreeType(&lib)) throw std::runtime_error("FT_Init_FreeType failed");
+  FT_Library new_lib = nullptr;
+  if (FT_Init_FreeType(&new_lib)) throw std::runtime_error("FT_Init_FreeType failed");
+  const std::unique_ptr<FT_LibraryRec_, decltype(&FT_Done_FreeType)> lib(new_lib, &FT_Done_FreeType);
   FT_Int spread = kSpread;
-  FT_Property_Set(lib, "sdf", "spread", &spread);
+  FT_Property_Set(lib.get(), "sdf", "spread", &spread);
   m_glyphs.clear();
   m_pixels.assign(static_cast<Vrst_size>(kWidth) * 64, 0);
   m_height = 64;
   int x = 0, y = 0, row_h = 0;
-  try {
-    for (Vrst_size f = 0; f < font_paths.size(); ++f) {
-      FT_Face face = nullptr;
-      if (FT_New_Face(lib, font_paths[f].c_str(), 0, &face))
-        throw std::runtime_error(font_paths[f] + ": cannot open font");
-      FT_Set_Pixel_Sizes(face, 0, kBasePx);
-      for (const char32_t cp : codepoints) {
-        const FT_UInt index = FT_Get_Char_Index(face, cp);
-        if (index == 0 || FT_Load_Glyph(face, index, FT_LOAD_DEFAULT)) continue;
-        const FT_GlyphSlot g = face->glyph;
-        Vrst_glyph out{0, 0, 0, 0, 0, 0, 0, 0, static_cast<Vrst_float32>(g->advance.x) / 64};
-        if (g->outline.n_points > 0 && FT_Render_Glyph(g, FT_RENDER_MODE_SDF) == 0) {
-          const FT_Bitmap& bm = g->bitmap;
-          const int w = static_cast<int>(bm.width), h = static_cast<int>(bm.rows);
-          if (x + w + 1 > kWidth) {  // next shelf
-            x = 0;
-            y += row_h + 1;
-            row_h = 0;
-          }
-          while (y + h + 1 > m_height) {
-            m_height *= 2;
-            m_pixels.resize(static_cast<Vrst_size>(kWidth) * m_height, 0);
-          }
-          for (int r = 0; r < h; ++r)
-            std::copy_n(bm.buffer + r * bm.pitch, w, m_pixels.begin() + static_cast<Vrst_size>(y + r) * kWidth + x);
-          out.u0 = static_cast<Vrst_float32>(x);
-          out.v0 = static_cast<Vrst_float32>(y);
-          out.u1 = static_cast<Vrst_float32>(x + w);
-          out.v1 = static_cast<Vrst_float32>(y + h);
-          out.w = static_cast<Vrst_float32>(w);
-          out.h = static_cast<Vrst_float32>(h);
-          out.left = static_cast<Vrst_float32>(g->bitmap_left);
-          out.top = static_cast<Vrst_float32>(g->bitmap_top);
-          x += w + 1;
-          row_h = std::max(row_h, h);
+  for (Vrst_size f = 0; f < font_paths.size(); ++f) {
+    FT_Face new_face = nullptr;
+    if (FT_New_Face(lib.get(), font_paths[f].c_str(), 0, &new_face))
+      throw std::runtime_error(font_paths[f] + ": cannot open font");
+    const std::unique_ptr<FT_FaceRec_, decltype(&FT_Done_Face)> face(new_face, &FT_Done_Face);
+    FT_Set_Pixel_Sizes(face.get(), 0, kBasePx);
+    for (const char32_t cp : codepoints) {
+      const FT_UInt index = FT_Get_Char_Index(face.get(), cp);
+      if (index == 0 || FT_Load_Glyph(face.get(), index, FT_LOAD_DEFAULT)) continue;
+      FT_GlyphSlotRec& g = *face->glyph;  // FreeType owns the slot
+      Vrst_glyph out{0, 0, 0, 0, 0, 0, 0, 0, static_cast<Vrst_float32>(g.advance.x) / 64};
+      if (g.outline.n_points > 0 && FT_Render_Glyph(&g, FT_RENDER_MODE_SDF) == 0) {
+        const FT_Bitmap& bm = g.bitmap;
+        const int w = static_cast<int>(bm.width), h = static_cast<int>(bm.rows);
+        if (x + w + 1 > kWidth) {  // next shelf
+          x = 0;
+          y += row_h + 1;
+          row_h = 0;
         }
-        m_glyphs[key(static_cast<int>(f), cp)] = out;
+        while (y + h + 1 > m_height) {
+          m_height *= 2;
+          m_pixels.resize(static_cast<Vrst_size>(kWidth) * m_height, 0);
+        }
+        for (int r = 0; r < h; ++r) {
+          const std::ptrdiff_t from = static_cast<std::ptrdiff_t>(r) * bm.pitch;
+          const std::ptrdiff_t to = static_cast<std::ptrdiff_t>(y + r) * kWidth + x;
+          std::copy_n(bm.buffer + from, w, m_pixels.begin() + to);
+        }
+        out.u0 = static_cast<Vrst_float32>(x);
+        out.v0 = static_cast<Vrst_float32>(y);
+        out.u1 = static_cast<Vrst_float32>(x + w);
+        out.v1 = static_cast<Vrst_float32>(y + h);
+        out.w = static_cast<Vrst_float32>(w);
+        out.h = static_cast<Vrst_float32>(h);
+        out.left = static_cast<Vrst_float32>(g.bitmap_left);
+        out.top = static_cast<Vrst_float32>(g.bitmap_top);
+        x += w + 1;
+        row_h = std::max(row_h, h);
       }
-      FT_Done_Face(face);
+      m_glyphs[key(static_cast<int>(f), cp)] = out;
     }
-  } catch (...) {
-    FT_Done_FreeType(lib);
-    throw;
   }
-  FT_Done_FreeType(lib);
   // Pixel coordinates -> 0..1 now that the final height is known.
   for (auto& [k, g] : m_glyphs) {
     g.u0 /= kWidth;

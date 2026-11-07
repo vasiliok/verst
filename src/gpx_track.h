@@ -28,11 +28,10 @@ inline std::optional<Vrst_float64> parse_float64(std::string_view text) {
   try {
     Vrst_size used = 0;
     const Vrst_float64 v = std::stod(s, &used);
-    if (used == s.size()) return v;
-  } catch (const std::exception&) {
-    // invalid_argument or out_of_range: not a usable number.
+    return used == s.size() ? std::optional(v) : std::nullopt;
+  } catch (const std::exception&) {  // invalid_argument or out_of_range
+    return std::nullopt;
   }
-  return std::nullopt;
 }
 
 /// Interpolated state of a track at one playback time (Vrst_gpx_track::sample()).

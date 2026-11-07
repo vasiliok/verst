@@ -17,7 +17,7 @@ namespace nav {
 
 /// Layout version written to Vrst_file_header::format_version. Bump on any change to
 /// an on-disk struct or enum value; loaders refuse every other version.
-inline constexpr Vrst_uint32 kFormatVersion = 3;  // 2: names.dat Places section, 3: map.dat
+inline constexpr Vrst_uint32 kFormatVersion = 3;
 /// Section offset alignment in bytes: one cache line, and enough for any element type.
 inline constexpr Vrst_uint64 kSectionAlign = 64;
 

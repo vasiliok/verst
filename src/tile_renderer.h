@@ -172,8 +172,11 @@ struct Vrst_tile_draw_options {
 class Vrst_tile_renderer {
  public:
   Vrst_tile_renderer() = default;                                     ///< Empty; init() creates the GL objects.
+  ~Vrst_tile_renderer() = default;                                    ///< Does not touch GL; call destroy() first.
   Vrst_tile_renderer(const Vrst_tile_renderer&) = delete;             ///< Owns GL objects: not copyable.
   Vrst_tile_renderer& operator=(const Vrst_tile_renderer&) = delete;  ///< Owns GL objects: not copyable.
+  Vrst_tile_renderer(Vrst_tile_renderer&&) = delete;                  ///< Owns GL objects: not movable (destroy() is explicit).
+  Vrst_tile_renderer& operator=(Vrst_tile_renderer&&) = delete;       ///< Owns GL objects: not movable (destroy() is explicit).
 
   /// Compiles the programs. Call once with the context current.
   /// @throws std::runtime_error on a shader or GL error.

@@ -11,6 +11,19 @@
 
 namespace nav {
 
+namespace {
+
+/// Draw layer of a road or a line from its tunnel and bridge flags.
+/// @param tunnel tunnel=* is set.
+/// @param bridge bridge=* is set.
+/// @return kLayerTunnel, kLayerBridge or kLayerGround; tunnel wins when both are set.
+int layer_of(bool tunnel, bool bridge) {
+  if (tunnel) return kLayerTunnel;
+  return bridge ? kLayerBridge : kLayerGround;
+}
+
+}  // namespace
+
 void Vrst_tile_index::build(const Vrst_nav_data& d) {
   for (auto& m : m_tiles) m.clear();
   const auto add = [&](int level, const Vrst_box2d& b, auto member, Vrst_uint32 id) {
@@ -103,7 +116,7 @@ std::unique_ptr<Vrst_tile_data> Vrst_tile_builder::build(Vrst_tile_id id) const 
       const Vrst_seg_attr& a = m_data.edges().attr()[s];
       project(geo.points().subspan(geo.seg_first_point()[s], geo.seg_first_point()[s + 1] - geo.seg_first_point()[s]), pts);
       simplify(pts, level.tolerance_m);
-      const int layer = a.flags & kSegTunnel ? kLayerTunnel : a.flags & kSegBridge ? kLayerBridge : kLayerGround;
+      const int layer = layer_of((a.flags & kSegTunnel) != 0, (a.flags & kSegBridge) != 0);
       const Vrst_uint32 attr = a.road_class | (a.flags & kSegOneway ? kTileLineOneway : 0);
       add_pieces(pts, tb.lo, keep, attr, buckets[layer][a.road_class]);
     }
@@ -113,7 +126,7 @@ std::unique_ptr<Vrst_tile_data> Vrst_tile_builder::build(Vrst_tile_id id) const 
         const Vrst_line_attr& la = m.line_attr()[l];
         project(m.line_points(l), pts);
         simplify(pts, level.tolerance_m);
-        const int layer = la.flags & kLineTunnel ? kLayerTunnel : la.flags & kLineBridge ? kLayerBridge : kLayerGround;
+        const int layer = layer_of((la.flags & kLineTunnel) != 0, (la.flags & kLineBridge) != 0);
         const int style = kStyleLineKind0 + la.kind;
         add_pieces(pts, tb.lo, keep, static_cast<Vrst_uint32>(style), buckets[layer][style]);
       }
@@ -216,7 +229,7 @@ void Vrst_tile_builder::add_area(Vrst_uint32 a, const Vrst_tile_level& level, Vr
                      static_cast<Vrst_uint32>(kind)});
   }
   if (kind == AreaKind::Building) {
-    std::vector<Vrst_vec2d> ring(pts.begin(), pts.begin() + m.area_outer(a).size());
+    std::vector<Vrst_vec2d> ring(pts.begin(), pts.begin() + static_cast<std::ptrdiff_t>(m.area_outer(a).size()));
     ring.push_back(ring.front());
     add_pieces(ring, origin, keep, kStyleBuildingEdge, lines[kStyleBuildingEdge]);
   }
@@ -232,6 +245,7 @@ Vrst_tile_loader::~Vrst_tile_loader() {
     m_stop = true;
   }
   m_wake.notify_all();
+  // std::jthread would join by itself, but Apple's libc++ does not ship it yet.
   for (std::thread& t : m_workers) t.join();
 }
 
@@ -257,6 +271,15 @@ std::vector<std::unique_ptr<Vrst_tile_data>> Vrst_tile_loader::take(Vrst_size ma
 }
 
 void Vrst_tile_loader::work() {
+  // A broken tile must neither end the thread (std::terminate) nor stay busy forever:
+  // a failed build counts as null.
+  const auto try_build = [this](Vrst_tile_id tile) -> std::unique_ptr<Vrst_tile_data> {
+    try {
+      return m_build(tile);
+    } catch (const std::exception&) {
+      return nullptr;
+    }
+  };
   for (;;) {
     Vrst_tile_id id{};
     {
@@ -267,12 +290,7 @@ void Vrst_tile_loader::work() {
       m_queue.pop_front();
       m_busy.insert(tile_key(id));
     }
-    std::unique_ptr<Vrst_tile_data> t;
-    try {
-      t = m_build(id);
-    } catch (const std::exception&) {
-      // a broken tile must not end the thread (std::terminate) or stay busy forever
-    }
+    std::unique_ptr<Vrst_tile_data> t = try_build(id);
     const std::scoped_lock lock(m_mutex);
     if (t) {
       m_done.push_back(std::move(t));

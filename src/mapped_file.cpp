@@ -5,6 +5,34 @@
 
 namespace nav {
 
+#ifndef _WIN32
+namespace {
+
+/// Owns a POSIX file descriptor and closes it when it goes out of scope.
+class Vrst_fd {
+ public:
+  /// Takes ownership of a descriptor.
+  /// @param fd Descriptor from ::open(); negative means none.
+  explicit Vrst_fd(int fd) : m_fd(fd) {}
+  /// Closes the descriptor, if any.
+  ~Vrst_fd() {
+    if (m_fd >= 0) ::close(m_fd);
+  }
+  Vrst_fd(const Vrst_fd&) = delete;             ///< Owns the descriptor: not copyable.
+  Vrst_fd& operator=(const Vrst_fd&) = delete;  ///< Owns the descriptor: not copyable.
+  Vrst_fd(Vrst_fd&&) = delete;                  ///< Scope guard: not movable.
+  Vrst_fd& operator=(Vrst_fd&&) = delete;       ///< Scope guard: not movable.
+  /// @return The descriptor; negative when open failed.
+  int get() const { return m_fd; }
+
+ private:
+  /// The descriptor; negative when there is none.
+  int m_fd;
+};
+
+}  // namespace
+#endif
+
 Vrst_mapped_file& Vrst_mapped_file::operator=(Vrst_mapped_file&& o) noexcept {
   if (this != &o) {
     close();
@@ -37,21 +65,16 @@ void Vrst_mapped_file::open(const std::string& path) {
     CloseHandle(f);
   }
 #else
-  const int fd = ::open(path.c_str(), O_RDONLY);
-  if (fd < 0) throw std::runtime_error("cannot open " + path);
-  struct stat st;
-  if (fstat(fd, &st) != 0) {
-    ::close(fd);
-    throw std::runtime_error("cannot stat " + path);
-  }
+  const Vrst_fd fd(::open(path.c_str(), O_RDONLY));
+  if (fd.get() < 0) throw std::runtime_error("cannot open " + path);
+  struct stat st{};
+  if (fstat(fd.get(), &st) != 0) throw std::runtime_error("cannot stat " + path);
   const auto size = static_cast<Vrst_size>(st.st_size);
   if (size > 0) {
-    const auto p = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
-    ::close(fd);
+    // The mapping stays valid after the descriptor is closed.
+    const auto p = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd.get(), 0);
     if (p == MAP_FAILED) throw std::runtime_error("cannot map " + path);
     m_bytes = {static_cast<const Vrst_uint8*>(p), size};
-  } else {
-    ::close(fd);
   }
 #endif
   m_path = path;

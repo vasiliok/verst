@@ -18,7 +18,9 @@ function(nav_warnings target)
   if(MSVC)
     target_compile_options(${target} PRIVATE /W4)
   else()
-    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast
+                                             -Woverloaded-virtual -Wnull-dereference -Wformat=2 -Wimplicit-fallthrough
+                                             -Wcast-align)
   endif()
 endfunction()
 

@@ -41,8 +41,11 @@ struct Vrst_draw_options {
 class Vrst_map_renderer {
  public:
   Vrst_map_renderer() = default;                                    ///< Empty; init() creates the GL objects.
+  ~Vrst_map_renderer() = default;                                   ///< Does not touch GL; call destroy() first.
   Vrst_map_renderer(const Vrst_map_renderer&) = delete;             ///< Owns GL objects: not copyable.
   Vrst_map_renderer& operator=(const Vrst_map_renderer&) = delete;  ///< Owns GL objects: not copyable.
+  Vrst_map_renderer(Vrst_map_renderer&&) = delete;                  ///< Owns GL objects: not movable (destroy() is explicit).
+  Vrst_map_renderer& operator=(Vrst_map_renderer&&) = delete;       ///< Owns GL objects: not movable (destroy() is explicit).
 
   /// Compiles the shaders and uploads the mesh. Call once with the context current.
   /// @param mesh Built mesh; its arrays are copied to GPU buffers and may be freed.

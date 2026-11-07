@@ -95,6 +95,7 @@ void Vrst_tile_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const std:
   glClear(GL_COLOR_BUFFER_BIT);
   m_draw_calls = 0;
   std::vector<std::reference_wrapper<const Vrst_gpu_tile>> tiles;
+  tiles.reserve(keys.size());
   for (const Vrst_uint64 k : keys) tiles.push_back(std::cref(m_tiles.at(k)));
   std::vector<std::array<Vrst_float32, 9>> mats(tiles.size());
   for (Vrst_size i = 0; i < tiles.size(); ++i) {
@@ -124,7 +125,7 @@ void Vrst_tile_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const std:
   glUseProgram(m_line_prog);
   const std::array<Vrst_float32, kLineStyleCount> width = line_widths(ground_mpp, opt.px_ratio);
   glUniform1fv(m_u.at("u_width"), kLineStyleCount, width.data());
-  glUniform2f(m_u.at("u_half_fb"), fb_w * 0.5f, fb_h * 0.5f);
+  glUniform2f(m_u.at("u_half_fb"), static_cast<Vrst_float32>(fb_w) * 0.5f, static_cast<Vrst_float32>(fb_h) * 0.5f);
   glUniform1f(m_u.at("u_px_per_m"), static_cast<Vrst_float32>(v.scale));
   glUniform1ui(m_u.at("u_class_mask"), opt.class_mask);
   glUniform1i(m_u.at("u_oneway"), opt.oneway);

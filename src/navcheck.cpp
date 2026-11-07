@@ -63,7 +63,7 @@ bool in_bbox(Vrst_coord c, const Vrst_bbox& b) {
 /// @param i Forward arc index, less than A.
 /// @return Vertex whose out-arc run contains arc i.
 Vrst_uint32 tail_of(const Vrst_graph& g, Vrst_uint32 i) {
-  auto it = std::upper_bound(g.fwd_first_out().begin(), g.fwd_first_out().end(), i);
+  const auto it = std::upper_bound(g.fwd_first_out().begin(), g.fwd_first_out().end(), i);
   return static_cast<Vrst_uint32>(it - g.fwd_first_out().begin()) - 1;
 }
 
@@ -138,7 +138,7 @@ class Vrst_union_find {
 ///         the routing files agree on the segment count.
 bool check_files(const fs::path& dir, Vrst_nav_data& d, bool& has_map) {
   bool all_ok = true;
-  auto try_open = [&](std::string_view name, auto&& open) {
+  const auto try_open = [&](std::string_view name, auto&& open) {
     try {
       open();
       report(true, name, "magic, version, sections, elem_size ok");
@@ -256,7 +256,7 @@ void check_geometry(const Vrst_nav_data& d) {
 
   Vrst_uint64 short_segs = 0, bad_ends = 0;
   for (Vrst_uint32 s = 0; s < S; ++s) {
-    auto pts = geo.segment_points(s);
+    const auto pts = geo.segment_points(s);
     if (pts.size() < 2) {
       ++short_segs;
       continue;
@@ -276,14 +276,14 @@ void check_geometry(const Vrst_nav_data& d) {
 void check_coords(const Vrst_nav_data& d) {
   const Vrst_bbox& bb = d.graph().bbox();
   Vrst_uint64 invalid = 0, outside = 0;
-  auto test = [&](Vrst_coord c) {
+  const auto test = [&](Vrst_coord c) {
     if (!valid_coord(c))
       ++invalid;
     else if (!in_bbox(c, bb))
       ++outside;
   };
-  for (Vrst_coord c : d.graph().vertex_coord()) test(c);
-  for (Vrst_coord c : d.geom().points()) test(c);
+  for (const Vrst_coord c : d.graph().vertex_coord()) test(c);
+  for (const Vrst_coord c : d.geom().points()) test(c);
   report(invalid == 0, "no invalid coords", std::format("{} invalid", invalid));
   report(outside == 0, "coords inside bbox",
          std::format("{} outside lat [{:.7f}, {:.7f}] lon [{:.7f}, {:.7f}]", outside, deg(bb.min.lat_e7),
@@ -415,7 +415,7 @@ void dump_way(const Vrst_nav_data& d, Vrst_uint64 way_id) {
                   a.flags);
     found = true;
     std::printf("segment %u  v%u -> v%u  %.1f m\n", s, sv.a, sv.b, a.length_dm / 10.0);
-    for (Vrst_coord c : d.geom().segment_points(s)) std::printf("  %.7f %.7f\n", deg(c.lat_e7), deg(c.lon_e7));
+    for (const Vrst_coord c : d.geom().segment_points(s)) std::printf("  %.7f %.7f\n", deg(c.lat_e7), deg(c.lon_e7));
   }
   if (!found) std::printf("way %" PRIu64 " not found\n", way_id);
 }

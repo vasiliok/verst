@@ -173,7 +173,7 @@ Vrst_app& app_of(GLFWwindow* w) { return *static_cast<Vrst_app*>(glfwGetWindowUs
 /// @param win Window.
 /// @param[out] app Receives fb_w, fb_h and px_ratio.
 void update_size(GLFWwindow* win, Vrst_app& app) {
-  int ww, wh;
+  int ww = 0, wh = 0;
   glfwGetWindowSize(win, &ww, &wh);
   glfwGetFramebufferSize(win, &app.fb_w, &app.fb_h);
   app.fb_w = std::max(app.fb_w, 1);
@@ -376,7 +376,7 @@ void save_bmp(const std::string& path, int w, int h) {
   const Vrst_uint32 row = (static_cast<Vrst_uint32>(w) * 3 + 3) & ~3u, img = row * static_cast<Vrst_uint32>(h);
   std::array<char, 54> hdr = {'B', 'M'};
   // BMP numbers are little-endian.
-  auto put32 = [&](int at, Vrst_uint32 v) {
+  const auto put32 = [&](int at, Vrst_uint32 v) {
     for (int k = 0; k < 4; ++k) hdr[at + k] = static_cast<char>((v >> (8 * k)) & 0xff);
   };
   put32(2, 54 + img);
@@ -606,7 +606,7 @@ int main(int argc, char** argv) {
   nav::viewer::Vrst_options opt;
   bool ok = argc >= 2;
   if (ok) opt.dir = argv[1];
-  auto number = [](std::string_view s, nav::Vrst_float64& out) {
+  const auto number = [](std::string_view s, nav::Vrst_float64& out) {
     const std::optional<nav::Vrst_float64> v = nav::parse_float64(s);
     if (v) out = *v;
     return v.has_value();

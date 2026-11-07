@@ -3,6 +3,7 @@
 /// Declarations and documentation are in map_tiles.h.
 #include "map_tiles.h"
 
+#include <algorithm>
 #include <exception>
 #include <utility>
 
@@ -12,7 +13,7 @@ namespace nav {
 
 void Vrst_tile_index::build(const Vrst_nav_data& d) {
   for (auto& m : m_tiles) m.clear();
-  auto add = [&](int level, const Vrst_box2d& b, auto member, Vrst_uint32 id) {
+  const auto add = [&](int level, const Vrst_box2d& b, auto member, Vrst_uint32 id) {
     const int z = kTileLevels[level].z;
     const Vrst_tile_id a = tile_at(z, {b.lo.x, b.hi.y}), c = tile_at(z, {b.hi.x, b.lo.y});
     for (Vrst_int32 y = a.y; y <= c.y; ++y)
@@ -161,8 +162,8 @@ void Vrst_tile_builder::simplify(std::vector<Vrst_vec2d>& pts, Vrst_float64 tol)
     }
     if (best > tol) {
       keep[at] = 1;
-      stack.push_back({i, at});
-      stack.push_back({at, j});
+      stack.emplace_back(i, at);
+      stack.emplace_back(at, j);
     }
   }
   Vrst_size n = 0;
@@ -227,7 +228,7 @@ Vrst_tile_loader::Vrst_tile_loader(Vrst_build_fn build, int threads) : m_build(s
 
 Vrst_tile_loader::~Vrst_tile_loader() {
   {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    const std::scoped_lock lock(m_mutex);
     m_stop = true;
   }
   m_wake.notify_all();
@@ -236,16 +237,16 @@ Vrst_tile_loader::~Vrst_tile_loader() {
 
 void Vrst_tile_loader::request(const std::vector<Vrst_tile_id>& wanted) {
   {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    const std::scoped_lock lock(m_mutex);
     m_queue.clear();
     for (const Vrst_tile_id& t : wanted)
-      if (!m_busy.count(tile_key(t))) m_queue.push_back(t);
+      if (!m_busy.contains(tile_key(t))) m_queue.push_back(t);
   }
   m_wake.notify_all();
 }
 
 std::vector<std::unique_ptr<Vrst_tile_data>> Vrst_tile_loader::take(Vrst_size max) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  const std::scoped_lock lock(m_mutex);
   std::vector<std::unique_ptr<Vrst_tile_data>> out;
   while (!m_done.empty() && out.size() < max) {
     m_busy.erase(tile_key(m_done.front()->id));
@@ -272,7 +273,7 @@ void Vrst_tile_loader::work() {
     } catch (const std::exception&) {
       // a broken tile must not end the thread (std::terminate) or stay busy forever
     }
-    std::lock_guard<std::mutex> lock(m_mutex);
+    const std::scoped_lock lock(m_mutex);
     if (t) {
       m_done.push_back(std::move(t));
     } else {
@@ -299,7 +300,7 @@ std::vector<Vrst_tile_id> visible_tiles(const Vrst_view& v, int fb_w, int fb_h, 
     const Vrst_box2d b = tile_bounds(t);
     return std::hypot((b.lo.x + b.hi.x) / 2 - mid.x, (b.lo.y + b.hi.y) / 2 - mid.y);
   };
-  std::sort(out.begin(), out.end(), [&](const Vrst_tile_id& p, const Vrst_tile_id& q) { return dist(p) < dist(q); });
+  std::ranges::sort(out, [&](const Vrst_tile_id& p, const Vrst_tile_id& q) { return dist(p) < dist(q); });
   return out;
 }
 

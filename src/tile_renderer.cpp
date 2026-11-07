@@ -3,6 +3,8 @@
 /// Declarations and documentation are in tile_renderer.h.
 #include "tile_renderer.h"
 
+#include <algorithm>
+
 namespace nav {
 
 void Vrst_tile_renderer::init() {
@@ -38,7 +40,7 @@ void Vrst_tile_renderer::init() {
 
 void Vrst_tile_renderer::add(const Vrst_tile_data& t, Vrst_uint64 frame) {
   const Vrst_uint64 key = tile_key(t.id);
-  if (auto it = m_tiles.find(key); it != m_tiles.end()) {
+  if (const auto it = m_tiles.find(key); it != m_tiles.end()) {
     release(it->second);
     m_tiles.erase(it);
   }
@@ -77,8 +79,8 @@ void Vrst_tile_renderer::evict(Vrst_size budget, Vrst_uint64 frame) {
   if (m_bytes <= budget) return;
   std::vector<std::pair<Vrst_uint64, Vrst_uint64>> lru;  // last used, key
   for (const auto& [k, g] : m_tiles)
-    if (g.last_used < frame) lru.push_back({g.last_used, k});
-  std::sort(lru.begin(), lru.end());
+    if (g.last_used < frame) lru.emplace_back(g.last_used, k);
+  std::ranges::sort(lru);
   for (const auto& [used, k] : lru) {
     if (m_bytes <= budget) break;
     release(m_tiles.at(k));
@@ -128,7 +130,7 @@ void Vrst_tile_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const std:
   glUniform1i(m_u.at("u_oneway"), opt.oneway);
   const Vrst_float32 dash = static_cast<Vrst_float32>(5 * opt.px_ratio);
   glUniform1f(m_u.at("u_dash_px"), dash);
-  auto shown = [&](int style) {
+  const auto shown = [&](int style) {
     if (style == kStyleBuildingEdge) return opt.buildings;
     if (style == line_style(LineKind::Stream) || style == line_style(LineKind::River))
       return opt.water_lines;
@@ -136,12 +138,12 @@ void Vrst_tile_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const std:
       return opt.railways;
     return true;
   };
-  auto rail = [](int style) {
+  const auto rail = [](int style) {
     return style == line_style(LineKind::Rail) || style == line_style(LineKind::MinorRail);
   };
   const std::array<Vrst_float32, 3> casing_light = {0.75f, 0.75f, 0.78f}, casing_dark = {0.02f, 0.02f, 0.03f};
   // color: the pass colour, or empty to keep the style colours.
-  auto pass = [&](int layer, int style, int mode, Vrst_float32 extra, std::span<const Vrst_float32> color) {
+  const auto pass = [&](int layer, int style, int mode, Vrst_float32 extra, std::span<const Vrst_float32> color) {
     glUniform1i(m_u.at("u_pass"), mode);
     glUniform1f(m_u.at("u_extra_px"), extra);
     if (!color.empty()) glUniform3fv(m_u.at("u_pass_color"), 1, color.data());
@@ -297,7 +299,7 @@ void Vrst_tile_renderer::release(Vrst_gpu_tile& g) {
 std::vector<Vrst_uint64> select_tiles(Vrst_tile_renderer& r, Vrst_tile_loader& loader, const Vrst_tile_index& index,
                                       const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d map_center, Vrst_uint64 frame,
                                       Vrst_size budget, Vrst_tile_frame& stats) {
-  for (std::unique_ptr<Vrst_tile_data>& t : loader.take(8)) r.add(*t, frame);
+  for (const std::unique_ptr<Vrst_tile_data>& t : loader.take(8)) r.add(*t, frame);
   Vrst_tile_frame f;
   f.level = level_for(1.0 / v.scale);
   std::vector<Vrst_tile_id> missing;

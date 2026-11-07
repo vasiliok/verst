@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numbers>
 #include <string_view>
 #include <vector>
 
@@ -17,7 +18,7 @@
 
 namespace nav {
 
-constexpr Vrst_float64 kPi = 3.14159265358979323846;  ///< Pi in double, for degree <-> radian conversion.
+constexpr Vrst_float64 kPi = std::numbers::pi;  ///< Pi in double, for degree <-> radian conversion.
 /// WGS84 equatorial radius in metres, the sphere radius of Web Mercator (EPSG:3857).
 constexpr Vrst_float64 kEarthRadius = 6378137.0;
 

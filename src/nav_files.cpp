@@ -37,7 +37,7 @@ void Vrst_graph::open(const std::string& path) {
   m_fwd_arcs = m_file.section<Vrst_fwd_arc>(SectionId::FwdArcs);
   m_bwd_first_in = m_file.section<Vrst_uint32>(SectionId::BwdFirstIn);
   m_bwd_arcs = m_file.section<Vrst_bwd_arc>(SectionId::BwdArcs);
-  auto bb = m_file.section<Vrst_bbox>(SectionId::Bbox);
+  const auto bb = m_file.section<Vrst_bbox>(SectionId::Bbox);
   const Vrst_size V = m_vertex_coord.size();
   require(m_fwd_first_out.size() == V + 1, path, "FWD_FIRST_OUT size != V+1");
   require(m_bwd_first_in.size() == V + 1, path, "BWD_FIRST_IN size != V+1");

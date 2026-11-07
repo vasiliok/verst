@@ -7,12 +7,14 @@
 #include FT_FREETYPE_H
 #include FT_MODULE_H
 
+#include <algorithm>
+
 namespace nav {
 
 void Vrst_glyph_atlas::build(const std::vector<std::string>& font_paths, std::vector<char32_t> codepoints) {
   for (char32_t c = 32; c < 127; ++c) codepoints.push_back(c);
-  std::sort(codepoints.begin(), codepoints.end());
-  codepoints.erase(std::unique(codepoints.begin(), codepoints.end()), codepoints.end());
+  std::ranges::sort(codepoints);
+  codepoints.erase(std::ranges::unique(codepoints).begin(), codepoints.end());
 
   FT_Library lib = nullptr;
   if (FT_Init_FreeType(&lib)) throw std::runtime_error("FT_Init_FreeType failed");

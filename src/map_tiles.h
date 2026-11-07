@@ -399,7 +399,7 @@ class Vrst_tile_loader {
   /// Tiles queued or being built.
   /// @return Count.
   Vrst_size pending() const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    const std::scoped_lock lock(m_mutex);
     return m_queue.size() + m_busy.size() - m_done.size();
   }
 
@@ -407,7 +407,7 @@ class Vrst_tile_loader {
   /// tries them again.
   /// @return Count since the loader started.
   Vrst_size failed() const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    const std::scoped_lock lock(m_mutex);
     return m_failed;
   }
 

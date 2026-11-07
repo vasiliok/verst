@@ -3,6 +3,8 @@
 /// Declarations and documentation are in map_labels.h.
 #include "map_labels.h"
 
+#include <algorithm>
+
 namespace nav {
 
 void Vrst_map_labels::build(const Vrst_nav_data& d, const Vrst_map_mesh& mesh) {
@@ -29,6 +31,15 @@ const std::vector<Vrst_text_vertex>& Vrst_map_labels::layout(const Vrst_view& v,
   m_placed.clear();
   m_count = 0;
   const Vrst_float64 pad = 4 * px_per_point;
+  // Greedy placement, one place per pass. Places come most important first (osm2nav
+  // sorts them by kind, then population), so a city always wins over a village nearby.
+  // For each place:
+  //  1. skip it when zoomed out past its kind's max_metres_per_point;
+  //  2. project it to the screen and size its box from the text width and font size,
+  //     plus `pad` so labels keep a gap between them;
+  //  3. skip it when the box is off screen or overlaps a label already placed;
+  //  4. otherwise keep the box and emit two triangles per glyph, walking the pen along
+  //     the baseline by each glyph's advance.
   for (Vrst_size i = 0; i < m_kind.size(); ++i) {
     const Vrst_label_style& st = kLabelStyles[m_kind[i]];
     if (px_per_point * m_cos_lat[i] / v.scale > st.max_metres_per_point) continue;
@@ -38,7 +49,7 @@ const std::vector<Vrst_text_vertex>& Vrst_map_labels::layout(const Vrst_view& v,
     const Vrst_float64 half_w = m_width[i] * s / 2, half_h = size_px * 0.6;
     const Vrst_rect r{p.x - half_w - pad, p.y - half_h - pad, p.x + half_w + pad, p.y + half_h + pad};
     if (r.x1 < 0 || r.y1 < 0 || r.x0 > fb_w || r.y0 > fb_h) continue;
-    if (std::any_of(m_placed.begin(), m_placed.end(), [&](const Vrst_rect& o) { return overlaps(r, o); })) continue;
+    if (std::ranges::any_of(m_placed, [&](const Vrst_rect& o) { return overlaps(r, o); })) continue;
     m_placed.push_back(r);
     ++m_count;
 

@@ -3,6 +3,8 @@
 /// Declarations and documentation are in map_scene.h.
 #include "map_scene.h"
 
+#include <utility>
+
 namespace nav {
 
 void Vrst_map_mesh::build(const Vrst_nav_data& d, bool gpu_arrays) {
@@ -13,6 +15,7 @@ void Vrst_map_mesh::build(const Vrst_nav_data& d, bool gpu_arrays) {
   const Vrst_size P = geo.points().size();
 
   // Projection: double, relative to the map center.
+  //todo: make well documentation what does function
   Vrst_vec2d lo{1e300, 1e300}, hi{-1e300, -1e300};
   std::vector<Vrst_vec2d> merc(P);
   for (Vrst_size i = 0; i < P; ++i) {
@@ -42,7 +45,7 @@ void Vrst_map_mesh::build(const Vrst_nav_data& d, bool gpu_arrays) {
   m_line_indices.reserve((P - S) * 2);
   for (int cls = kRoadClassCount - 1; cls >= 0; --cls)
     for (Vrst_uint32 s = 0; s < S; ++s) {
-      if (e.attr()[s].road_class != cls) continue;
+      if (std::cmp_not_equal(e.attr()[s].road_class, cls)) continue;
       for (Vrst_uint32 i = geo.seg_first_point()[s]; i + 1 < geo.seg_first_point()[s + 1]; ++i) {
         m_line_indices.push_back(i);
         m_line_indices.push_back(i + 1);
@@ -57,7 +60,7 @@ void Vrst_map_mesh::build(const Vrst_nav_data& d, bool gpu_arrays) {
   for (int pass = 0; pass < 2; ++pass)  // dead ends last, on top
     for (Vrst_uint32 v = 0; v < V; ++v) {
       const Vrst_uint32 dead = degree[v] == 1;
-      if (dead != static_cast<Vrst_uint32>(pass)) continue;
+      if (std::cmp_not_equal(dead, pass)) continue;
       m_dead_ends += dead;
       const Vrst_vec2d m = mercator(g.vertex_coord()[v]);
       m_point_verts.push_back({static_cast<Vrst_float32>(m.x - m_center.x),

@@ -94,7 +94,7 @@ TEST(TileMath, KeysAndBounds) {
   std::uniform_real_distribution<Vrst_float64> u(-kMercatorHalf, kMercatorHalf);
   for (int i = 0; i < 20000; ++i) {
     const Vrst_vec2d m{u(rng), u(rng)};
-    for (int z : {0, 8, 10, 12, 14, 20}) {
+    for (const int z : {0, 8, 10, 12, 14, 20}) {
       const Vrst_tile_id t = tile_at(z, m), k = tile_of_key(tile_key(t));
       ASSERT_EQ(k.z, t.z);
       ASSERT_EQ(k.x, t.x);
@@ -278,9 +278,9 @@ TEST_F(RegionTest, BuiltTilesWellFormed) {
       if (!level.buildings) ASSERT_EQ(t->fill_ranges[static_cast<int>(AreaKind::Building)].count, 0u);
       if (!level.vertices) ASSERT_TRUE(t->points.empty());
       next = 0;
-      for (int layer = 0; layer < kTileLayerCount; ++layer)
+      for (const auto& layer_ranges : t->line_ranges)
         for (int s = 0; s < kLineStyleCount; ++s) {
-          const Vrst_tile_range r = t->line_ranges[layer][s];
+          const Vrst_tile_range r = layer_ranges[s];
           ASSERT_EQ(r.first, next);
           for (Vrst_uint32 i = 0; i < r.count; ++i) {
             const Vrst_line_instance& li = t->lines[r.first + i];
@@ -317,11 +317,12 @@ TEST_F(RegionTest, BaseLevelHasNoHoles) {
   const int z = kTileLevels[0].z;
   // Expected entries per tile: (key inside the tile, what it is).
   std::unordered_map<Vrst_uint64, std::vector<std::pair<std::string, std::string>>> expect;
-  auto want_piece = [&](Vrst_vec2d a, Vrst_vec2d b, int style, const std::string& what) {
+  const auto want_piece = [&](Vrst_vec2d a, Vrst_vec2d b, int style, const std::string& what) {
     const Vrst_tile_id t = tile_at(z, {(a.x + b.x) / 2, (a.y + b.y) / 2});
     const Vrst_box2d tb = tile_bounds(t);
-    expect[tile_key(t)].push_back({quant_key(0, {static_cast<Vrst_float64>(style), rel(a.x, tb.lo.x), rel(a.y, tb.lo.y),
-                                                 rel(b.x, tb.lo.x), rel(b.y, tb.lo.y)}), what});
+    expect[tile_key(t)].emplace_back(quant_key(0, {static_cast<Vrst_float64>(style), rel(a.x, tb.lo.x),
+                                                   rel(a.y, tb.lo.y), rel(b.x, tb.lo.x), rel(b.y, tb.lo.y)}),
+                                     what);
   };
   const Vrst_geom& geo = s_data->geom();
   for (Vrst_uint32 s = 0; s < s_data->edges().num_segments(); s += s_every)
@@ -342,10 +343,11 @@ TEST_F(RegionTest, BaseLevelHasNoHoles) {
         const Vrst_vec2d q[3] = {mercator(p[idx[i]]), mercator(p[idx[i + 1]]), mercator(p[idx[i + 2]])};
         const Vrst_tile_id t = tile_at(z, {(q[0].x + q[1].x + q[2].x) / 3, (q[0].y + q[1].y + q[2].y) / 3});
         const Vrst_box2d tb = tile_bounds(t);
-        expect[tile_key(t)].push_back(
-            {"T" + quant_key(0, {static_cast<Vrst_float64>(m.area_kinds()[a]), rel(q[0].x, tb.lo.x), rel(q[0].y, tb.lo.y),
-                                 rel(q[1].x, tb.lo.x), rel(q[1].y, tb.lo.y), rel(q[2].x, tb.lo.x), rel(q[2].y, tb.lo.y)}),
-             "area " + std::to_string(a) + " triangle " + std::to_string(i / 3)});
+        expect[tile_key(t)].emplace_back(
+            "T" + quant_key(0, {static_cast<Vrst_float64>(m.area_kinds()[a]), rel(q[0].x, tb.lo.x),
+                                rel(q[0].y, tb.lo.y), rel(q[1].x, tb.lo.x), rel(q[1].y, tb.lo.y),
+                                rel(q[2].x, tb.lo.x), rel(q[2].y, tb.lo.y)}),
+            "area " + std::to_string(a) + " triangle " + std::to_string(i / 3));
       }
       if (m.area_kind(a) == AreaKind::Building) {
         const std::span<const Vrst_coord> ring = m.area_outer(a);
@@ -399,7 +401,7 @@ TEST_F(RegionTest, LoaderReturnsEachTileOnce) {
       ASSERT_TRUE(got.insert(tile_key(t->id)).second) << "tile returned twice";
     std::vector<Vrst_tile_id> rest;
     for (const Vrst_tile_id& t : ids)
-      if (!got.count(tile_key(t))) rest.push_back(t);
+      if (!got.contains(tile_key(t))) rest.push_back(t);
     loader.request(rest);
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }

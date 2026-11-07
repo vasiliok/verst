@@ -43,7 +43,7 @@ inline constexpr char kMagicMap[8] = {'N', 'A', 'V', 'M', 'A', 'P', '\0', '\0'};
 /// Magic bytes of a file type.
 /// @param t File type.
 /// @return The 8 magic bytes; empty for an unknown type.
-inline constexpr std::string_view magic_for(FileType t) {
+constexpr std::string_view magic_for(FileType t) {
   switch (t) {
     case FileType::Graph: return {kMagicGraph, 8};
     case FileType::Edges: return {kMagicEdges, 8};
@@ -57,7 +57,7 @@ inline constexpr std::string_view magic_for(FileType t) {
 /// File name of a file type inside an output directory.
 /// @param t File type.
 /// @return "graph.dat", "edges.dat", "geom.dat", "names.dat" or "map.dat"; empty for an unknown type.
-inline constexpr std::string_view file_name_for(FileType t) {
+constexpr std::string_view file_name_for(FileType t) {
   switch (t) {
     case FileType::Graph: return "graph.dat";
     case FileType::Edges: return "edges.dat";

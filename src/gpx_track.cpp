@@ -3,10 +3,14 @@
 /// Declarations and documentation are in gpx_track.h.
 #include "gpx_track.h"
 
+#include <algorithm>
+
+#include <numbers>
+
 namespace nav {
 
 void Vrst_gpx_track::load(const std::string& path) {
-  std::ifstream f(path, std::ios::binary);
+  const std::ifstream f(path, std::ios::binary);
   if (!f) throw std::runtime_error(path + ": cannot open");
   std::stringstream ss;
   ss << f.rdbuf();
@@ -46,7 +50,7 @@ void Vrst_gpx_track::parse(std::string_view text, const std::string& name) {
 Vrst_track_sample Vrst_gpx_track::sample(Vrst_float64 t) const {
   t = std::clamp(t, 0.0, duration());
   // Last point with time <= t; upper_bound finds the first one after it.
-  const Vrst_size i = static_cast<Vrst_size>(std::upper_bound(m_times.begin(), m_times.end(), t) - m_times.begin()) - 1;
+  const Vrst_size i = static_cast<Vrst_size>(std::ranges::upper_bound(m_times, t) - m_times.begin()) - 1;
   if (i + 1 >= m_points.size()) return {m_points.back(), m_points.size() - 1, 0};
   const Vrst_coord a = m_points[i], b = m_points[i + 1];
   const Vrst_float64 dt = m_times[i + 1] - m_times[i];
@@ -63,7 +67,7 @@ Vrst_float64 Vrst_gpx_track::length_m() const {
 }
 
 Vrst_float64 Vrst_gpx_track::distance_m(Vrst_coord a, Vrst_coord b) {
-  constexpr Vrst_float64 kRad = 3.14159265358979323846 / 180 * 1e-7;
+  constexpr Vrst_float64 kRad = std::numbers::pi / 180 * 1e-7;
   const Vrst_float64 la1 = a.lat_e7 * kRad, la2 = b.lat_e7 * kRad;
   const Vrst_float64 dla = la2 - la1, dlo = (b.lon_e7 - a.lon_e7) * kRad;
   const Vrst_float64 h = std::sin(dla / 2) * std::sin(dla / 2) + std::cos(la1) * std::cos(la2) * std::sin(dlo / 2) * std::sin(dlo / 2);
@@ -72,7 +76,7 @@ Vrst_float64 Vrst_gpx_track::distance_m(Vrst_coord a, Vrst_coord b) {
 
 std::optional<Vrst_float64> Vrst_gpx_track::parse_time(std::string_view s) {
   if (s.size() < 20 || s[4] != '-' || s[7] != '-' || s[10] != 'T' || s[13] != ':' || s[16] != ':') return std::nullopt;
-  auto num = [&](Vrst_size at, Vrst_size n, int& v) {
+  const auto num = [&](Vrst_size at, Vrst_size n, int& v) {
     v = 0;
     for (Vrst_size k = at; k < at + n; ++k) {
       if (s[k] < '0' || s[k] > '9') return false;
@@ -80,7 +84,7 @@ std::optional<Vrst_float64> Vrst_gpx_track::parse_time(std::string_view s) {
     }
     return true;
   };
-  int y, mo, d, h, mi, sec;
+  int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
   if (!num(0, 4, y) || !num(5, 2, mo) || !num(8, 2, d) || !num(11, 2, h) || !num(14, 2, mi) ||
       !num(17, 2, sec) || mo < 1 || mo > 12 || d < 1 || d > 31)
     return std::nullopt;

@@ -37,7 +37,7 @@ void Vrst_mapped_file::open(const std::string& path) {
     CloseHandle(f);
   }
 #else
-  int fd = ::open(path.c_str(), O_RDONLY);
+  const int fd = ::open(path.c_str(), O_RDONLY);
   if (fd < 0) throw std::runtime_error("cannot open " + path);
   struct stat st;
   if (fstat(fd, &st) != 0) {

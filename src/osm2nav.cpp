@@ -19,6 +19,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <random>
 #include <span>
@@ -176,7 +177,9 @@ class Vrst_osmium_source final : public Vrst_osm_source {
         const osmium::Location loc = n.location();
         if (!loc.valid()) continue;
         const osmium::TagList& tags = n.tags();
-        auto tag = [&]<Vrst_size N>(const char (&key)[N]) { return std::string_view(tags.get_value_by_key(key, "")); };
+        const auto tag = [&]<Vrst_size N>(const char (&key)[N]) {
+          return std::string_view(tags.get_value_by_key(key, ""));
+        };
         // The string views point into the buffer and are valid during fn only.
         fn(Vrst_osm_node{static_cast<Vrst_uint64>(n.id()), Vrst_coord{loc.y(), loc.x()}, tag("place"), tag("name"),
                          tag("population")});
@@ -410,7 +413,7 @@ std::optional<PlaceKind> place_kind(std::string_view v) {
 /// @return Population, 0 when the value has no digits.
 Vrst_uint32 parse_population(std::string_view v) {
   Vrst_uint64 n = 0;
-  for (char c : v) {
+  for (const char c : v) {
     if (c >= '0' && c <= '9') n = std::min<Vrst_uint64>(n * 10 + static_cast<Vrst_uint64>(c - '0'), 0xFFFF'FFFFu);
     else if (c != ' ' && c != ',' && c != '.') break;
   }
@@ -430,7 +433,7 @@ constexpr Vrst_uint32 kNone = std::numeric_limits<Vrst_uint32>::max();
 /// @return Distance in metres.
 Vrst_float64 haversine_m(Vrst_coord p, Vrst_coord q) {
   constexpr Vrst_float64 kEarthRadiusM = 6371008.8;
-  constexpr Vrst_float64 kDeg = 1e-7 * 3.14159265358979323846 / 180.0;
+  constexpr Vrst_float64 kDeg = 1e-7 * std::numbers::pi / 180.0;
   const Vrst_float64 lat1 = p.lat_e7 * kDeg, lat2 = q.lat_e7 * kDeg;
   const Vrst_float64 dlat = lat2 - lat1, dlon = (q.lon_e7 - p.lon_e7) * kDeg;
   const Vrst_float64 h = std::sin(dlat / 2) * std::sin(dlat / 2) +
@@ -477,7 +480,7 @@ class Vrst_file_writer {
     h.build_id = m_build_id;
     h.section_count = static_cast<Vrst_uint32>(m_sections.size());
 
-    auto align = [](Vrst_uint64 x) { return (x + kSectionAlign - 1) & ~(kSectionAlign - 1); };
+    const auto align = [](Vrst_uint64 x) { return (x + kSectionAlign - 1) & ~(kSectionAlign - 1); };
     std::vector<Vrst_section_entry> table;
     Vrst_uint64 offset = sizeof(Vrst_file_header) + m_sections.size() * sizeof(Vrst_section_entry);
     for (const Vrst_section& s : m_sections) {
@@ -652,7 +655,7 @@ int run(const std::string& input, const fs::path& out_dir) {
     info->name_id = names.intern(w.tag("name"));
     info->ref_id = names.intern(w.tag("ref"));
     ways.push_back(*info);
-    for (Vrst_uint64 r : w.refs())
+    for (const Vrst_uint64 r : w.refs())
       if (refs.size() == way_first_ref.back() || refs.back() != r) refs.push_back(r);  // drop repeated refs
     way_first_ref.push_back(refs.size());
   });
@@ -660,14 +663,14 @@ int run(const std::string& input, const fs::path& out_dir) {
 
   // --- node table ----------------------------------------------------------
   std::vector<Vrst_uint64> node_ids = refs;
-  std::sort(node_ids.begin(), node_ids.end());
-  node_ids.erase(std::unique(node_ids.begin(), node_ids.end()), node_ids.end());
+  std::ranges::sort(node_ids);
+  node_ids.erase(std::ranges::unique(node_ids).begin(), node_ids.end());
   const Vrst_size num_nodes = node_ids.size();
 
   std::vector<Vrst_uint32> way_nodes(refs.size());
   for (Vrst_size i = 0; i < refs.size(); ++i)
     way_nodes[i] =
-        static_cast<Vrst_uint32>(std::lower_bound(node_ids.begin(), node_ids.end(), refs[i]) - node_ids.begin());
+        static_cast<Vrst_uint32>(std::ranges::lower_bound(node_ids, refs[i]) - node_ids.begin());
   std::vector<Vrst_uint64>().swap(refs);
 
   std::vector<Vrst_uint8> uses(num_nodes, 0);
@@ -700,12 +703,12 @@ int run(const std::string& input, const fs::path& out_dir) {
     extent.min.lon_e7 = std::min(extent.min.lon_e7, n.coord.lon_e7);
     extent.max.lat_e7 = std::max(extent.max.lat_e7, n.coord.lat_e7);
     extent.max.lon_e7 = std::max(extent.max.lon_e7, n.coord.lon_e7);
-    auto it = std::lower_bound(node_ids.begin(), node_ids.end(), n.id);
+    const auto it = std::ranges::lower_bound(node_ids, n.id);
     if (it != node_ids.end() && *it == n.id) node_coord[it - node_ids.begin()] = n.coord;
   });
   std::vector<Vrst_uint64>().swap(node_ids);
   // Label priority order: kind, then population, then name id for a stable order.
-  std::sort(places.begin(), places.end(), [](const Vrst_place& a, const Vrst_place& b) {
+  std::ranges::sort(places, [](const Vrst_place& a, const Vrst_place& b) {
     if (a.kind != b.kind) return a.kind < b.kind;
     if (a.population != b.population) return a.population > b.population;
     return a.name_id < b.name_id;
@@ -741,7 +744,7 @@ int run(const std::string& input, const fs::path& out_dir) {
   Vrst_uint64 loops_split = 0;
   Vrst_float64 total_m = 0;
 
-  auto emit = [&](Vrst_uint32 way, std::span<const Vrst_uint32> nodes) {
+  const auto emit = [&](Vrst_uint32 way, std::span<const Vrst_uint32> nodes) {
     const Vrst_size first = points.size();
     Vrst_float64 len = 0;
     for (Vrst_size k = 0; k < nodes.size(); ++k) {
@@ -916,7 +919,7 @@ int run(const std::string& input, const fs::path& out_dir) {
 
   // --- stats ---------------------------------------------------------------
   const std::optional<Vrst_bbox> hb = source.header_bbox();
-  auto kib = [](Vrst_uint64 b) { return b / 1024.0; };
+  const auto kib = [](Vrst_uint64 b) { return b / 1024.0; };
   std::printf("\n");
   std::printf("ways read            %12llu\n", static_cast<unsigned long long>(ways_read));
   std::printf("ways kept            %12zu\n", ways.size());

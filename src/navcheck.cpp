@@ -163,7 +163,7 @@ bool check_files(const fs::path& dir, Vrst_nav_data& d, bool& has_map) {
   const bool same = d.edges().file().build_id() == id && d.geom().file().build_id() == id &&
                     d.names().file().build_id() == id && (!has_map || d.map().file().build_id() == id);
   report(same, "same build_id", std::format("{:016x}", id));
-  const bool seg_counts = d.geom().seg_first_point().size() == Vrst_size(d.edges().num_segments()) + 1;
+  const bool seg_counts = d.geom().seg_first_point().size() == static_cast<Vrst_size>(d.edges().num_segments()) + 1;
   report(seg_counts, "segment count edges/geom",
          std::format("S={}, SEG_FIRST_POINT={}", d.edges().num_segments(), d.geom().seg_first_point().size()));
   return same && seg_counts;
@@ -409,9 +409,10 @@ void dump_way(const Vrst_nav_data& d, Vrst_uint64 way_id) {
     const Vrst_seg_vertices sv = d.edges().vertices()[s];
     if (!found)
       std::printf("way %" PRIu64 "  name=\"%.*s\" ref=\"%.*s\" class=%.*s maxspeed=%u flags=0x%x\n", way_id,
-                  int(d.names().get(a.name_id).size()), d.names().get(a.name_id).data(),
-                  int(d.names().get(a.ref_id).size()), d.names().get(a.ref_id).data(),
-                  int(kClassNames[a.road_class].size()), kClassNames[a.road_class].data(), a.maxspeed_kmh, a.flags);
+                  static_cast<int>(d.names().get(a.name_id).size()), d.names().get(a.name_id).data(),
+                  static_cast<int>(d.names().get(a.ref_id).size()), d.names().get(a.ref_id).data(),
+                  static_cast<int>(kClassNames[a.road_class].size()), kClassNames[a.road_class].data(), a.maxspeed_kmh,
+                  a.flags);
     found = true;
     std::printf("segment %u  v%u -> v%u  %.1f m\n", s, sv.a, sv.b, a.length_dm / 10.0);
     for (Vrst_coord c : d.geom().segment_points(s)) std::printf("  %.7f %.7f\n", deg(c.lat_e7), deg(c.lon_e7));

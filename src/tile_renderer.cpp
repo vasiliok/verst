@@ -50,12 +50,13 @@ void Vrst_tile_renderer::add(const Vrst_tile_data& t, Vrst_uint64 frame) {
   for (int l = 0; l < kTileLayerCount; ++l) std::copy_n(t.line_ranges[l], kLineStyleCount, g.line_ranges[l]);
   if (!t.fills.empty()) g.fill_vao = point_vao(t.fills, g.fill_vbo);
   if (!t.points.empty()) g.point_vao = point_vao(t.points, g.point_vbo);
-  g.point_count = GLsizei(t.points.size());
+  g.point_count = static_cast<GLsizei>(t.points.size());
   if (!t.lines.empty()) {
     glGenVertexArrays(1, &g.line_vao);
     glGenBuffers(1, &g.line_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, g.line_vbo);
-    glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(t.lines.size() * sizeof(Vrst_line_instance)), t.lines.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(t.lines.size() * sizeof(Vrst_line_instance)), t.lines.data(),
+                 GL_STATIC_DRAW);
     setup_line_vao(g.line_vao, g.line_vbo);
   }
   glBindVertexArray(0);
@@ -104,7 +105,7 @@ void Vrst_tile_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const std:
   // Area fills, kind by kind across all tiles (sorted bottom to top).
   glUseProgram(m_fill_prog);
   for (int k = 0; k < kAreaKindCount; ++k) {
-    const bool building = k == int(AreaKind::Building);
+    const bool building = k == static_cast<int>(AreaKind::Building);
     if (building ? !opt.buildings : !opt.areas) continue;
     for (Vrst_size i = 0; i < tiles.size(); ++i) {
       const Vrst_gpu_tile& t = tiles[i];
@@ -112,7 +113,7 @@ void Vrst_tile_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const std:
       if (r.count == 0) continue;
       glUniformMatrix3fv(m_u_fill_view, 1, GL_FALSE, mats[i].data());
       glBindVertexArray(t.fill_vao);
-      glDrawArrays(GL_TRIANGLES, GLint(r.first), GLsizei(r.count));
+      glDrawArrays(GL_TRIANGLES, static_cast<GLint>(r.first), static_cast<GLsizei>(r.count));
       ++m_draw_calls;
     }
   }
@@ -122,21 +123,21 @@ void Vrst_tile_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const std:
   const std::array<Vrst_float32, kLineStyleCount> width = line_widths(ground_mpp, opt.px_ratio);
   glUniform1fv(m_u.at("u_width"), kLineStyleCount, width.data());
   glUniform2f(m_u.at("u_half_fb"), fb_w * 0.5f, fb_h * 0.5f);
-  glUniform1f(m_u.at("u_px_per_m"), Vrst_float32(v.scale));
+  glUniform1f(m_u.at("u_px_per_m"), static_cast<Vrst_float32>(v.scale));
   glUniform1ui(m_u.at("u_class_mask"), opt.class_mask);
   glUniform1i(m_u.at("u_oneway"), opt.oneway);
-  const Vrst_float32 dash = Vrst_float32(5 * opt.px_ratio);
+  const Vrst_float32 dash = static_cast<Vrst_float32>(5 * opt.px_ratio);
   glUniform1f(m_u.at("u_dash_px"), dash);
   auto shown = [&](int style) {
     if (style == kStyleBuildingEdge) return opt.buildings;
-    if (style == kStyleLineKind0 + int(LineKind::Stream) || style == kStyleLineKind0 + int(LineKind::River))
+    if (style == line_style(LineKind::Stream) || style == line_style(LineKind::River))
       return opt.water_lines;
-    if (style == kStyleLineKind0 + int(LineKind::Rail) || style == kStyleLineKind0 + int(LineKind::MinorRail))
+    if (style == line_style(LineKind::Rail) || style == line_style(LineKind::MinorRail))
       return opt.railways;
     return true;
   };
   auto rail = [](int style) {
-    return style == kStyleLineKind0 + int(LineKind::Rail) || style == kStyleLineKind0 + int(LineKind::MinorRail);
+    return style == line_style(LineKind::Rail) || style == line_style(LineKind::MinorRail);
   };
   const std::array<Vrst_float32, 3> casing_light = {0.75f, 0.75f, 0.78f}, casing_dark = {0.02f, 0.02f, 0.03f};
   // color: the pass colour, or empty to keep the style colours.
@@ -154,11 +155,11 @@ void Vrst_tile_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const std:
   for (const int style : kLineStyleOrder) {
     if (!shown(style)) continue;
     pass(kLayerGround, style, 0, 0, {});
-    if (rail(style)) pass(kLayerGround, style, 2, Vrst_float32(-1.4 * opt.px_ratio), kBackground);
+    if (rail(style)) pass(kLayerGround, style, 2, static_cast<Vrst_float32>(-1.4 * opt.px_ratio), kBackground);
   }
   // Bridge casings only from street zoom in: zoomed out, every small bridge over a
   // stream would become a box on the road.
-  const Vrst_float32 casing = Vrst_float32(2 * opt.px_ratio);
+  const Vrst_float32 casing = static_cast<Vrst_float32>(2 * opt.px_ratio);
   const bool casings = ground_mpp < kBridgeCasingMaxMpp;
   for (const int style : kLineStyleOrder) {
     if (!shown(style)) continue;
@@ -167,7 +168,7 @@ void Vrst_tile_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const std:
       pass(kLayerBridge, style, 1, casing, casing_dark);
     }
     pass(kLayerBridge, style, 0, 0, {});
-    if (rail(style)) pass(kLayerBridge, style, 2, Vrst_float32(-1.4 * opt.px_ratio), kBackground);
+    if (rail(style)) pass(kLayerBridge, style, 2, static_cast<Vrst_float32>(-1.4 * opt.px_ratio), kBackground);
   }
 
   if (opt.show_vertices) {
@@ -205,13 +206,13 @@ std::array<Vrst_float32, kLineStyleCount> Vrst_tile_renderer::line_widths(Vrst_f
   static constexpr Vrst_float32 kRoadPt[kRoadClassCount] = {5.0f, 3.2f, 4.6f, 3.0f, 4.2f, 2.8f, 3.8f, 2.6f,
                                                             3.2f, 2.2f, 2.4f, 2.0f, 1.6f, 1.2f, 1.6f};
   const Vrst_float64 f = std::clamp(std::sqrt(3.0 / std::max(ground_mpp, 1e-3)), 0.35, 2.6);
-  for (int c = 0; c < kRoadClassCount; ++c) out[c] = Vrst_float32(kRoadPt[c] * f * px_ratio);
-  out[kStyleLineKind0 + int(LineKind::Stream)] = Vrst_float32(1.2 * std::min(f, 1.4) * px_ratio);
-  out[kStyleLineKind0 + int(LineKind::River)] = Vrst_float32(3.5 * f * px_ratio);
-  out[kStyleLineKind0 + int(LineKind::Rail)] = Vrst_float32(2.8 * std::max(f, 0.7) * px_ratio);
-  out[kStyleLineKind0 + int(LineKind::MinorRail)] = Vrst_float32(1.8 * std::max(f, 0.7) * px_ratio);
-  out[kStyleBuildingEdge] = Vrst_float32(1.0 * px_ratio);
-  out[kStyleTileBorder] = Vrst_float32(1.5 * px_ratio);
+  for (int c = 0; c < kRoadClassCount; ++c) out[c] = static_cast<Vrst_float32>(kRoadPt[c] * f * px_ratio);
+  out[line_style(LineKind::Stream)] = static_cast<Vrst_float32>(1.2 * std::min(f, 1.4) * px_ratio);
+  out[line_style(LineKind::River)] = static_cast<Vrst_float32>(3.5 * f * px_ratio);
+  out[line_style(LineKind::Rail)] = static_cast<Vrst_float32>(2.8 * std::max(f, 0.7) * px_ratio);
+  out[line_style(LineKind::MinorRail)] = static_cast<Vrst_float32>(1.8 * std::max(f, 0.7) * px_ratio);
+  out[kStyleBuildingEdge] = static_cast<Vrst_float32>(1.0 * px_ratio);
+  out[kStyleTileBorder] = static_cast<Vrst_float32>(1.5 * px_ratio);
   return out;
 }
 
@@ -240,7 +241,7 @@ void Vrst_tile_renderer::draw_lines(const Vrst_gpu_tile& g, const std::array<Vrs
   glBindVertexArray(g.line_vao);
   glBindBuffer(GL_ARRAY_BUFFER, g.line_vbo);
   point_line_attribs(r.first);
-  glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, GLsizei(r.count));
+  glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(r.count));
   ++m_draw_calls;
 }
 
@@ -249,8 +250,8 @@ void Vrst_tile_renderer::draw_borders(const Vrst_view& v, int fb_w, int fb_h,
                                       Vrst_float64 px_ratio) {
   std::vector<Vrst_line_instance> edges;
   for (const Vrst_gpu_tile& t : tiles) {
-    const auto s = Vrst_float32(tile_side(t.id.z));
-    const auto ox = Vrst_float32(t.origin.x), oy = Vrst_float32(t.origin.y);
+    const auto s = static_cast<Vrst_float32>(tile_side(t.id.z));
+    const auto ox = static_cast<Vrst_float32>(t.origin.x), oy = static_cast<Vrst_float32>(t.origin.y);
     const Vrst_float32 c[5][2] = {{0, 0}, {s, 0}, {s, s}, {0, s}, {0, 0}};
     for (int i = 0; i < 4; ++i)
       edges.push_back({ox + c[i][0], oy + c[i][1], ox + c[i + 1][0], oy + c[i + 1][1], 0, kStyleTileBorder});
@@ -258,16 +259,17 @@ void Vrst_tile_renderer::draw_borders(const Vrst_view& v, int fb_w, int fb_h,
   // World coordinates near the map center: plain float is exact enough for a debug overlay.
   const std::array<Vrst_float32, 9> m = view_matrix(v, fb_w, fb_h);
   glBindBuffer(GL_ARRAY_BUFFER, m_border_vbo);
-  glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(edges.size() * sizeof(Vrst_line_instance)), edges.data(), GL_STREAM_DRAW);
+  glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(edges.size() * sizeof(Vrst_line_instance)), edges.data(),
+               GL_STREAM_DRAW);
   glUniform1f(m_u.at("u_extra_px"), 0);
-  glUniform1f(m_u.at("u_dash_px"), Vrst_float32(6 * px_ratio));
+  glUniform1f(m_u.at("u_dash_px"), static_cast<Vrst_float32>(6 * px_ratio));
   glUniform1i(m_u.at("u_pass"), 2);
   const std::array<Vrst_float32, 3> magenta = {1.0f, 0.2f, 0.9f};
   glUniform3fv(m_u.at("u_pass_color"), 1, magenta.data());
   Vrst_gpu_tile g{};
   g.line_vao = m_border_vao;
   g.line_vbo = m_border_vbo;
-  draw_lines(g, m, {0, Vrst_uint32(edges.size())});
+  draw_lines(g, m, {0, static_cast<Vrst_uint32>(edges.size())});
 }
 
 GLuint Vrst_tile_renderer::point_vao(const std::vector<Vrst_gpu_point>& verts, GLuint& vbo) {
@@ -276,7 +278,8 @@ GLuint Vrst_tile_renderer::point_vao(const std::vector<Vrst_gpu_point>& verts, G
   glBindVertexArray(vao);
   glGenBuffers(1, &vbo);
   glBindBuffer(GL_ARRAY_BUFFER, vbo);
-  glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(verts.size() * sizeof(Vrst_gpu_point)), verts.data(), GL_STATIC_DRAW);
+  glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(Vrst_gpu_point)), verts.data(),
+               GL_STATIC_DRAW);
   glEnableVertexAttribArray(0);
   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Vrst_gpu_point), reinterpret_cast<void*>(0));
   glEnableVertexAttribArray(1);

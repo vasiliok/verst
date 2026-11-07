@@ -41,12 +41,12 @@ void Vrst_map_layer_builder::finish() {
   Vrst_map_layer_data& d = m_out;
   for (const Vrst_uint32 i : order) {
     const Vrst_area_tmp& a = m_areas[i];
-    d.area_kinds.push_back(Vrst_uint8(a.kind));
+    d.area_kinds.push_back(static_cast<Vrst_uint8>(a.kind));
     d.area_outer_size.push_back(a.outer_size);
     d.area_points.insert(d.area_points.end(), a.points.begin(), a.points.end());
     d.area_indices.insert(d.area_indices.end(), a.indices.begin(), a.indices.end());
-    d.area_first_point.push_back(Vrst_uint32(d.area_points.size()));
-    d.area_first_index.push_back(Vrst_uint32(d.area_indices.size()));
+    d.area_first_point.push_back(static_cast<Vrst_uint32>(d.area_points.size()));
+    d.area_first_index.push_back(static_cast<Vrst_uint32>(d.area_indices.size()));
   }
   std::vector<Vrst_area_tmp>().swap(m_areas);
 }
@@ -159,7 +159,7 @@ void Vrst_map_layer_builder::add_area(const osmium::Area& a) {
       }
     }
     std::vector<std::vector<std::array<Vrst_float64, 2>>> poly;
-    Vrst_area_tmp out{*kind, {}, Vrst_uint32(rings[0].size()), {}};
+    Vrst_area_tmp out{*kind, {}, static_cast<Vrst_uint32>(rings[0].size()), {}};
     for (const std::vector<Vrst_local>& r : rings) {
       poly.emplace_back();
       for (const Vrst_local& p : r) {
@@ -187,10 +187,11 @@ void Vrst_map_layer_builder::add_line(const osmium::Way& w) {
     const std::string_view v = tag_value(w.tags(), k);
     return !v.empty() && v != "no";
   };
-  const Vrst_uint8 flags = Vrst_uint8((set("bridge") ? kLineBridge : 0) | (set("tunnel") ? kLineTunnel : 0));
-  m_out.line_attr.push_back({Vrst_uint8(*kind), flags, 0});
+  const Vrst_uint8 flags =
+      static_cast<Vrst_uint8>((set("bridge") ? kLineBridge : 0) | (set("tunnel") ? kLineTunnel : 0));
+  m_out.line_attr.push_back({static_cast<Vrst_uint8>(*kind), flags, 0});
   for (const Vrst_local& p : pts) m_out.line_points.push_back(to_coord(p, ref, kx));
-  m_out.line_first_point.push_back(Vrst_uint32(m_out.line_points.size()));
+  m_out.line_first_point.push_back(static_cast<Vrst_uint32>(m_out.line_points.size()));
 }
 
 std::optional<AreaKind> map_area_kind(const osmium::TagList& tags) {

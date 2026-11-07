@@ -16,7 +16,8 @@ void Vrst_nav_file::open(const std::string& path, FileType type) {
     fail("unsupported format_version " + std::to_string(h.format_version));
   if (h.file_type != static_cast<Vrst_uint32>(type)) fail("bad file_type");
 
-  const Vrst_uint64 table_end = sizeof(Vrst_file_header) + Vrst_uint64(h.section_count) * sizeof(Vrst_section_entry);
+  const Vrst_uint64 table_end =
+      sizeof(Vrst_file_header) + static_cast<Vrst_uint64>(h.section_count) * sizeof(Vrst_section_entry);
   if (table_end > size) fail("section table out of bounds");
   m_table = typed<Vrst_section_entry>(sizeof(Vrst_file_header), h.section_count);
 
@@ -77,7 +78,7 @@ void Vrst_nav_data::open(const std::filesystem::path& dir) {
   if (m_edges.file().build_id() != id || m_geom.file().build_id() != id || m_names.file().build_id() != id ||
       (m_has_map && m_map.file().build_id() != id))
     throw std::runtime_error(dir.string() + ": files come from different builds (build_id mismatch)");
-  if (m_geom.seg_first_point().size() != Vrst_size(m_edges.num_segments()) + 1)
+  if (m_geom.seg_first_point().size() != static_cast<Vrst_size>(m_edges.num_segments()) + 1)
     throw std::runtime_error(dir.string() + ": SEG_FIRST_POINT size != S+1");
 }
 

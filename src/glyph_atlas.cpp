@@ -19,7 +19,7 @@ void Vrst_glyph_atlas::build(const std::vector<std::string>& font_paths, std::ve
   FT_Int spread = kSpread;
   FT_Property_Set(lib, "sdf", "spread", &spread);
   m_glyphs.clear();
-  m_pixels.assign(Vrst_size(kWidth) * 64, 0);
+  m_pixels.assign(static_cast<Vrst_size>(kWidth) * 64, 0);
   m_height = 64;
   int x = 0, y = 0, row_h = 0;
   try {
@@ -32,10 +32,10 @@ void Vrst_glyph_atlas::build(const std::vector<std::string>& font_paths, std::ve
         const FT_UInt index = FT_Get_Char_Index(face, cp);
         if (index == 0 || FT_Load_Glyph(face, index, FT_LOAD_DEFAULT)) continue;
         const FT_GlyphSlot g = face->glyph;
-        Vrst_glyph out{0, 0, 0, 0, 0, 0, 0, 0, Vrst_float32(g->advance.x) / 64};
+        Vrst_glyph out{0, 0, 0, 0, 0, 0, 0, 0, static_cast<Vrst_float32>(g->advance.x) / 64};
         if (g->outline.n_points > 0 && FT_Render_Glyph(g, FT_RENDER_MODE_SDF) == 0) {
           const FT_Bitmap& bm = g->bitmap;
-          const int w = int(bm.width), h = int(bm.rows);
+          const int w = static_cast<int>(bm.width), h = static_cast<int>(bm.rows);
           if (x + w + 1 > kWidth) {  // next shelf
             x = 0;
             y += row_h + 1;
@@ -43,22 +43,22 @@ void Vrst_glyph_atlas::build(const std::vector<std::string>& font_paths, std::ve
           }
           while (y + h + 1 > m_height) {
             m_height *= 2;
-            m_pixels.resize(Vrst_size(kWidth) * m_height, 0);
+            m_pixels.resize(static_cast<Vrst_size>(kWidth) * m_height, 0);
           }
           for (int r = 0; r < h; ++r)
-            std::copy_n(bm.buffer + r * bm.pitch, w, m_pixels.begin() + Vrst_size(y + r) * kWidth + x);
-          out.u0 = Vrst_float32(x);
-          out.v0 = Vrst_float32(y);
-          out.u1 = Vrst_float32(x + w);
-          out.v1 = Vrst_float32(y + h);
-          out.w = Vrst_float32(w);
-          out.h = Vrst_float32(h);
-          out.left = Vrst_float32(g->bitmap_left);
-          out.top = Vrst_float32(g->bitmap_top);
+            std::copy_n(bm.buffer + r * bm.pitch, w, m_pixels.begin() + static_cast<Vrst_size>(y + r) * kWidth + x);
+          out.u0 = static_cast<Vrst_float32>(x);
+          out.v0 = static_cast<Vrst_float32>(y);
+          out.u1 = static_cast<Vrst_float32>(x + w);
+          out.v1 = static_cast<Vrst_float32>(y + h);
+          out.w = static_cast<Vrst_float32>(w);
+          out.h = static_cast<Vrst_float32>(h);
+          out.left = static_cast<Vrst_float32>(g->bitmap_left);
+          out.top = static_cast<Vrst_float32>(g->bitmap_top);
           x += w + 1;
           row_h = std::max(row_h, h);
         }
-        m_glyphs[key(int(f), cp)] = out;
+        m_glyphs[key(static_cast<int>(f), cp)] = out;
       }
       FT_Done_Face(face);
     }
@@ -71,8 +71,8 @@ void Vrst_glyph_atlas::build(const std::vector<std::string>& font_paths, std::ve
   for (auto& [k, g] : m_glyphs) {
     g.u0 /= kWidth;
     g.u1 /= kWidth;
-    g.v0 /= Vrst_float32(m_height);
-    g.v1 /= Vrst_float32(m_height);
+    g.v0 /= static_cast<Vrst_float32>(m_height);
+    g.v1 /= static_cast<Vrst_float32>(m_height);
   }
 }
 

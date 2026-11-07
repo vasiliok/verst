@@ -34,7 +34,8 @@ namespace {
 /// @return Tile.
 Vrst_tile_id slippy(int z, Vrst_float64 lat, Vrst_float64 lon) {
   const Vrst_float64 n = std::ldexp(1.0, z), r = lat * kPi / 180;
-  return {z, Vrst_int32(std::floor((lon + 180) / 360 * n)), Vrst_int32(std::floor((1 - std::asinh(std::tan(r)) / kPi) / 2 * n))};
+  return {z, static_cast<Vrst_int32>(std::floor((lon + 180) / 360 * n)),
+          static_cast<Vrst_int32>(std::floor((1 - std::asinh(std::tan(r)) / kPi) / 2 * n))};
 }
 
 /// Whether two boxes overlap.
@@ -60,7 +61,9 @@ std::string quant_key(Vrst_uint64 tile, std::initializer_list<Vrst_float64> v) {
 /// @param v Absolute Mercator value.
 /// @param origin Tile origin on the same axis.
 /// @return Value after the float round trip.
-Vrst_float64 rel(Vrst_float64 v, Vrst_float64 origin) { return Vrst_float64(Vrst_float32(v - origin)); }
+Vrst_float64 rel(Vrst_float64 v, Vrst_float64 origin) {
+  return static_cast<Vrst_float64>(static_cast<Vrst_float32>(v - origin));
+}
 
 }  // namespace
 
@@ -71,7 +74,8 @@ TEST(TileMath, TileAtMatchesSlippyFormula) {
   std::mt19937 rng(1);
   std::uniform_real_distribution<Vrst_float64> lat_d(-85, 85), lon_d(-180, 179.999);
   for (int i = 0; i < 20000; ++i) {
-    const Vrst_coord c{Vrst_int32(std::lround(lat_d(rng) * 1e7)), Vrst_int32(std::lround(lon_d(rng) * 1e7))};
+    const Vrst_coord c{static_cast<Vrst_int32>(std::lround(lat_d(rng) * 1e7)),
+                       static_cast<Vrst_int32>(std::lround(lon_d(rng) * 1e7))};
     const Vrst_vec2d m = mercator(c);
     for (const Vrst_tile_level& l : kTileLevels) {
       const Vrst_tile_id t = tile_at(l.z, m), e = slippy(l.z, c.lat_e7 * 1e-7, c.lon_e7 * 1e-7);
@@ -138,7 +142,7 @@ TEST(VisibleTiles, CoverScreenAtAnyRotation) {
   std::mt19937 rng(2);
   std::uniform_real_distribution<Vrst_float64> u(0, 1);
   for (int i = 0; i < 500; ++i) {
-    const int fb_w = 400 + int(u(rng) * 2400), fb_h = 300 + int(u(rng) * 1600);
+    const int fb_w = 400 + static_cast<int>(u(rng) * 2400), fb_h = 300 + static_cast<int>(u(rng) * 1600);
     const Vrst_view v{{(u(rng) - 0.5) * 40000, (u(rng) - 0.5) * 40000}, std::pow(10.0, -3 + u(rng) * 3.5), u(rng) * 2 * kPi};
     const int z = kTileLevels[level_for(1 / v.scale)].z;
     const std::vector<Vrst_tile_id> tiles = visible_tiles(v, fb_w, fb_h, center, z);
@@ -218,7 +222,8 @@ class RegionTest : public ::testing::Test {
     s_index = std::make_unique<Vrst_tile_index>();
     s_index->build(*s_data);
     s_builder = std::make_unique<Vrst_tile_builder>(*s_data, *s_index, s_mesh->center());
-    if (const std::string e = env("VRST_TEST_EVERY"); !e.empty()) s_every = Vrst_uint32(std::max(1, std::atoi(e.c_str())));
+    if (const std::string e = env("VRST_TEST_EVERY"); !e.empty())
+      s_every = static_cast<Vrst_uint32>(std::max(1, std::atoi(e.c_str())));
   }
   /// Frees the region.
   static void TearDownTestSuite() {
@@ -266,11 +271,11 @@ TEST_F(RegionTest, BuiltTilesWellFormed) {
         const Vrst_tile_range r = t->fill_ranges[k];
         ASSERT_EQ(r.first, next);
         ASSERT_EQ(r.count % 3, 0u);
-        for (Vrst_uint32 i = 0; i < r.count; ++i) ASSERT_EQ(t->fills[r.first + i].attr, Vrst_uint32(k));
+        for (Vrst_uint32 i = 0; i < r.count; ++i) ASSERT_EQ(t->fills[r.first + i].attr, static_cast<Vrst_uint32>(k));
         next += r.count;
       }
       ASSERT_EQ(next, t->fills.size());
-      if (!level.buildings) ASSERT_EQ(t->fill_ranges[int(AreaKind::Building)].count, 0u);
+      if (!level.buildings) ASSERT_EQ(t->fill_ranges[static_cast<int>(AreaKind::Building)].count, 0u);
       if (!level.vertices) ASSERT_TRUE(t->points.empty());
       next = 0;
       for (int layer = 0; layer < kTileLayerCount; ++layer)
@@ -280,8 +285,9 @@ TEST_F(RegionTest, BuiltTilesWellFormed) {
           for (Vrst_uint32 i = 0; i < r.count; ++i) {
             const Vrst_line_instance& li = t->lines[r.first + i];
             const Vrst_uint32 style = li.attr & 0xFF;
-            ASSERT_EQ(style, Vrst_uint32(s));
-            if (style < Vrst_uint32(kRoadClassCount)) ASSERT_TRUE(level.class_mask & (1u << style)) << "class " << style;
+            ASSERT_EQ(style, static_cast<Vrst_uint32>(s));
+            if (style < static_cast<Vrst_uint32>(kRoadClassCount))
+              ASSERT_TRUE(level.class_mask & (1u << style)) << "class " << style;
             if (s == kStyleBuildingEdge) ASSERT_TRUE(level.buildings);
             ASSERT_TRUE(std::isfinite(li.d0) && li.d0 >= 0);
             ASSERT_TRUE(touches({o.x + std::min(li.x0, li.x1), o.y + std::min(li.y0, li.y1)},
@@ -314,7 +320,7 @@ TEST_F(RegionTest, BaseLevelHasNoHoles) {
   auto want_piece = [&](Vrst_vec2d a, Vrst_vec2d b, int style, const std::string& what) {
     const Vrst_tile_id t = tile_at(z, {(a.x + b.x) / 2, (a.y + b.y) / 2});
     const Vrst_box2d tb = tile_bounds(t);
-    expect[tile_key(t)].push_back({quant_key(0, {Vrst_float64(style), rel(a.x, tb.lo.x), rel(a.y, tb.lo.y),
+    expect[tile_key(t)].push_back({quant_key(0, {static_cast<Vrst_float64>(style), rel(a.x, tb.lo.x), rel(a.y, tb.lo.y),
                                                  rel(b.x, tb.lo.x), rel(b.y, tb.lo.y)}), what});
   };
   const Vrst_geom& geo = s_data->geom();
@@ -337,7 +343,7 @@ TEST_F(RegionTest, BaseLevelHasNoHoles) {
         const Vrst_tile_id t = tile_at(z, {(q[0].x + q[1].x + q[2].x) / 3, (q[0].y + q[1].y + q[2].y) / 3});
         const Vrst_box2d tb = tile_bounds(t);
         expect[tile_key(t)].push_back(
-            {"T" + quant_key(0, {Vrst_float64(m.area_kinds()[a]), rel(q[0].x, tb.lo.x), rel(q[0].y, tb.lo.y),
+            {"T" + quant_key(0, {static_cast<Vrst_float64>(m.area_kinds()[a]), rel(q[0].x, tb.lo.x), rel(q[0].y, tb.lo.y),
                                  rel(q[1].x, tb.lo.x), rel(q[1].y, tb.lo.y), rel(q[2].x, tb.lo.x), rel(q[2].y, tb.lo.y)}),
              "area " + std::to_string(a) + " triangle " + std::to_string(i / 3)});
       }
@@ -354,23 +360,23 @@ TEST_F(RegionTest, BaseLevelHasNoHoles) {
     const std::unique_ptr<Vrst_tile_data> t = s_builder->build(tile_of_key(key));
     std::unordered_set<std::string> have;
     for (const Vrst_line_instance& li : t->lines)
-      have.insert(quant_key(0, {Vrst_float64(li.attr & 0xFF), li.x0, li.y0, li.x1, li.y1}));
+      have.insert(quant_key(0, {static_cast<Vrst_float64>(li.attr & 0xFF), li.x0, li.y0, li.x1, li.y1}));
     for (Vrst_size i = 0; i + 2 < t->fills.size(); i += 3)
-      have.insert("T" + quant_key(0, {Vrst_float64(t->fills[i].attr), t->fills[i].x, t->fills[i].y, t->fills[i + 1].x,
-                                      t->fills[i + 1].y, t->fills[i + 2].x, t->fills[i + 2].y}));
+      have.insert("T" + quant_key(0, {static_cast<Vrst_float64>(t->fills[i].attr), t->fills[i].x, t->fills[i].y,
+                                      t->fills[i + 1].x, t->fills[i + 1].y, t->fills[i + 2].x, t->fills[i + 2].y}));
     for (const auto& [k, what] : wanted) {
       ASSERT_TRUE(have.count(k)) << what << " missing from tile " << key;
       ++checked;
     }
   }
   EXPECT_GT(checked, 0u);
-  RecordProperty("checked", int(checked));
+  RecordProperty("checked", static_cast<int>(checked));
 }
 
 /// Overview levels really are lighter than the base level: fewer pieces, and areas
 /// small on screen are left out.
 TEST_F(RegionTest, OverviewLevelsAreLighter) {
-  Vrst_size prev = ~Vrst_size(0);
+  Vrst_size prev = ~static_cast<Vrst_size>(0);
   for (int l = 0; l < kTileLevelCount; ++l) {
     Vrst_size pieces = 0;
     for (const Vrst_tile_id& id : s_index->tile_ids(l)) pieces += s_builder->build(id)->lines.size();
@@ -384,7 +390,7 @@ TEST_F(RegionTest, OverviewLevelsAreLighter) {
 TEST_F(RegionTest, LoaderReturnsEachTileOnce) {
   const std::vector<Vrst_tile_id> ids = s_index->tile_ids(0);
   Vrst_tile_loader loader(*s_builder, 3);
-  loader.request(std::vector<Vrst_tile_id>(ids.begin(), ids.begin() + Vrst_int64(ids.size() / 2)));
+  loader.request(std::vector<Vrst_tile_id>(ids.begin(), ids.begin() + static_cast<Vrst_int64>(ids.size() / 2)));
   loader.request(ids);
   std::unordered_set<Vrst_uint64> got;
   const auto t0 = std::chrono::steady_clock::now();

@@ -37,7 +37,7 @@ void Vrst_tile_index::build(const Vrst_nav_data& d) {
     }
     for (Vrst_uint32 i = 0; i < m.num_lines(); ++i) {
       const Vrst_box2d b = box_of(m.line_points(i));
-      const bool stream = m.line_attr()[i].kind == Vrst_uint8(LineKind::Stream);
+      const bool stream = m.line_attr()[i].kind == static_cast<Vrst_uint8>(LineKind::Stream);
       for (int l = 0; l < kTileLevelCount; ++l)
         if (!stream || kTileLevels[l].streams) add(l, b, &Vrst_tile_items::lines, i);
     }
@@ -45,8 +45,8 @@ void Vrst_tile_index::build(const Vrst_nav_data& d) {
   const Vrst_graph& g = d.graph();
   std::vector<Vrst_uint8> degree(g.num_vertices(), 0);
   for (const Vrst_seg_vertices& sv : e.vertices()) {
-    degree[sv.a] = Vrst_uint8(std::min(degree[sv.a] + 1, 2));
-    degree[sv.b] = Vrst_uint8(std::min(degree[sv.b] + 1, 2));
+    degree[sv.a] = static_cast<Vrst_uint8>(std::min(degree[sv.a] + 1, 2));
+    degree[sv.b] = static_cast<Vrst_uint8>(std::min(degree[sv.b] + 1, 2));
   }
   m_dead_end.assign(g.num_vertices(), 0);
   for (Vrst_uint32 v = 0; v < g.num_vertices(); ++v) {
@@ -114,7 +114,7 @@ std::unique_ptr<Vrst_tile_data> Vrst_tile_builder::build(Vrst_tile_id id) const 
         simplify(pts, level.tolerance_m);
         const int layer = la.flags & kLineTunnel ? kLayerTunnel : la.flags & kLineBridge ? kLayerBridge : kLayerGround;
         const int style = kStyleLineKind0 + la.kind;
-        add_pieces(pts, tb.lo, keep, Vrst_uint32(style), buckets[layer][style]);
+        add_pieces(pts, tb.lo, keep, static_cast<Vrst_uint32>(style), buckets[layer][style]);
       }
       for (const Vrst_uint32 ar : items.areas) add_area(ar, level, tb.lo, keep, fills, buckets[kLayerGround]);
     }
@@ -124,17 +124,19 @@ std::unique_ptr<Vrst_tile_data> Vrst_tile_builder::build(Vrst_tile_id id) const 
         const bool dead = m_index.dead_end(v);
         if (dead != (pass == 1)) continue;
         const Vrst_vec2d p = mercator(m_data.graph().vertex_coord()[v]);
-        out->points.push_back({Vrst_float32(p.x - tb.lo.x), Vrst_float32(p.y - tb.lo.y), Vrst_uint32(dead)});
+        out->points.push_back({static_cast<Vrst_float32>(p.x - tb.lo.x), static_cast<Vrst_float32>(p.y - tb.lo.y),
+                               static_cast<Vrst_uint32>(dead)});
       }
   }
   for (int k = 0; k < kAreaKindCount; ++k) {
-    out->fill_ranges[k] = {Vrst_uint32(out->fills.size()), Vrst_uint32(fills[k].size())};
+    out->fill_ranges[k] = {static_cast<Vrst_uint32>(out->fills.size()), static_cast<Vrst_uint32>(fills[k].size())};
     out->fills.insert(out->fills.end(), fills[k].begin(), fills[k].end());
   }
   for (int layer = 0; layer < kTileLayerCount; ++layer)
     for (int style = 0; style < kLineStyleCount; ++style) {
       const std::vector<Vrst_line_instance>& b = buckets[layer][style];
-      out->line_ranges[layer][style] = {Vrst_uint32(out->lines.size()), Vrst_uint32(b.size())};
+      out->line_ranges[layer][style] = {static_cast<Vrst_uint32>(out->lines.size()),
+                                        static_cast<Vrst_uint32>(b.size())};
       out->lines.insert(out->lines.end(), b.begin(), b.end());
     }
   return out;
@@ -175,8 +177,9 @@ void Vrst_tile_builder::add_pieces(const std::vector<Vrst_vec2d>& pts, Vrst_vec2
   for (Vrst_size i = 0; i + 1 < pts.size(); ++i) {
     const Vrst_vec2d a = pts[i], b = pts[i + 1];
     if (touches(a, b, keep))
-      out.push_back({Vrst_float32(a.x - origin.x), Vrst_float32(a.y - origin.y), Vrst_float32(b.x - origin.x),
-                     Vrst_float32(b.y - origin.y), Vrst_float32(dist), attr});
+      out.push_back({static_cast<Vrst_float32>(a.x - origin.x), static_cast<Vrst_float32>(a.y - origin.y),
+                     static_cast<Vrst_float32>(b.x - origin.x), static_cast<Vrst_float32>(b.y - origin.y),
+                     static_cast<Vrst_float32>(dist), attr});
     dist += std::hypot(b.x - a.x, b.y - a.y);
   }
 }
@@ -201,14 +204,15 @@ void Vrst_tile_builder::add_area(Vrst_uint32 a, const Vrst_tile_level& level, Vr
     for (const Vrst_vec2d& p : pts) poly[0].push_back({p.x, p.y});
     tris = mapbox::earcut<Vrst_uint32>(poly);
   }
-  std::vector<Vrst_gpu_point>& out = fills[int(kind)];
+  std::vector<Vrst_gpu_point>& out = fills[static_cast<int>(kind)];
   for (Vrst_size t = 0; t + 2 < tris.size(); t += 3) {
     const Vrst_vec2d p0 = pts[tris[t]], p1 = pts[tris[t + 1]], p2 = pts[tris[t + 2]];
     const Vrst_box2d tb{{std::min({p0.x, p1.x, p2.x}), std::min({p0.y, p1.y, p2.y})},
                         {std::max({p0.x, p1.x, p2.x}), std::max({p0.y, p1.y, p2.y})}};
     if (!touches(tb.lo, tb.hi, keep)) continue;
     for (const Vrst_vec2d& p : {p0, p1, p2})
-      out.push_back({Vrst_float32(p.x - origin.x), Vrst_float32(p.y - origin.y), Vrst_uint32(kind)});
+      out.push_back({static_cast<Vrst_float32>(p.x - origin.x), static_cast<Vrst_float32>(p.y - origin.y),
+                     static_cast<Vrst_uint32>(kind)});
   }
   if (kind == AreaKind::Building) {
     std::vector<Vrst_vec2d> ring(pts.begin(), pts.begin() + m.area_outer(a).size());
@@ -287,7 +291,7 @@ std::vector<Vrst_tile_id> visible_tiles(const Vrst_view& v, int fb_w, int fb_h, 
   }
   const Vrst_tile_id a = tile_at(z, {lo.x, hi.y}), c = tile_at(z, {hi.x, lo.y});
   std::vector<Vrst_tile_id> out;
-  if (Vrst_int64(c.x - a.x + 1) * (c.y - a.y + 1) > 4096) return out;
+  if (static_cast<Vrst_int64>(c.x - a.x + 1) * (c.y - a.y + 1) > 4096) return out;
   for (Vrst_int32 y = a.y; y <= c.y; ++y)
     for (Vrst_int32 x = a.x; x <= c.x; ++x) out.push_back({z, x, y});
   const Vrst_vec2d mid{v.center.x + map_center.x, v.center.y + map_center.y};

@@ -8,6 +8,8 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# compile_commands.json in the build dir, for clang-tidy and editors.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(NAV_BUILD_VIEWER "Build navview (fetches GLFW)" ON)
 set(NAV_TEST_PBF "${CMAKE_SOURCE_DIR}/data/andorra.osm.pbf" CACHE FILEPATH "PBF used by the CTest")

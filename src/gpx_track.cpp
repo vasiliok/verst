@@ -36,7 +36,8 @@ void Vrst_gpx_track::parse(std::string_view text, const std::string& name) {
     if (m_points.empty()) t0 = t;
     t -= t0;
     if (!m_times.empty()) t = std::max(t, m_times.back());
-    m_points.push_back({static_cast<Vrst_int32>(std::lround(*lat * 1e7)), static_cast<Vrst_int32>(std::lround(*lon * 1e7))});
+    m_points.push_back({static_cast<Vrst_int32>(std::lround(*lat * 1e7)),
+                        static_cast<Vrst_int32>(std::lround(*lon * 1e7))});
     m_times.push_back(t);
   }
   if (m_points.empty()) throw std::runtime_error(name + ": no <trkpt> track points");
@@ -45,7 +46,7 @@ void Vrst_gpx_track::parse(std::string_view text, const std::string& name) {
 Vrst_track_sample Vrst_gpx_track::sample(Vrst_float64 t) const {
   t = std::clamp(t, 0.0, duration());
   // Last point with time <= t; upper_bound finds the first one after it.
-  const Vrst_size i = Vrst_size(std::upper_bound(m_times.begin(), m_times.end(), t) - m_times.begin()) - 1;
+  const Vrst_size i = static_cast<Vrst_size>(std::upper_bound(m_times.begin(), m_times.end(), t) - m_times.begin()) - 1;
   if (i + 1 >= m_points.size()) return {m_points.back(), m_points.size() - 1, 0};
   const Vrst_coord a = m_points[i], b = m_points[i + 1];
   const Vrst_float64 dt = m_times[i + 1] - m_times[i];
@@ -90,7 +91,7 @@ std::optional<Vrst_float64> Vrst_gpx_track::parse_time(std::string_view s) {
     for (++k; k < s.size() && s[k] >= '0' && s[k] <= '9'; ++k, scale *= 0.1) frac += (s[k] - '0') * scale;
   }
   if (k >= s.size() || s[k] != 'Z') return std::nullopt;
-  return Vrst_float64(days_from_civil(y, mo, d)) * 86400 + h * 3600 + mi * 60 + sec + frac;
+  return static_cast<Vrst_float64>(days_from_civil(y, mo, d)) * 86400 + h * 3600 + mi * 60 + sec + frac;
 }
 
 std::optional<Vrst_float64> Vrst_gpx_track::attribute(std::string_view tag, std::string_view name) {

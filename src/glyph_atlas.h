@@ -99,7 +99,7 @@ class Vrst_glyph_atlas {
   /// @param font Font id.
   /// @param cp Code point (fits in 21 bits).
   /// @return Combined key.
-  static Vrst_uint64 key(int font, char32_t cp) { return Vrst_uint64(font) << 32 | cp; }
+  static Vrst_uint64 key(int font, char32_t cp) { return static_cast<Vrst_uint64>(font) << 32 | cp; }
 
   /// Glyph table by key(). A map, not an array by code point: the code points of a
   /// region are few but spread over the whole Unicode range.

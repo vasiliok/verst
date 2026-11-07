@@ -18,7 +18,7 @@ void Vrst_map_labels::build(const Vrst_nav_data& d, const Vrst_map_mesh& mesh) {
     m_cos_lat.push_back(std::cos(p.pos.lat_e7 * 1e-7 * kPi / 180));
     const std::vector<char32_t> t = decode_utf8(d.names().get(p.name_id));
     m_text.insert(m_text.end(), t.begin(), t.end());
-    m_text_first.push_back(Vrst_uint32(m_text.size()));
+    m_text_first.push_back(static_cast<Vrst_uint32>(m_text.size()));
   }
   m_width.assign(m_kind.size(), 0);
 }
@@ -49,8 +49,10 @@ const std::vector<Vrst_text_vertex>& Vrst_map_labels::layout(const Vrst_view& v,
       const std::optional<Vrst_glyph> g = atlas.find(st.font, c);
       if (!g) continue;
       if (g->w > 0) {
-        const auto x0 = Vrst_float32(pen + g->left * s), y0 = Vrst_float32(baseline - g->top * s);
-        const auto x1 = Vrst_float32(x0 + g->w * s), y1 = Vrst_float32(y0 + g->h * s);
+        const auto x0 = static_cast<Vrst_float32>(pen + g->left * s);
+        const auto y0 = static_cast<Vrst_float32>(baseline - g->top * s);
+        const auto x1 = static_cast<Vrst_float32>(x0 + g->w * s);
+        const auto y1 = static_cast<Vrst_float32>(y0 + g->h * s);
         m_verts.insert(m_verts.end(), {{x0, y0, g->u0, g->v0}, {x1, y0, g->u1, g->v0}, {x0, y1, g->u0, g->v1},
                                        {x1, y0, g->u1, g->v0}, {x1, y1, g->u1, g->v1}, {x0, y1, g->u0, g->v1}});
       }

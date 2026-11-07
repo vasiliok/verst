@@ -55,20 +55,22 @@ struct Vrst_box2d {
 /// @param t Tile.
 /// @return Key; unique for z < 256 and x, y < 2^28.
 inline Vrst_uint64 tile_key(Vrst_tile_id t) {
-  return Vrst_uint64(t.z) << 56 | Vrst_uint64(Vrst_uint32(t.x)) << 28 | Vrst_uint32(t.y);
+  return static_cast<Vrst_uint64>(t.z) << 56 | static_cast<Vrst_uint64>(static_cast<Vrst_uint32>(t.x)) << 28 |
+         static_cast<Vrst_uint32>(t.y);
 }
 
 /// Tile of a key.
 /// @param k Key from tile_key().
 /// @return Tile.
 inline Vrst_tile_id tile_of_key(Vrst_uint64 k) {
-  return {int(k >> 56), Vrst_int32((k >> 28) & 0xFFFFFFF), Vrst_int32(k & 0xFFFFFFF)};
+  return {static_cast<int>(k >> 56), static_cast<Vrst_int32>((k >> 28) & 0xFFFFFFF),
+          static_cast<Vrst_int32>(k & 0xFFFFFFF)};
 }
 
 /// Side length of a tile.
 /// @param z Zoom level.
 /// @return Mercator metres.
-inline Vrst_float64 tile_side(int z) { return 2 * kMercatorHalf / Vrst_float64(Vrst_uint64(1) << z); }
+inline Vrst_float64 tile_side(int z) { return 2 * kMercatorHalf / static_cast<Vrst_float64>(Vrst_uint64{1} << z); }
 
 /// Bounds of a tile.
 /// @param t Tile.
@@ -84,8 +86,10 @@ inline Vrst_box2d tile_bounds(Vrst_tile_id t) {
 /// @return Tile, clamped to the grid.
 inline Vrst_tile_id tile_at(int z, Vrst_vec2d m) {
   const Vrst_float64 s = tile_side(z);
-  const Vrst_int32 n = Vrst_int32(Vrst_uint64(1) << z);
-  const auto clamp = [n](Vrst_float64 v) { return std::clamp(Vrst_int32(std::floor(v)), Vrst_int32(0), n - 1); };
+  const Vrst_int32 n = static_cast<Vrst_int32>(static_cast<Vrst_uint64>(1) << z);
+  const auto clamp = [n](Vrst_float64 v) {
+    return std::clamp(static_cast<Vrst_int32>(std::floor(v)), Vrst_int32{0}, n - 1);
+  };
   return {z, clamp((m.x + kMercatorHalf) / s), clamp((kMercatorHalf - m.y) / s)};
 }
 
@@ -127,7 +131,7 @@ inline constexpr Vrst_tile_level kTileLevels[] = {
     {8, 1e30, classes_down_to(RoadClass::SecondaryLink), 96, 1000, false, false, false},
 };
 /// Number of tile levels.
-inline constexpr int kTileLevelCount = int(std::size(kTileLevels));
+inline constexpr int kTileLevelCount = static_cast<int>(std::size(kTileLevels));
 
 /// Level for a camera zoom.
 /// @param merc_m_per_px Mercator metres per framebuffer pixel (1 / Vrst_view::scale).
@@ -154,6 +158,10 @@ inline int level_of_zoom(int z) {
 inline constexpr int kLineStyleCount = 24;
 /// Style of a map.dat line: kStyleLineKind0 + LineKind.
 inline constexpr int kStyleLineKind0 = 16;
+/// Line style of a map.dat line kind.
+/// @param k Line kind.
+/// @return kStyleLineKind0 + k.
+constexpr int line_style(LineKind k) { return kStyleLineKind0 + static_cast<int>(k); }
 /// Style of building outlines.
 inline constexpr int kStyleBuildingEdge = 20;
 /// Style of the debug tile borders (navview key T).
@@ -162,9 +170,8 @@ inline constexpr int kStyleTileBorder = 21;
 /// then roads from minor to major so major roads stay on top at junctions and at
 /// tile borders.
 inline constexpr Vrst_uint8 kLineStyleOrder[] = {
-    kStyleBuildingEdge, kStyleLineKind0 + int(LineKind::Stream), kStyleLineKind0 + int(LineKind::River),
-    kStyleLineKind0 + int(LineKind::MinorRail), kStyleLineKind0 + int(LineKind::Rail), 14, 13, 12, 11, 10, 9, 8, 7,
-    6, 5, 4, 3, 2, 1, 0};
+    kStyleBuildingEdge, line_style(LineKind::Stream), line_style(LineKind::River), line_style(LineKind::MinorRail),
+    line_style(LineKind::Rail), 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
 
 /// Draw layers of lines: tunnels below everything, bridges above everything.
 enum TileLayer : int {
@@ -257,7 +264,7 @@ class Vrst_tile_index {
 
   /// Number of dead-end vertices.
   /// @return Count.
-  Vrst_size dead_ends() const { return Vrst_size(std::count(m_dead_end.begin(), m_dead_end.end(), 1)); }
+  Vrst_size dead_ends() const { return static_cast<Vrst_size>(std::count(m_dead_end.begin(), m_dead_end.end(), 1)); }
 
   /// All non-empty tiles of a level, in no particular order.
   /// @param level Index into kTileLevels.

@@ -178,7 +178,7 @@ void update_size(GLFWwindow* win, Vrst_app& app) {
   glfwGetFramebufferSize(win, &app.fb_w, &app.fb_h);
   app.fb_w = std::max(app.fb_w, 1);
   app.fb_h = std::max(app.fb_h, 1);
-  app.px_ratio = ww > 0 ? Vrst_float64(app.fb_w) / ww : 1.0;
+  app.px_ratio = ww > 0 ? static_cast<Vrst_float64>(app.fb_w) / ww : 1.0;
 }
 
 /// GLFW key callback: 1-9 toggle class groups, Q/E rotate, O/V/L toggle highlights
@@ -342,13 +342,14 @@ void draw_panel(Vrst_app& app) {
   if (!app.track.empty()) {
     ImGui::SeparatorText("GPS track");
     const Vrst_track_sample ts = app.track.sample(app.track_time);
-    const int t = int(app.track_time), d = int(app.track.duration());
+    const int t = static_cast<int>(app.track_time), d = static_cast<int>(app.track.duration());
     ImGui::Text("time   %02d:%02d / %02d:%02d   point %zu / %zu", t / 60, t % 60, d / 60, d % 60, ts.index + 1,
                 app.track.points().size());
     ImGui::Text("speed  %.0f km/h", ts.speed_kmh);
-    Vrst_float32 tf = Vrst_float32(app.track_time);
-    if (ImGui::SliderFloat("Time", &tf, 0.0f, Vrst_float32(app.track.duration()), "%.0f s")) app.track_time = tf;
-    Vrst_float32 sp = Vrst_float32(app.track_speed);
+    Vrst_float32 tf = static_cast<Vrst_float32>(app.track_time);
+    if (ImGui::SliderFloat("Time", &tf, 0.0f, static_cast<Vrst_float32>(app.track.duration()), "%.0f s"))
+      app.track_time = tf;
+    Vrst_float32 sp = static_cast<Vrst_float32>(app.track_speed);
     if (ImGui::SliderFloat("Speed", &sp, 0.25f, 32.0f, "x%.2g", ImGuiSliderFlags_Logarithmic)) app.track_speed = sp;
     if (ImGui::Button(app.playing ? "Pause (Space)" : "Play (Space)")) {
       if (!app.playing && app.track_time >= app.track.duration()) app.track_time = 0;
@@ -368,21 +369,21 @@ void draw_panel(Vrst_app& app) {
 /// @param w Framebuffer width in px.
 /// @param h Framebuffer height in px.
 void save_bmp(const std::string& path, int w, int h) {
-  std::vector<char> px(Vrst_size(w) * h * 3);
+  std::vector<char> px(static_cast<Vrst_size>(w) * h * 3);
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
   glReadBuffer(GL_BACK);
   glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, px.data());
-  const Vrst_uint32 row = (Vrst_uint32(w) * 3 + 3) & ~3u, img = row * Vrst_uint32(h);
+  const Vrst_uint32 row = (static_cast<Vrst_uint32>(w) * 3 + 3) & ~3u, img = row * static_cast<Vrst_uint32>(h);
   std::array<char, 54> hdr = {'B', 'M'};
   // BMP numbers are little-endian.
   auto put32 = [&](int at, Vrst_uint32 v) {
-    for (int k = 0; k < 4; ++k) hdr[at + k] = char((v >> (8 * k)) & 0xff);
+    for (int k = 0; k < 4; ++k) hdr[at + k] = static_cast<char>((v >> (8 * k)) & 0xff);
   };
   put32(2, 54 + img);
   put32(10, 54);
   put32(14, 40);
-  put32(18, Vrst_uint32(w));
-  put32(22, Vrst_uint32(h));  // bottom-up, like glReadPixels
+  put32(18, static_cast<Vrst_uint32>(w));
+  put32(22, static_cast<Vrst_uint32>(h));  // bottom-up, like glReadPixels
   hdr[26] = 1;
   hdr[28] = 24;
   put32(34, img);
@@ -390,9 +391,10 @@ void save_bmp(const std::string& path, int w, int h) {
   f.write(hdr.data(), hdr.size());
   const std::array<char, 3> pad = {};
   for (int y = 0; y < h; ++y) {
-    const std::span<const char> line = std::span<const char>(px).subspan(Vrst_size(y) * w * 3, Vrst_size(w) * 3);
-    f.write(line.data(), std::streamsize(line.size()));
-    f.write(pad.data(), row - Vrst_uint32(w) * 3);
+    const Vrst_size row = static_cast<Vrst_size>(w) * 3;
+    const std::span<const char> line = std::span<const char>(px).subspan(static_cast<Vrst_size>(y) * row, row);
+    f.write(line.data(), static_cast<std::streamsize>(line.size()));
+    f.write(pad.data(), row - static_cast<Vrst_uint32>(w) * 3);
   }
 }
 
@@ -484,7 +486,7 @@ int run(const Vrst_options& opt) {
   Vrst_tile_renderer tile_renderer;
   tile_renderer.init();
   const Vrst_tile_builder builder(app.data, app.tiles, app.mesh.center());
-  Vrst_tile_loader loader(builder, int(std::clamp(std::thread::hardware_concurrency(), 2u, 6u)) - 1);
+  Vrst_tile_loader loader(builder, static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 2u, 6u)) - 1);
   constexpr Vrst_size kTileBudget = 384u << 20;  // GPU bytes of cached tiles
   Vrst_uint64 frame = 0;
   renderer.set_label_atlas(app.atlas);
@@ -534,15 +536,15 @@ int run(const Vrst_options& opt) {
     app.tile_opt.class_mask = app.class_mask;
     app.tile_opt.oneway = app.oneway;
     app.tile_opt.show_vertices = app.show_vertices;
-    app.tile_opt.point_px = Vrst_float32(app.point_px * app.px_ratio);
+    app.tile_opt.point_px = static_cast<Vrst_float32>(app.point_px * app.px_ratio);
     app.tile_opt.px_ratio = app.px_ratio;
     tile_renderer.draw(app.view, app.fb_w, app.fb_h, draw_keys, ground_mpp, app.tile_opt);
     if (!app.track.empty())
       renderer.draw_track(app.view, app.fb_w, app.fb_h, ts.index + 1, app.mesh.to_world(ts.pos),
-                          Vrst_float32(14 * app.px_ratio));
+                          static_cast<Vrst_float32>(14 * app.px_ratio));
     if (app.show_labels)
       renderer.draw_labels(app.labels.layout(app.view, app.fb_w, app.fb_h, app.px_ratio, app.atlas), app.fb_w,
-                           app.fb_h, Vrst_float32(2.0 * app.px_ratio));
+                           app.fb_h, static_cast<Vrst_float32>(2.0 * app.px_ratio));
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -616,7 +618,8 @@ int main(int argc, char** argv) {
       opt.screenshot = argv[++i];
     } else if (a == "--center" && i + 2 < argc && number(argv[i + 1], lat) && number(argv[i + 2], lon) &&
                std::abs(lat) <= 90 && std::abs(lon) <= 180) {
-      opt.center = {static_cast<nav::Vrst_int32>(std::lround(lat * 1e7)), static_cast<nav::Vrst_int32>(std::lround(lon * 1e7))};
+      opt.center = {static_cast<nav::Vrst_int32>(std::lround(lat * 1e7)),
+                    static_cast<nav::Vrst_int32>(std::lround(lon * 1e7))};
       i += 2;
       opt.has_center = true;
     } else if (a == "--mpp" && i + 1 < argc && number(argv[i + 1], opt.metres_per_point) && opt.metres_per_point > 0) {

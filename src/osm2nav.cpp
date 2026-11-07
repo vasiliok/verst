@@ -411,7 +411,7 @@ std::optional<PlaceKind> place_kind(std::string_view v) {
 Vrst_uint32 parse_population(std::string_view v) {
   Vrst_uint64 n = 0;
   for (char c : v) {
-    if (c >= '0' && c <= '9') n = std::min<Vrst_uint64>(n * 10 + Vrst_uint64(c - '0'), 0xFFFF'FFFFu);
+    if (c >= '0' && c <= '9') n = std::min<Vrst_uint64>(n * 10 + static_cast<Vrst_uint64>(c - '0'), 0xFFFF'FFFFu);
     else if (c != ' ' && c != ',' && c != '.') break;
   }
   return static_cast<Vrst_uint32>(n);
@@ -580,7 +580,7 @@ Vrst_float64 peak_rss_mb() {
 /// @return Non-zero id.
 Vrst_uint64 make_build_id(const std::string& input) {
   std::random_device rd;
-  Vrst_uint64 id = (Vrst_uint64(rd()) << 32) ^ rd();
+  Vrst_uint64 id = (static_cast<Vrst_uint64>(rd()) << 32) ^ rd();
   id ^= std::hash<std::string>{}(input);
   id ^= static_cast<Vrst_uint64>(std::chrono::system_clock::now().time_since_epoch().count()) * 0x9E3779B97F4A7C15ull;
   return id ? id : 1;
@@ -666,7 +666,8 @@ int run(const std::string& input, const fs::path& out_dir) {
 
   std::vector<Vrst_uint32> way_nodes(refs.size());
   for (Vrst_size i = 0; i < refs.size(); ++i)
-    way_nodes[i] = static_cast<Vrst_uint32>(std::lower_bound(node_ids.begin(), node_ids.end(), refs[i]) - node_ids.begin());
+    way_nodes[i] =
+        static_cast<Vrst_uint32>(std::lower_bound(node_ids.begin(), node_ids.end(), refs[i]) - node_ids.begin());
   std::vector<Vrst_uint64>().swap(refs);
 
   std::vector<Vrst_uint8> uses(num_nodes, 0);
@@ -692,7 +693,8 @@ int run(const std::string& input, const fs::path& out_dir) {
     ++nodes_read;
     if (!n.place.empty() && !n.name.empty()) {
       if (const std::optional<PlaceKind> k = place_kind(n.place))
-        places.push_back({n.coord, names.intern(n.name), parse_population(n.population), Vrst_uint8(*k), {}});
+        places.push_back(
+            {n.coord, names.intern(n.name), parse_population(n.population), static_cast<Vrst_uint8>(*k), {}});
     }
     extent.min.lat_e7 = std::min(extent.min.lat_e7, n.coord.lat_e7);
     extent.min.lon_e7 = std::min(extent.min.lon_e7, n.coord.lon_e7);
@@ -808,7 +810,7 @@ int run(const std::string& input, const fs::path& out_dir) {
     Vrst_uint32 tail, head, weight, seg;
   };
   std::vector<Vrst_arc_tmp> arcs;
-  arcs.reserve(Vrst_size(S) * 2);
+  arcs.reserve(static_cast<Vrst_size>(S) * 2);
   Vrst_uint64 oneway_segs = 0;
   for (Vrst_uint32 s = 0; s < S; ++s) {
     const Vrst_seg_tmp& t = segs[s];
@@ -817,7 +819,8 @@ int run(const std::string& input, const fs::path& out_dir) {
     seg_attr[s] = {t.length_dm, w.name_id, w.ref_id, static_cast<Vrst_uint8>(w.cls), w.maxspeed_kmh, w.flags};
     seg_vertices[s] = {a, b};
     seg_osm_way[s] = w.osm_id;
-    const Vrst_uint32 weight = std::max<Vrst_uint32>(1, static_cast<Vrst_uint32>(std::llround(t.length_dm * 3.6 / speed_kmh(w))));
+    const Vrst_uint32 weight =
+        std::max<Vrst_uint32>(1, static_cast<Vrst_uint32>(std::llround(t.length_dm * 3.6 / speed_kmh(w))));
     if (w.dir != Dir::Bwd) arcs.push_back({a, b, weight, s});
     if (w.dir != Dir::Fwd) arcs.push_back({b, a, weight, s | kSegReversed});
     oneway_segs += w.dir != Dir::Both;
@@ -915,15 +918,15 @@ int run(const std::string& input, const fs::path& out_dir) {
   const std::optional<Vrst_bbox> hb = source.header_bbox();
   auto kib = [](Vrst_uint64 b) { return b / 1024.0; };
   std::printf("\n");
-  std::printf("ways read            %12llu\n", (unsigned long long)ways_read);
+  std::printf("ways read            %12llu\n", static_cast<unsigned long long>(ways_read));
   std::printf("ways kept            %12zu\n", ways.size());
-  std::printf("nodes read           %12llu\n", (unsigned long long)nodes_read);
+  std::printf("nodes read           %12llu\n", static_cast<unsigned long long>(nodes_read));
   std::printf("road nodes           %12zu\n", num_nodes);
-  std::printf("missing node refs    %12llu  (%llu ways, %llu breaks)\n", (unsigned long long)missing_refs,
-              (unsigned long long)ways_with_missing, (unsigned long long)missing_breaks);
-  std::printf("closed loops split   %12llu\n", (unsigned long long)loops_split);
+  std::printf("missing node refs    %12llu  (%llu ways, %llu breaks)\n", static_cast<unsigned long long>(missing_refs),
+              static_cast<unsigned long long>(ways_with_missing), static_cast<unsigned long long>(missing_breaks));
+  std::printf("closed loops split   %12llu\n", static_cast<unsigned long long>(loops_split));
   std::printf("vertices V           %12u\n", V);
-  std::printf("segments S           %12u  (%llu oneway)\n", S, (unsigned long long)oneway_segs);
+  std::printf("segments S           %12u  (%llu oneway)\n", S, static_cast<unsigned long long>(oneway_segs));
   std::printf("arcs A               %12u\n", A);
   std::printf("points P             %12zu\n", points.size());
   std::printf("names N              %12zu\n", names.strings().size());
@@ -937,8 +940,9 @@ int run(const std::string& input, const fs::path& out_dir) {
     Vrst_size per_kind[kAreaKindCount] = {};
     for (const Vrst_uint8 k : ml.area_kinds) ++per_kind[k];
     std::printf("areas R              %12zu  (%zu water, %zu forest, %zu buildings: %zu rect, %zu outline)\n",
-                ml.area_kinds.size(), per_kind[int(AreaKind::Water)], per_kind[int(AreaKind::Forest)],
-                per_kind[int(AreaKind::Building)], layers.rectangles(), layers.outlines());
+                ml.area_kinds.size(), per_kind[static_cast<int>(AreaKind::Water)],
+                per_kind[static_cast<int>(AreaKind::Forest)],
+                per_kind[static_cast<int>(AreaKind::Building)], layers.rectangles(), layers.outlines());
     std::printf("area triangles       %12zu\n", ml.area_indices.size() / 3);
     std::printf("lines L              %12zu  (%zu points)\n", ml.line_attr.size(), ml.line_points.size());
   }
@@ -948,7 +952,7 @@ int run(const std::string& input, const fs::path& out_dir) {
   if (hb)
     std::printf("header bbox          lat [%.7f, %.7f] lon [%.7f, %.7f]\n", hb->min.lat_e7 * 1e-7,
                 hb->max.lat_e7 * 1e-7, hb->min.lon_e7 * 1e-7, hb->max.lon_e7 * 1e-7);
-  std::printf("build_id             %016llx\n", (unsigned long long)build_id);
+  std::printf("build_id             %016llx\n", static_cast<unsigned long long>(build_id));
   std::printf("graph.dat            %12.1f KiB\n", kib(sz_graph));
   std::printf("edges.dat            %12.1f KiB\n", kib(sz_edges));
   std::printf("geom.dat             %12.1f KiB\n", kib(sz_geom));

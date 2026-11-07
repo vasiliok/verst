@@ -146,7 +146,8 @@ class Vrst_map_layer_builder {
   /// @param kx Metres per degree of longitude at the reference latitude.
   /// @return Coordinate in 1e-7 degrees.
   static Vrst_coord to_coord(Vrst_local p, const osmium::Location& ref, Vrst_float64 kx) {
-    return {Vrst_int32(std::lround((ref.lat() + p.y / 111320.0) * 1e7)), Vrst_int32(std::lround((ref.lon() + p.x / kx) * 1e7))};
+    return {static_cast<Vrst_int32>(std::lround((ref.lat() + p.y / 111320.0) * 1e7)),
+            static_cast<Vrst_int32>(std::lround((ref.lon() + p.x / kx) * 1e7))};
   }
 
   /// Douglas–Peucker simplification of an open polyline.

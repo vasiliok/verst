@@ -31,9 +31,10 @@ void Vrst_map_mesh::build(const Vrst_nav_data& d, bool gpu_arrays) {
 
   m_line_verts.assign(P, {});
   for (Vrst_uint32 s = 0; s < S; ++s) {
-    const Vrst_uint32 attr = e.attr()[s].road_class | Vrst_uint32(e.attr()[s].flags) << 16;
+    const Vrst_uint32 attr = e.attr()[s].road_class | static_cast<Vrst_uint32>(e.attr()[s].flags) << 16;
     for (Vrst_uint32 i = geo.seg_first_point()[s]; i < geo.seg_first_point()[s + 1]; ++i)
-      m_line_verts[i] = {Vrst_float32(merc[i].x - m_center.x), Vrst_float32(merc[i].y - m_center.y), attr};
+      m_line_verts[i] = {static_cast<Vrst_float32>(merc[i].x - m_center.x),
+                         static_cast<Vrst_float32>(merc[i].y - m_center.y), attr};
   }
 
   // Line pairs only inside a segment; minor classes first so major roads draw on top.
@@ -56,10 +57,11 @@ void Vrst_map_mesh::build(const Vrst_nav_data& d, bool gpu_arrays) {
   for (int pass = 0; pass < 2; ++pass)  // dead ends last, on top
     for (Vrst_uint32 v = 0; v < V; ++v) {
       const Vrst_uint32 dead = degree[v] == 1;
-      if (dead != Vrst_uint32(pass)) continue;
+      if (dead != static_cast<Vrst_uint32>(pass)) continue;
       m_dead_ends += dead;
       const Vrst_vec2d m = mercator(g.vertex_coord()[v]);
-      m_point_verts.push_back({Vrst_float32(m.x - m_center.x), Vrst_float32(m.y - m_center.y), dead});
+      m_point_verts.push_back({static_cast<Vrst_float32>(m.x - m_center.x),
+                               static_cast<Vrst_float32>(m.y - m_center.y), dead});
     }
 }
 

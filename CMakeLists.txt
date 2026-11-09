@@ -210,32 +210,22 @@ endif()
 # `cmake --build <build> --target docs` -> <build>/docs/html/index.html
 find_package(Doxygen)
 if(DOXYGEN_FOUND)
-  set(DOXYGEN_PROJECT_NAME verst)
-  set(DOXYGEN_PROJECT_BRIEF "Offline OSM map rendering and car navigation")
-  set(DOXYGEN_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/docs")
-  set(DOXYGEN_USE_MDFILE_AS_MAINPAGE "${CMAKE_SOURCE_DIR}/README.md")
-  set(DOXYGEN_STRIP_FROM_PATH "${CMAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/generated")
-  set(DOXYGEN_FILE_PATTERNS *.h *.cpp *.mm *.md)
-  set(DOXYGEN_EXTENSION_MAPPING mm=Objective-C)
-  # Types and fields live in anonymous namespaces and private sections too.
-  set(DOXYGEN_EXTRACT_PRIVATE YES)
-  set(DOXYGEN_EXTRACT_STATIC YES)
-  set(DOXYGEN_EXTRACT_ANON_NSPACES YES)
-  set(DOXYGEN_JAVADOC_AUTOBRIEF YES)
-  set(DOXYGEN_SOURCE_BROWSER YES)
-  set(DOXYGEN_GENERATE_TREEVIEW YES)
-  # Everything is documented: warn on any new undocumented entity or parameter.
-  set(DOXYGEN_WARN_NO_PARAMDOC YES)
-  set(DOXYGEN_WARN_IF_UNDOCUMENTED YES)
-  set(DOXYGEN_WARN_IF_INCOMPLETE_DOC YES)
-  doxygen_add_docs(docs
-    "${CMAKE_SOURCE_DIR}/README.md"
-    "${CMAKE_SOURCE_DIR}/docs"
-    "${CMAKE_SOURCE_DIR}/src"
-    "${CMAKE_SOURCE_DIR}/ios"
-    "${CMAKE_SOURCE_DIR}/tests"
-    "${CMAKE_BINARY_DIR}/generated/vrst_types.h"
-    COMMENT "Generating Doxygen docs")
+  # All settings are in the repo's Doxyfile (also usable standalone: `doxygen` in the repo
+  # root). The build only redirects the output into the build dir and adds the generated
+  # scalar type header.
+  set(_doxyfile "${CMAKE_BINARY_DIR}/Doxyfile.build")
+  file(WRITE "${_doxyfile}"
+    "@INCLUDE          = ${CMAKE_SOURCE_DIR}/Doxyfile\n"
+    "OUTPUT_DIRECTORY  = ${CMAKE_BINARY_DIR}/docs\n"
+    "WARN_LOGFILE      = ${CMAKE_BINARY_DIR}/docs/warnings.log\n"
+    "INPUT            += ${CMAKE_BINARY_DIR}/generated/vrst_types.h\n"
+    "STRIP_FROM_PATH  += ${CMAKE_BINARY_DIR}/generated\n")
+  add_custom_target(docs
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/docs"
+    COMMAND Doxygen::doxygen "${_doxyfile}"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Generating Doxygen docs (warnings: ${CMAKE_BINARY_DIR}/docs/warnings.log)"
+    VERBATIM)
 else()
   message(STATUS "Doxygen not found; docs target disabled")
 endif()

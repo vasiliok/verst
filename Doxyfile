@@ -1,0 +1,86 @@
+# Doxygen settings for verst: the one place where they live.
+#
+# Standalone, from the repo root:   doxygen
+#   -> ../tmp/verst/doxygen/html/index.html and ../tmp/verst/doxygen/xml/index.xml,
+#      warnings in ../tmp/verst/doxygen/warnings.log
+# Through CMake:                    cmake --build <build> --target docs
+#   -> <build>/docs/html/index.html; CMake includes this file and only overrides the output
+#      directory, the warning log and adds <build>/generated/vrst_types.h (see CMakeLists.txt).
+# Paths are relative to the repo root (the working directory of both ways).
+# Only settings that differ from Doxygen's defaults are listed.
+
+#---------------------------------------------------------------------------
+# Project
+#---------------------------------------------------------------------------
+PROJECT_NAME           = verst
+PROJECT_BRIEF          = "Offline OSM map rendering and car navigation"
+# Artifacts never go into the repo.
+OUTPUT_DIRECTORY       = ../tmp/verst/doxygen
+CREATE_SUBDIRS         = NO
+
+#---------------------------------------------------------------------------
+# Input: sources, the iPhone app, tests and the Markdown articles
+#---------------------------------------------------------------------------
+INPUT                  = README.md docs src ios tests
+FILE_PATTERNS          = *.h *.cpp *.mm *.md
+RECURSIVE              = YES
+EXCLUDE_PATTERNS       = */third_party/* */build*/*
+EXTENSION_MAPPING      = mm=Objective-C
+USE_MDFILE_AS_MAINPAGE = README.md
+STRIP_FROM_PATH        = .
+INPUT_ENCODING         = UTF-8
+
+#---------------------------------------------------------------------------
+# What is extracted: everything is documented, private parts included
+#---------------------------------------------------------------------------
+# Types and fields also live in anonymous namespaces and private sections.
+EXTRACT_PRIVATE        = YES
+EXTRACT_STATIC         = YES
+EXTRACT_ANON_NSPACES   = YES
+EXTRACT_ALL            = NO
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+SORT_MEMBER_DOCS       = NO
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+
+#---------------------------------------------------------------------------
+# Warnings: the project rule is 0 warnings, so every gap is reported
+#---------------------------------------------------------------------------
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_IF_INCOMPLETE_DOC = YES
+WARN_NO_PARAMDOC       = YES
+WARN_AS_ERROR          = NO
+WARN_LOGFILE           = ../tmp/verst/doxygen/warnings.log
+
+#---------------------------------------------------------------------------
+# Output: HTML with a side tree, and XML for tools (one file per compound
+# plus index.xml, schema in compound.xsd / index.xsd)
+#---------------------------------------------------------------------------
+GENERATE_HTML          = YES
+GENERATE_TREEVIEW      = YES
+GENERATE_LATEX         = NO
+SEARCHENGINE           = YES
+GENERATE_XML           = YES
+XML_PROGRAMLISTING     = YES
+XML_NS_MEMB_FILE_SCOPE = YES
+
+#---------------------------------------------------------------------------
+# Diagrams (Graphviz `dot`, brew install graphviz); without it set HAVE_DOT = NO
+#---------------------------------------------------------------------------
+HAVE_DOT               = YES
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = YES
+INCLUDE_GRAPH          = YES
+INCLUDED_BY_GRAPH      = YES
+# Call graphs are large for this code base; turn on locally when needed.
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+DOT_GRAPH_MAX_NODES    = 60

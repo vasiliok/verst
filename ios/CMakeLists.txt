@@ -29,7 +29,12 @@ set_source_files_properties(${VRST_FONT_FILES} PROPERTIES MACOSX_PACKAGE_LOCATIO
 file(GLOB _scenarios "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/*.txt")
 set_source_files_properties(${_scenarios} PROPERTIES MACOSX_PACKAGE_LOCATION scenarios)
 
-add_executable(verst_ios MACOSX_BUNDLE main.mm debug_overlay.mm ${_map_files} ${VRST_FONT_FILES} ${_scenarios})
+# Asset catalog with the app icon (one 1024 px image; Xcode makes the other sizes).
+set(_assets "${CMAKE_CURRENT_SOURCE_DIR}/Assets.xcassets")
+set_source_files_properties(${_assets} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+
+add_executable(verst_ios MACOSX_BUNDLE main.mm debug_overlay.mm ${_map_files} ${VRST_FONT_FILES} ${_scenarios}
+  ${_assets})
 target_link_libraries(verst_ios PRIVATE vrst_render
   "-framework Foundation" "-framework CoreGraphics" "-framework UIKit" "-framework GLKit"
   "-framework QuartzCore" "-framework CoreLocation")
@@ -44,6 +49,7 @@ set_target_properties(verst_ios PROPERTIES
   XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${VERST_BUNDLE_ID}"
   XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET 15.0
   XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY 1
+  XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME AppIcon
   XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES)
 if(VERST_IOS_TEAM)
   set_target_properties(verst_ios PROPERTIES

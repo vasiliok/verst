@@ -11,7 +11,9 @@
 /// two-finger twist = rotate, double tap = zoom in, two-finger tap = zoom out.
 /// Launch arguments `--center <lat> <lon>` and `--mpp <metres>` set the start view,
 /// like navview; `--log-dir <dir>` puts the session logs elsewhere (Simulator);
-/// `--scenario <name>` plays a test scenario (scenario.h) after the first frame. VrstDebugOverlay (clock, frame numbers, touches and gesture names)
+/// `--scenario <name>` plays a test scenario (scenario.h) after the first frame;
+/// `--gpx <file>` replays a GPX track (Documents/tracks or a full path) at `--speed <x>`
+/// times its recorded pace (default 10), the camera following the marker. VrstDebugOverlay (clock, frame numbers, touches and gesture names)
 /// is on at start for screen recordings; a tap on the stats box hides or shows it.
 
 #include "gl_api.h"  // OpenGL ES 3.0; before GLKit so the ES3 header wins
@@ -32,6 +34,7 @@
 #include <stdexcept>
 
 #include "glyph_atlas.h"
+#include "gpx_track.h"
 #include "map_labels.h"
 #include "map_renderer.h"
 #include "map_scene.h"
@@ -119,7 +122,7 @@ static constexpr double kStallMs = 34;
   NSString* _error;
   /// Clock, frame numbers, touches and gesture names for screen recordings.
   VrstDebugOverlay* _debug;
-  /// View scale when the running pinch began, for its "×factor" text.
+  /// View scale when the running pinch began, for its "xfactor" text.
   Vrst_float64 _pinchStartScale;
   /// Rotation of the running twist so far, in radians.
   Vrst_float64 _rotationSum;
@@ -151,6 +154,24 @@ static constexpr double kStallMs = 34;
   UIPinchGestureRecognizer* _pinchRecognizer;
   /// Two-finger twist recognizer; see _pinchRecognizer.
   UIRotationGestureRecognizer* _rotateRecognizer;
+  /// GPS track being replayed (GPX); empty when none is loaded.
+  Vrst_gpx_track _track;
+  /// Name of the loaded track file, for the menu, the banner and the log.
+  NSString* _trackName;
+  /// The track still has to be uploaded to the GPU (needs the GL context: next draw).
+  BOOL _trackDirty;
+  /// Playback position in track seconds (0 = first point).
+  double _trackTime;
+  /// Playback speed: track seconds per real second (--speed, default 10).
+  double _trackSpeed;
+  /// Playback running.
+  BOOL _trackPlaying;
+  /// The camera follows the marker; a drag turns it off, the menu turns it on.
+  BOOL _trackFollow;
+  /// Track file named by `--gpx`, loaded and played after the map is ready; nil = none.
+  NSString* _launchGpx;
+  /// `t` of the last banner update of the playing track.
+  double _trackBannerAt;
 }
 
 /// Uses a GLKView as the root view.
@@ -165,6 +186,7 @@ static constexpr double kStallMs = 34;
   [self openLog];
   [self writeExampleScenario];
   _startCenter = kDefaultPoint;
+  _trackSpeed = 10;
   _startMpp = kDefaultMetresPerPoint;
   [self parseArguments];
 
@@ -222,6 +244,7 @@ static constexpr double kStallMs = 34;
     _error = [NSString stringWithFormat:@"cannot load map: %s", e.what()];
     _log.record("error", [self now]).text("what", e.what());
   }
+  if (_launchGpx && _loaded) [self loadTrack:_launchGpx];
   [self buildOverlay];
   [self addGestures];
   [self startLocation];
@@ -313,6 +336,12 @@ static constexpr double kStallMs = 34;
       if (std::abs(lat) <= 90 && std::abs(lon) <= 180)
         _startCenter = {Vrst_int32(std::lround(lat * 1e7)), Vrst_int32(std::lround(lon * 1e7))};
       i += 2;
+    } else if ([a[i] isEqualToString:@"--gpx"] && i + 1 < a.count) {
+      _launchGpx = a[i + 1];
+      ++i;
+    } else if ([a[i] isEqualToString:@"--speed"] && i + 1 < a.count) {
+      if (a[i + 1].doubleValue > 0) _trackSpeed = a[i + 1].doubleValue;
+      ++i;
     } else if ([a[i] isEqualToString:@"--scenario"] && i + 1 < a.count) {
       _launchScenario = a[i + 1];
       ++i;
@@ -389,6 +418,7 @@ static constexpr double kStallMs = 34;
   _opt.point_px = Vrst_float32(2.5 * px);
   _opt.px_ratio = px;
   _tiles.draw(_view, w, h, keys, ground_metres_per_point(_view, _mesh.center(), px), _opt);
+  [self drawTrackWidth:w height:h];
   const double tiles_ms = phase();
   if (_hasFix) _renderer.draw_position(_view, w, h, _mesh.to_world(_fix), Vrst_float32(16 * px));
   const double position_ms = phase();
@@ -464,6 +494,7 @@ static constexpr double kStallMs = 34;
     if (_queuedAt > 0) r.num("queued", _queuedAt - _t0, 4);
     if (_lastTouchAt > 0) r.num("touch", _lastTouchAt - _t0, 4);
     if (_lastMoveAt > 0) r.num("move", _lastMoveAt - _t0, 4);
+    if (_trackPlaying) r.num("track_t", _trackTime, 1);
   }  // the frame record is appended here, before its tiles
   _queuedAt = 0;
   for (const Vrst_tile_upload& u : tf.uploads)
@@ -588,7 +619,7 @@ static constexpr double kStallMs = 34;
   }
   if (!_viewSet) return;
   const Vrst_float64 lat = inverse_mercator(_mesh.center()).x * kPi / 180;
-  NSString* gps = _hasFix ? [NSString stringWithFormat:@"GPS %.5f, %.5f  ±%.0f m", _fix.lat_e7 * 1e-7,
+  NSString* gps = _hasFix ? [NSString stringWithFormat:@"GPS %.5f, %.5f  +-%.0f m", _fix.lat_e7 * 1e-7,
                                                        _fix.lon_e7 * 1e-7, _fixAccuracy]
                           : @"GPS waiting";
   _stats.text = [NSString stringWithFormat:@" V %u  S %u  A %u  P %zu \n zoom %.2fx  %.2f m/pt  dead ends %zu \n %@ ",
@@ -658,6 +689,7 @@ static constexpr double kStallMs = 34;
 - (void)onTick:(CFTimeInterval)now gap:(double)gapMs {
   if (gapMs > kStallMs) _log.record("stall", now - _t0).num("gap_ms", gapMs, 1);
   if (_scenario && _scenario->running() && _viewSet) [self playScenarioAt:now - _t0];
+  if (_trackPlaying && _viewSet) [self playTrackFor:gapMs / 1000];
   if (_loader) [self logLoaderAt:now - _t0];
   _log.flush_if_due(now - _t0);
 }
@@ -721,9 +753,9 @@ static constexpr double kStallMs = 34;
   [menu addAction:[UIAlertAction actionWithTitle:_debug.hidden ? @"Show overlay" : @"Hide overlay"
                                            style:UIAlertActionStyleDefault
                                          handler:^(UIAlertAction*) { [weak toggleOverlay]; }]];
-  [menu addAction:[UIAlertAction actionWithTitle:@"Send this session…" style:UIAlertActionStyleDefault
+  [menu addAction:[UIAlertAction actionWithTitle:@"Send this session..." style:UIAlertActionStyleDefault
                                          handler:^(UIAlertAction*) { [weak shareLogs:NO]; }]];
-  [menu addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Send all sessions (%lu)…",
+  [menu addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Send all sessions (%lu)...",
                                                                             (unsigned long)files.size()]
                                            style:UIAlertActionStyleDefault
                                          handler:^(UIAlertAction*) { [weak shareLogs:YES]; }]];
@@ -736,11 +768,140 @@ static constexpr double kStallMs = 34;
                                                style:UIAlertActionStyleDefault
                                              handler:^(UIAlertAction*) { [weak startScenario:name]; }]];
   }
+  if (_trackPlaying) {
+    [menu addAction:[UIAlertAction actionWithTitle:@"Stop track" style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction*) { [weak stopTrack]; }]];
+  } else if (!_track.empty()) {
+    [menu addAction:[UIAlertAction actionWithTitle:[@"Resume track: " stringByAppendingString:_trackName]
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction*) { [weak resumeTrack]; }]];
+  }
+  if (!_track.empty() && !_trackFollow)
+    [menu addAction:[UIAlertAction actionWithTitle:@"Follow track" style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction*) { [weak followTrack]; }]];
+  for (NSString* name in [self trackNames])
+    [menu addAction:[UIAlertAction actionWithTitle:[@"Play track: " stringByAppendingString:name]
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction*) { [weak loadTrack:name]; }]];
   [menu addAction:[UIAlertAction actionWithTitle:@"Delete older sessions" style:UIAlertActionStyleDestructive
                                          handler:^(UIAlertAction*) { [weak deleteOldLogs]; }]];
   [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
   menu.popoverPresentationController.sourceView = _stats;
   [self presentViewController:menu animated:YES completion:nil];
+}
+
+// --- GPS track replay -------------------------------------------------------------
+
+/// Directory of GPX tracks: Documents/tracks (visible in the Files app; devicectl copies
+/// files there).
+/// @return Path.
+- (NSString*)trackDir {
+  NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+  return [docs stringByAppendingPathComponent:@"tracks"];
+}
+
+/// GPX files in the track directory, by name.
+/// @return File names.
+- (NSArray<NSString*>*)trackNames {
+  NSMutableArray<NSString*>* names = [NSMutableArray array];
+  for (NSString* f in [[NSFileManager.defaultManager contentsOfDirectoryAtPath:[self trackDir] error:nil]
+           sortedArrayUsingSelector:@selector(compare:)])
+    if ([f.pathExtension.lowercaseString isEqualToString:@"gpx"]) [names addObject:f];
+  return names;
+}
+
+/// Loads a GPX track (a file in the track directory, or a full path), puts the camera on
+/// its start and starts playing it, following the marker. A bad file is shown and logged.
+/// @param name Track name.
+- (void)loadTrack:(NSString*)name {
+  NSString* path = name.absolutePath ? name : [[self trackDir] stringByAppendingPathComponent:name];
+  try {
+    Vrst_gpx_track t;
+    t.load(path.UTF8String);
+    if (t.empty()) throw std::runtime_error("no track points");
+    _track = std::move(t);
+  } catch (const std::exception& e) {
+    _log.record("track", [self now]).text("event", "error").text("what", e.what());
+    [_debug showGesture:@"TRACK error (see log)"];
+    return;
+  }
+  _trackName = name.lastPathComponent;
+  _trackDirty = YES;
+  _trackTime = 0;
+  _trackPlaying = YES;
+  _trackFollow = YES;
+  _trackBannerAt = 0;
+  _startCenter = _track.points().front();  // used by the first draw's start view
+  _view.center = _mesh.to_world(_track.points().front());
+  _log.record("track", [self now])
+      .text("event", "play")
+      .text("name", _trackName.UTF8String)
+      .count("points", _track.points().size())
+      .num("duration_s", _track.duration(), 1)
+      .num("length_km", _track.length_m() / 1000, 2)
+      .num("speed", _trackSpeed, 1);
+  [_debug showGesture:[NSString stringWithFormat:@"TRACK %@  x%.0f", _trackName, _trackSpeed]];
+  [self redraw];
+}
+
+/// Advances playback by real time and moves the camera to the marker while following.
+/// @param seconds Real seconds since the previous display tick.
+- (void)playTrackFor:(double)seconds {
+  _trackTime = std::min(_trackTime + std::min(seconds, 0.25) * _trackSpeed, _track.duration());
+  const Vrst_track_sample ts = _track.sample(_trackTime);
+  if (_trackFollow) _view.center = _mesh.to_world(ts.pos);
+  const double t = [self now];
+  if (t - _trackBannerAt > 1) {
+    _trackBannerAt = t;
+    const int at = static_cast<int>(_trackTime), total = static_cast<int>(_track.duration());
+    [_debug updateGesture:[NSString stringWithFormat:@"TRACK %d:%02d / %d:%02d  x%.0f  %.0f km/h", at / 60, at % 60,
+                                                     total / 60, total % 60, _trackSpeed, ts.speed_kmh]];
+  }
+  if (_trackTime >= _track.duration()) {
+    _trackPlaying = NO;
+    _log.record("track", t).text("event", "finished").text("name", _trackName.UTF8String);
+    [_debug showGesture:@"TRACK finished"];
+  }
+  [self redraw];
+}
+
+/// Uploads a newly loaded track, then draws the route, the driven part and the marker.
+/// @param w Framebuffer width in px.
+/// @param h Framebuffer height in px.
+- (void)drawTrackWidth:(int)w height:(int)h {
+  if (_track.empty()) return;
+  if (_trackDirty) {
+    std::vector<Vrst_vec2d> world;
+    world.reserve(_track.points().size());
+    for (const Vrst_coord& c : _track.points()) world.push_back(_mesh.to_world(c));
+    _renderer.set_track(world);
+    _trackDirty = NO;
+  }
+  const Vrst_track_sample ts = _track.sample(_trackTime);
+  _renderer.draw_track(_view, w, h, ts.index + 1, _mesh.to_world(ts.pos),
+                       static_cast<Vrst_float32>(14 * [self pxPerPoint]));
+}
+
+/// Menu: pauses playback.
+- (void)stopTrack {
+  _trackPlaying = NO;
+  _log.record("track", [self now]).text("event", "stopped").num("track_t", _trackTime, 1);
+  [_debug showGesture:@"TRACK paused"];
+}
+
+/// Menu: continues playback (from the start when it had finished).
+- (void)resumeTrack {
+  if (_trackTime >= _track.duration()) _trackTime = 0;
+  _trackPlaying = YES;
+  _log.record("track", [self now]).text("event", "resumed").num("track_t", _trackTime, 1);
+  [self redraw];
+}
+
+/// Menu: the camera follows the marker again.
+- (void)followTrack {
+  _trackFollow = YES;
+  _log.record("track", [self now]).text("event", "follow_on");
+  [self redraw];
 }
 
 // --- test scenarios ----------------------------------------------------------------
@@ -884,7 +1045,7 @@ static constexpr double kStallMs = 34;
   _log.record("ui", [self now]).text("event", _debug.hidden ? "overlay_hidden" : "overlay_shown");
 }
 
-/// Opens the share sheet (AirDrop, Mail, Files …) with session log files.
+/// Opens the share sheet (AirDrop, Mail, Files ...) with session log files.
 /// @param all YES for every stored session, NO for the current one only.
 - (void)shareLogs:(BOOL)all {
   _log.record("ui", [self now]).text("event", all ? "share_all" : "share_current");
@@ -1010,6 +1171,10 @@ static constexpr double kStallMs = 34;
   const CGPoint vel = [g velocityInView:self.view];
   [self logGesture:"pan" recognizer:g value:std::hypot(vel.x, vel.y)];
   if (g.state == UIGestureRecognizerStateBegan) [_debug showGesture:@"PAN"];
+  if (g.state == UIGestureRecognizerStateBegan && _trackFollow && !_track.empty()) {
+    _trackFollow = NO;  // the user looks elsewhere; the menu turns following back on
+    _log.record("track", [self now]).text("event", "follow_off");
+  }
   if (g.state == UIGestureRecognizerStateEnded)
     [_debug showGesture:[NSString stringWithFormat:@"PAN end %.0f pt/s", std::hypot(vel.x, vel.y)]];
   [self redraw];
@@ -1031,7 +1196,7 @@ static constexpr double kStallMs = 34;
   [self zoomBy:g.scale at:c];
   g.scale = 1;
   [self logGesture:"pinch" recognizer:g value:_view.scale / _pinchStartScale];
-  NSString* zoom = [NSString stringWithFormat:@"PINCH ×%.2f", _view.scale / _pinchStartScale];
+  NSString* zoom = [NSString stringWithFormat:@"PINCH x%.2f", _view.scale / _pinchStartScale];
   if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled)
     [_debug showGesture:zoom];
   else
@@ -1052,7 +1217,7 @@ static constexpr double kStallMs = 34;
   [self logGesture:"rotate" recognizer:g value:_rotationSum * 180 / kPi];
   // Pinch and twist run together; name the twist only once it is clearly one.
   if (g.state == UIGestureRecognizerStateEnded && std::abs(_rotationSum) > 0.05)
-    [_debug showGesture:[NSString stringWithFormat:@"ROTATE %+.0f°", _rotationSum * 180 / kPi]];
+    [_debug showGesture:[NSString stringWithFormat:@"ROTATE %+.0f deg", _rotationSum * 180 / kPi]];
   [self redraw];
 }
 
@@ -1061,7 +1226,7 @@ static constexpr double kStallMs = 34;
 - (void)onDoubleTap:(UITapGestureRecognizer*)g {
   if (!_viewSet) return;
   [self logGesture:"double_tap" recognizer:g value:NAN];
-  [_debug showGesture:@"DOUBLE TAP → zoom in 2×"];
+  [_debug showGesture:@"DOUBLE TAP -> zoom in 2x"];
   [self zoomBy:2.0 at:[g locationInView:self.view]];
   [self redraw];
 }
@@ -1071,7 +1236,7 @@ static constexpr double kStallMs = 34;
 - (void)onTwoFingerTap:(UITapGestureRecognizer*)g {
   if (!_viewSet) return;
   [self logGesture:"two_finger_tap" recognizer:g value:NAN];
-  [_debug showGesture:@"2-FINGER TAP → zoom out 2×"];
+  [_debug showGesture:@"2-FINGER TAP -> zoom out 2x"];
   [self zoomBy:0.5 at:[g locationInView:self.view]];
   [self redraw];
 }

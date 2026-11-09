@@ -14,8 +14,20 @@ void Vrst_map_mesh::build(const Vrst_nav_data& d, bool gpu_arrays) {
   const Vrst_uint32 V = g.num_vertices(), S = e.num_segments();
   const Vrst_size P = geo.points().size();
 
-  // Projection: double, relative to the map center.
-  //todo: make well documentation what does function
+  // build() works in four steps:
+  //  1. Projection and extent (always): every shape point of every road segment is
+  //     projected to Web Mercator metres, in double. Their bounding box gives the map
+  //     center, the world origin of everything drawn (float vertices relative to it keep
+  //     about 1 cm precision across a region), and the half extent used by fit_scale().
+  //     With gpu_arrays false (front ends that draw tiles) the function stops here.
+  //  2. Line vertices: one per shape point, relative to the center, with the road class
+  //     in the low 16 bits of attr and the segment flags (oneway, bridge, ...) in the high 16.
+  //  3. Line indices: GL_LINES pairs between neighbouring points of one segment, never
+  //     across segments; minor classes first so major roads are drawn on top.
+  //  4. Vertex dots: one point per graph vertex; vertices with one segment end (dead
+  //     ends) are counted and listed last, so they are drawn on top.
+
+  // 1. Projection and extent.
   Vrst_vec2d lo{1e300, 1e300}, hi{-1e300, -1e300};
   std::vector<Vrst_vec2d> merc(P);
   for (Vrst_size i = 0; i < P; ++i) {
@@ -32,6 +44,7 @@ void Vrst_map_mesh::build(const Vrst_nav_data& d, bool gpu_arrays) {
   m_dead_ends = 0;
   if (!gpu_arrays) return;
 
+  // 2. Line vertices.
   m_line_verts.assign(P, {});
   for (Vrst_uint32 s = 0; s < S; ++s) {
     const Vrst_uint32 attr = e.attr()[s].road_class | static_cast<Vrst_uint32>(e.attr()[s].flags) << 16;
@@ -40,7 +53,7 @@ void Vrst_map_mesh::build(const Vrst_nav_data& d, bool gpu_arrays) {
                          static_cast<Vrst_float32>(merc[i].y - m_center.y), attr};
   }
 
-  // Line pairs only inside a segment; minor classes first so major roads draw on top.
+  // 3. Line indices: pairs only inside a segment; minor classes first so major roads draw on top.
   m_line_indices.clear();
   m_line_indices.reserve((P - S) * 2);
   for (int cls = kRoadClassCount - 1; cls >= 0; --cls)
@@ -52,6 +65,7 @@ void Vrst_map_mesh::build(const Vrst_nav_data& d, bool gpu_arrays) {
       }
     }
 
+  // 4. Vertex dots. degree = segment ends at the vertex; 1 = dead end.
   std::vector<Vrst_uint32> degree(V, 0);
   for (const Vrst_seg_vertices& sv : e.vertices()) ++degree[sv.a], ++degree[sv.b];
   m_point_verts.clear();

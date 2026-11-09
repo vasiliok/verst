@@ -61,12 +61,12 @@ struct Vrst_map_layer_data {
 
 /// Collects map.dat content while libosmium reads the file, then sorts and packs it.
 ///
-/// Geometry is simplified on the way in (Douglas–Peucker, kToleranceM) and tiny areas
+/// Geometry is simplified on the way in (Douglas-Peucker, kToleranceM) and tiny areas
 /// are dropped: a forest outline with 10 000 points costs triangles on every frame
 /// that shows it, and detail below half a metre is never visible.
 class Vrst_map_layer_builder {
  public:
-  /// Douglas–Peucker tolerance in metres. Half a metre is below a pixel even at the
+  /// Douglas-Peucker tolerance in metres. Half a metre is below a pixel even at the
   /// closest zoom the viewer allows for buildings.
   static constexpr Vrst_float64 kToleranceM = 0.5;
   /// Areas smaller than this many square metres are dropped (except buildings).
@@ -150,10 +150,13 @@ class Vrst_map_layer_builder {
             static_cast<Vrst_int32>(std::lround((ref.lon() + p.x / kx) * 1e7))};
   }
 
-  /// Douglas–Peucker simplification of an open polyline.
-  /// @param pts Points; the first and last are always kept.
+  /// Douglas-Peucker simplification of a polyline or a closed ring (first point repeated
+  /// at the end): drops every point that lies within tol of the simplified line. Used for
+  /// the map.dat outlines and lines before triangulation. Iterative, so very long
+  /// outlines are safe; the result may cross itself (topology is not kept).
+  /// @param pts Points in local metres; the first and last are always kept.
   /// @param tol Tolerance in metres.
-  /// @return Kept points.
+  /// @return Kept points, in the original order.
   static std::vector<Vrst_local> simplify(const std::vector<Vrst_local>& pts, Vrst_float64 tol);
 
   /// Signed area of a ring (shoelace).
@@ -161,9 +164,21 @@ class Vrst_map_layer_builder {
   /// @return Square metres, positive when counter-clockwise.
   static Vrst_float64 ring_area(const std::vector<Vrst_local>& r);
 
-  /// Smallest rotated rectangle around a ring (rotating calipers on the convex hull).
-  /// @param r Ring without the closing point, at least 3 points.
-  /// @return 4 corners, counter-clockwise.
+  /// Smallest rectangle, at any rotation, that contains a ring. Used for buildings: when
+  /// the rectangle is barely bigger than the outline (kRectFactor), the building is stored
+  /// as these 4 corners instead of its full outline, so the map is smaller and edges look
+  /// clean at street zoom.
+  ///
+  /// Method: the convex hull of the points (Andrew's monotone chain), then one candidate
+  /// rectangle per hull edge, aligned with that edge; the smallest wins. This is enough
+  /// because the minimum-area enclosing rectangle always has a side on a hull edge
+  /// (Freeman and Shapira, 1975). Each candidate measures the whole hull, so the cost is
+  /// O(n log n) for the hull plus O(h^2) for h hull points (rotating calipers would make
+  /// the second part O(h); building hulls are small, so this simpler loop is kept).
+  /// @param r Ring without the closing point, at least 3 points, local metres; taken by
+  ///        value because it is sorted in place.
+  /// @return 4 corners, counter-clockwise, local metres; all zero when every point is
+  ///         the same (no hull edge has a length).
   static std::vector<Vrst_local> min_rectangle(std::vector<Vrst_local> r);
 
   /// Adds one assembled area: simplifies the rings, reduces buildings to rectangles

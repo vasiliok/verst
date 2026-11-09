@@ -4,7 +4,7 @@
 /// - a clock (time of day with tenths, and seconds since launch) to point at moments;
 /// - frame numbers: draws per second, frame interval, CPU draw time, tile counts, uploads;
 /// - a dot under every finger with a short trail, fading out when the finger lifts;
-/// - the gesture being made in large letters (PAN, PINCH ×1.8, DOUBLE TAP …) and a log
+/// - the gesture being made in large letters (PAN, PINCH x1.8, DOUBLE TAP ...) and a log
 ///   of the last events with their times.
 ///
 /// It never takes touches: a recognizer that never fires watches them, so the map
@@ -35,11 +35,11 @@
 - (void)trackTouchesOf:(UIView*)view;
 
 /// Shows a finished gesture or a button press in large letters and logs it.
-/// @param text Short description, e.g. "DOUBLE TAP → zoom in 2×".
+/// @param text Short description, e.g. "DOUBLE TAP -> zoom in 2x".
 - (void)showGesture:(NSString*)text;
 
-/// Shows a running gesture (pinch factor so far, …) without logging it.
-/// @param text Short description, e.g. "PINCH ×1.42".
+/// Shows a running gesture (pinch factor so far, ...) without logging it.
+/// @param text Short description, e.g. "PINCH x1.42".
 - (void)updateGesture:(NSString*)text;
 
 /// Reports one drawn map frame.

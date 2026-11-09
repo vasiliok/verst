@@ -37,10 +37,10 @@ motion ends.
 How it works:
 1. **Gesture starts** (pinch began, double tap, Fit/Start animation, fling): render the map
    once into an off-screen texture, the *snapshot*.
-   - The snapshot covers the screen plus a 50% margin on every side (iPhone SE: 750×1334 px →
-     about 1500×2000, within `GL_MAX_TEXTURE_SIZE`), so panning and zooming out do not show
+   - The snapshot covers the screen plus a 50% margin on every side (iPhone SE: 750x1334 px ->
+     about 1500x2000, within `GL_MAX_TEXTURE_SIZE`), so panning and zooming out do not show
      its edge at once.
-   - It is rendered with 4× MSAA, then resolved into the texture with `glBlitFramebuffer`
+   - It is rendered with 4x MSAA, then resolved into the texture with `glBlitFramebuffer`
      (GLES 3.0).
    - It holds the map only: roads, areas and lines. No labels, no GPS dot, no track.
 2. **While the fingers move:** every frame draws one textured quad, moved, scaled and
@@ -50,8 +50,8 @@ How it works:
    - The GPS dot and the track marker are drawn live on top, so they stay sharp and in place.
    - Labels are hidden. Scaled text looks wrong and stale names would sit on the wrong places.
 3. **Refresh during a long gesture:** render a new snapshot at the current camera when:
-   - the zoom has changed more than 1.6× (zooming in makes the picture blurry);
-   - the zoom has changed less than 1/1.6× (zooming out shows the snapshot's edge);
+   - the zoom has changed more than 1.6x (zooming in makes the picture blurry);
+   - the zoom has changed less than 1/1.6x (zooming out shows the snapshot's edge);
    - the camera has moved past half the margin;
    - or the finger has rested for 150 ms.
 
@@ -111,8 +111,8 @@ This is shared C++ and GL, so navview uses it too, for wheel zoom and animated z
   screen and levels far from the current zoom, not simply the oldest ones.
 
 ## No pop at level changes
-- **Hysteresis:** switch to the finer level only at max_mpp × 0.9, and back to the coarser
-  one only at max_mpp × 1.1. A zoom that hovers at a threshold no longer flips the level.
+- **Hysteresis:** switch to the finer level only at max_mpp x 0.9, and back to the coarser
+  one only at max_mpp x 1.1. A zoom that hovers at a threshold no longer flips the level.
 - **Cross-fade:**
   - For about 200 ms after a level change, draw both levels.
   - The new level fades in with alpha. Fills and lines get a `u_alpha` uniform, and
@@ -122,11 +122,11 @@ This is shared C++ and GL, so navview uses it too, for wheel zoom and animated z
   with screenshots on both sides of each threshold.
 
 ## Faster tiles
-- **More workers:** use (cores − 1), at least 2. The A13 has 6 cores.
+- **More workers:** use (cores - 1), at least 2. The A13 has 6 cores.
 - **Spread uploads:** upload by bytes per frame (about 2 MB), not by tile count. Split big
   tiles over several frames.
 - **Delete later:** evicted tiles are deleted a few per frame.
-- **Ready-made overview tiles:** osm2nav writes z8–z12 tiles ready to use, already
+- **Ready-made overview tiles:** osm2nav writes z8-z12 tiles ready to use, already
   simplified and triangulated (step 8 of `docs/tiling/README.md`, `tiles.dat`).
   - The phone then never runs earcut, and a zoomed-out tile is one memory-mapped read plus
     one upload.
@@ -173,7 +173,7 @@ This is shared C++ and GL, so navview uses it too, for wheel zoom and animated z
 
 ## Verification
 1. **Instruments on the iPhone SE:**
-   - a 10 s fling-and-pinch session over Dijon at 1–60 m/pt;
+   - a 10 s fling-and-pinch session over Dijon at 1-60 m/pt;
    - 99% of frames under 16.7 ms;
    - no frame over 33 ms after the first second.
 2. **No blank area:** record the screen (`xcrun devicectl` screenshot series or a screen
@@ -188,13 +188,13 @@ This is shared C++ and GL, so navview uses it too, for wheel zoom and animated z
    - Fit and Start animate.
 5. **Snapshot:**
    - during a 5 s pinch on the iPhone SE, every frame takes under 5 ms;
-   - refreshes happen at the 1.6× steps and not every frame;
+   - refreshes happen at the 1.6x steps and not every frame;
    - after release, the real render matches the last snapshot apart from the labels;
    - a screenshot at the end of the fade is the same as a fresh render.
 6. **Unit tests (GoogleTest):**
    - the snapshot quad transform: snapshot camera plus current camera give a matrix that
      maps snapshot pixels onto screen pixels, tested on known points, rotated too;
-   - the refresh rules fire at 1.6×, 1/1.6×, half the margin and 150 ms of rest;
+   - the refresh rules fire at 1.6x, 1/1.6x, half the margin and 150 ms of rest;
    - `Vrst_camera_motion`: momentum slows to a stop, an animation ends exactly at the target,
      and a touch cancels the motion;
    - `select_tiles()` fallback: a finer cached tile covers a missing coarse tile;
@@ -202,9 +202,9 @@ This is shared C++ and GL, so navview uses it too, for wheel zoom and animated z
 7. ctest passes, with 0 build warnings and 0 Doxygen warnings.
 
 ## Risks
-- **Snapshot blur:** between refreshes, zooming in up to 1.6× shows a slightly soft
+- **Snapshot blur:** between refreshes, zooming in up to 1.6x shows a slightly soft
   picture. Apple Maps does the same while pinching. If it is too visible, lower the refresh
-  step to 1.4×.
+  step to 1.4x.
 - **GPU memory on the phone:** prefetch and keeping neighbouring levels need more cache.
   Watch the 96 MB budget and the memory warnings, and evict harder on
   `didReceiveMemoryWarning`.

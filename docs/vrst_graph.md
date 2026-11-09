@@ -11,7 +11,7 @@ V is the number of vertices and A the number of directed arcs.
 | Member            | Type and size                | Meaning                                                    |
 |-------------------|------------------------------|------------------------------------------------------------|
 | `m_file`          | `Vrst_nav_file`              | Owns the mmap of `graph.dat`; every span points into it.   |
-| `m_vertex_coord`  | `Vrst_coord[V]`, 8 B each    | Position of vertex `v`, degrees × 10⁷.                     |
+| `m_vertex_coord`  | `Vrst_coord[V]`, 8 B each    | Position of vertex `v`, degrees x 10^7.                     |
 | `m_fwd_first_out` | `uint32[V+1]`                | Where each vertex's outgoing arcs start in `m_fwd_arcs`.   |
 | `m_fwd_arcs`      | `Vrst_fwd_arc[A]`, 12 B each | `{head, weight, seg}`, grouped by tail vertex.             |
 | `m_bwd_first_in`  | `uint32[V+1]`                | Where each vertex's incoming arcs start in `m_bwd_arcs`.   |
@@ -36,7 +36,7 @@ The tail of an arc is not stored; it is implied by the slice the arc is in, whic
 saves 4 bytes per arc. `fwd_first_out` has V+1 entries and the last one equals A, so
 the last vertex needs no special case.
 
-Example: three vertices, 0 —(two-way, segment 7)— 1 —(oneway 1→2, segment 9)— 2.
+Example: three vertices, 0 -(two-way, segment 7)- 1 -(oneway 1->2, segment 9)- 2.
 
 ```
 fwd_first_out = [0, 1, 3, 3]          V+1 = 4 entries, last = A = 3
@@ -53,7 +53,7 @@ two array reads and no search, so it is O(1).
 
 - **`head`**: the target vertex.
 - **`weight`**: travel time in deciseconds, computed by osm2nav as
-  `max(1, round(length_dm × 3.6 / speed_kmh))`.
+  `max(1, round(length_dm x 3.6 / speed_kmh))`.
   - The speed is the tagged maxspeed, or the road class default when there is none.
   - Deciseconds keep short city segments from all rounding to the same time.
   - The minimum of 1 ensures no arc costs 0.
@@ -61,7 +61,7 @@ two array reads and no search, so it is O(1).
   - `seg & kSegIdMask` indexes `edges.dat` (attributes, name, OSM way) and
     `geom.dat` (shape).
   - Bit 31 (`kSegReversed`) set means the arc runs from the segment's `b` end to its
-    `a` end, so its shape must be read backwards. In the example the 1→0 arc carries
+    `a` end, so its shape must be read backwards. In the example the 1->0 arc carries
     `7|bit31`.
   - A `oneway=-1` road has only the reversed arc.
 
@@ -89,9 +89,9 @@ In the example, vertex 2 has one incoming arc: `{tail 1, w, fwd_arc 2}`.
 
 1. Each segment produces its arcs, in segment order, as temporary records with an
    explicit tail:
-   - `Dir::Both` gives a→b and b→a;
-   - `Dir::Fwd` gives only a→b;
-   - `Dir::Bwd` gives only b→a, with bit 31 set.
+   - `Dir::Both` gives a->b and b->a;
+   - `Dir::Fwd` gives only a->b;
+   - `Dir::Bwd` gives only b->a, with bit 31 set.
 2. **Forward CSR**: a counting sort by tail.
    - Count the arcs per tail into `fwd_first_out[tail+1]`.
    - Take the prefix sum.
@@ -124,7 +124,7 @@ backward/forward one-to-one match and so on). Those deeper checks are in navchec
 ## 7. File layout and cost
 
 ```
-graph.dat: header 64 B | 6 section entries × 24 B | (pad to 64) |
+graph.dat: header 64 B | 6 section entries x 24 B | (pad to 64) |
            VertexCoord 8V | FwdFirstOut 4(V+1) | FwdArcs 12A |
            BwdFirstIn 4(V+1) | BwdArcs 12A | Bbox 16   (each section 64-B aligned)
 ```
@@ -155,12 +155,12 @@ file points into another file).
 
 ```
 Vrst_nav_data                       one import = 4 files
- ├── m_graph : Vrst_graph           graph.dat
- │     └── m_file : Vrst_nav_file
- │           └── m_file : Vrst_mapped_file   (mmap)
- ├── m_edges : Vrst_edges           edges.dat   ─┐
- ├── m_geom  : Vrst_geom            geom.dat     ├ same shape: Vrst_nav_file + typed spans
- └── m_names : Vrst_names           names.dat   ─┘
+ +-- m_graph : Vrst_graph           graph.dat
+ |     +-- m_file : Vrst_nav_file
+ |           +-- m_file : Vrst_mapped_file   (mmap)
+ +-- m_edges : Vrst_edges           edges.dat   -+
+ +-- m_geom  : Vrst_geom            geom.dat     + same shape: Vrst_nav_file + typed spans
+ +-- m_names : Vrst_names           names.dat   -+
 ```
 
 Each layer has one job and one set of checks:
@@ -185,14 +185,14 @@ The files contain no pointers; integer ids are the only links between them:
 
 ```
           graph.dat                         edges.dat                    names.dat
- vertex v ── vertex_coord[v]
-          ── out_arcs(v) ─┐
-                          │ Vrst_fwd_arc.seg & kSegIdMask = s
-                          └──────────────► attr[s] ──── name_id, ref_id ──► get(id)
-                                           vertices[s] = {a, b} ──► back to vertices
+ vertex v -- vertex_coord[v]
+          -- out_arcs(v) -+
+                          | Vrst_fwd_arc.seg & kSegIdMask = s
+                          +--------------> attr[s] ---- name_id, ref_id --> get(id)
+                                           vertices[s] = {a, b} --> back to vertices
                                            osm_way[s]  (OSM way id)
-                                              │ same s
-                                              ▼
+                                              | same s
+                                              v
                                           geom.dat
                                            segment_points(s) = points[first[s] .. first[s+1])
 ```
@@ -203,7 +203,7 @@ The files contain no pointers; integer ids are the only links between them:
 | `Vrst_bwd_arc.tail` | vertex id | same as above |
 | `Vrst_bwd_arc.fwd_arc` | arc index | `fwd_arcs[i]`, the same arc seen forward |
 | `Vrst_fwd_arc.seg & kSegIdMask` | segment id s | `attr[s]`, `vertices[s]`, `osm_way[s]` in edges; `segment_points(s)` in geom |
-| `Vrst_fwd_arc.seg` bit 31 | direction | the arc runs b→a: read `segment_points(s)` backwards |
+| `Vrst_fwd_arc.seg` bit 31 | direction | the arc runs b->a: read `segment_points(s)` backwards |
 | `Vrst_seg_vertices {a, b}` | vertex ids | back into the graph; a is the first shape point, b the last |
 | `Vrst_seg_attr.name_id`, `ref_id` | string id | `names.get(id)`; 0 means "" |
 

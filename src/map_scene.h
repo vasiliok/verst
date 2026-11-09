@@ -234,7 +234,10 @@ inline void rotate_at(Vrst_view& v, int fb_w, int fb_h, Vrst_float64 x, Vrst_flo
 /// ends last (drawn on top).
 class Vrst_map_mesh {
  public:
-  /// Builds all arrays.
+  /// Builds all arrays: projects the road shape points, computes the map center and
+  /// extent, and (with gpu_arrays) the line vertices, the line index list sorted by
+  /// road class and the vertex dots with dead ends last. The steps are explained at
+  /// the top of the function body.
   /// @param d Opened nav files; only read during the call.
   /// @param gpu_arrays false computes only the map center and extent, for front ends
   ///        that draw tiles (map_tiles.h) instead of one buffer.

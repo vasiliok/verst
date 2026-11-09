@@ -24,16 +24,16 @@ The goal is that frame cost depends on what is **on screen**, not on the size of
 - **Grid:** the standard Web Mercator quadtree, with tile `z/x/y` like OSM slippy tiles. A tile
   is a square in Mercator metres: side = 40075016.69 m / 2^z.
   - This is the same grid that MBTiles and MapLibre use, so the two approaches stay compatible.
-- **Detail level (base):** z14. That is 2446 Mercator m per side, about 1.7 km of ground at 47°N.
+- **Detail level (base):** z14. That is 2446 Mercator m per side, about 1.7 km of ground at 47 degN.
   The base tiles hold all roads at full detail.
 - **Overview levels:** z12, z10 and z8, used when zoomed out.
   - Each overview level keeps only some road classes: z12 drops service and living_street, z10 keeps
     tertiary and up, z8 keeps primary and up.
-  - Lines are simplified with Douglas–Peucker, with a tolerance of about ½ pixel at that level.
+  - Lines are simplified with Douglas-Peucker, with a tolerance of about 1/2 pixel at that level.
   - Without overviews, a zoomed-out view would still draw every road in many base tiles.
 - **Level choice:** take the camera's metres per framebuffer pixel and pick the coarsest level
   whose detail still looks right. The table goes in `map_tiles.h` beside `kLabelStyles`.
-- **Lines that cross tile borders:** add each line piece (point *i* → *i+1*) to **every** tile its
+- **Lines that cross tile borders:** add each line piece (point *i* -> *i+1*) to **every** tile its
   bounding box touches.
   - No clipping math, and no gaps at the borders.
   - Lines drawn twice at a border look the same, because they are opaque and the same color.
@@ -42,9 +42,9 @@ The goal is that frame cost depends on what is **on screen**, not on the size of
 - One VBO + IBO per tile, using the same `Vrst_gpu_point` (12 B) and the same shaders.
 - Vertex positions are **relative to the tile's origin**, not the map center. This fixes float
   precision at any map size.
-  - The CPU builds a view matrix per tile in double (`view_matrix` with `center − tile_origin`),
+  - The CPU builds a view matrix per tile in double (`view_matrix` with `center - tile_origin`),
     so the shader does not change.
-- Each tile's indices are sorted minor class → major class, with an offset table per class.
+- Each tile's indices are sorted minor class -> major class, with an offset table per class.
   - Draw order: for each class band, draw that range in every visible tile.
   - Major roads therefore stay on top across tile borders, as today.
 - Graph vertex dots (`m_point_verts`) and places for labels are put into tiles the same way.
@@ -73,7 +73,7 @@ and the graph files stay unchanged.
 | Railways | `railway=rail/light_rail/narrow_gauge/tram/subway` | line | grey line with a dashed pattern |
 | Bridges | `kSegBridge` (already set on road segments), plus `bridge=*` on railways | line | wider dark casing under the road, drawn above everything below it |
 | Tunnels | `kSegTunnel` (already set) | line | road drawn faded or dashed |
-| Buildings | `building=*` | polygon → rectangle | light grey squares, only when zoomed in |
+| Buildings | `building=*` | polygon -> rectangle | light grey squares, only when zoomed in |
 
 - **Import (osm2nav):**
   - Areas are closed ways plus `type=multipolygon` relations. They are assembled with
@@ -82,7 +82,7 @@ and the graph files stay unchanged.
     file, fetched with FetchContent). The app then only draws triangles and never triangulates.
   - Lines (waterways, railways) are stored like the road shapes: points plus first-point indices.
   - Areas below about one pixel at the z14 level are dropped, and outlines are simplified with
-    Douglas–Peucker, so a forest of 10 000 points does not slow the map.
+    Douglas-Peucker, so a forest of 10 000 points does not slow the map.
 - **New file `map.dat`** (`FileType::Map = 5`, format version 3), with these sections:
   - `AreaKind[A]`, `AreaFirstTri[A+1]`, `AreaPoints` (Vrst_coord), `AreaIndices` (uint32 triangles);
   - `LineKind[L]`, `LineFlags[L]` (bridge, tunnel), `LineFirstPoint[L+1]`, `LinePoints`.
@@ -118,11 +118,11 @@ and the graph files stay unchanged.
       change; the quad corners are only rotated.
     - Text always reads left to right: if the line runs right to left on screen, it is walked
       backwards.
-    - A name is skipped where the line bends more than 30° between two letters, or where the
+    - A name is skipped where the line bends more than 30 deg between two letters, or where the
       line is shorter than the text.
     - Long streets repeat the name about every 600 px. The same name never comes closer than
       400 px to itself.
-    - Shown from about **3 m per point** and closer. Text height is 11 pt, or 13–14 pt when
+    - Shown from about **3 m per point** and closer. Text height is 11 pt, or 13-14 pt when
       very close.
   - **Road numbers** (`ref`, e.g. D 965, M 905, A 31): a small box in the road's class colour
     with dark bold text, put at the middle of the road.
@@ -140,16 +140,16 @@ and the graph files stay unchanged.
     once at start: FreeType renders DejaVu Sans and Sans Bold into one distance-field texture,
     with only the letters the names use.
     - French street names add no new letters beyond the place names, so the texture stays
-      about 1024×256.
+      about 1024x256.
   - Every name's width is measured once at load (`Vrst_map_labels::measure()`).
   - Every frame:
     ```
-    visible tiles ──► street lines + name_id ──┐
-                                               ├─► layout(): letters along each line,
-    font atlas (built once) ── letter shapes ──┘    collision test across all tiles
-                                                          │
+    visible tiles --> street lines + name_id --+
+                                               +-> layout(): letters along each line,
+    font atlas (built once) -- letter shapes --+    collision test across all tiles
+                                                          |
                                              one vertex list of letter squares
-                                                          │
+                                                          |
                                    one draw call: text shader + atlas texture
     ```
   - Why not painted into the tiles:
@@ -194,15 +194,15 @@ and the graph files stay unchanged.
 ## Steps
 1. **Tile math:** new `src/map_tiles.h`.
    - `Vrst_tile_id {z, x, y}`, tile bounds, the level table, `visible_tiles()`.
-   - Pure C++, tested by a small ctest: known lat/lon → known `z/x/y`, and a rotated view lists
+   - Pure C++, tested by a small ctest: known lat/lon -> known `z/x/y`, and a rotated view lists
      the expected tiles.
 2. **Runtime tiler, base level only:** `Vrst_tile_mesh` is built from the nav files for one tile.
-   - At load time, a spatial index (segment → tiles) is filled once.
+   - At load time, a spatial index (segment -> tiles) is filled once.
    - Building one tile only reads the segments it lists.
    - `Vrst_map_renderer` draws the visible tiles instead of the one big buffer.
    - Debug key `T` in navview draws the tile borders and their `z/x/y`.
    - The ImGui panel shows tiles visible / cached / built per second and the number of draw calls.
-3. **Overview levels:** class filters + Douglas–Peucker per level. Check that zoomed-out fps no
+3. **Overview levels:** class filters + Douglas-Peucker per level. Check that zoomed-out fps no
    longer depends on how many minor roads the region has.
 4. **Lazy building on a worker thread:**
    - Tiles are built on a background thread. The GL thread only uploads the finished tiles,
@@ -218,7 +218,7 @@ and the graph files stay unchanged.
    - The atlas, text shader and `draw_labels()` stay as they are.
 7. **iOS:** the same code, because `map_tiles.h` and the renderer are shared. Only the cache
    budget changes.
-8. **Optional — tiles stored in the nav files:**
+8. **Optional - tiles stored in the nav files:**
    - osm2nav writes the tiles ready to use: a new `tiles.dat`, in the next format version, that holds
      each tile's vertex and index arrays.
    - The app then memory-maps a tile and uploads it with no CPU work.
@@ -259,12 +259,12 @@ and the graph files stay unchanged.
 8. 0 build warnings and 0 Doxygen warnings; ctest passes, including the new tile test.
 
 ## Risks
-- **Many draw calls:** about 30 visible tiles × class bands. That is fine for GL, but stays
+- **Many draw calls:** about 30 visible tiles x class bands. That is fine for GL, but stays
   under watch on iOS.
   - If needed, merge the class bands with `glMultiDrawElements` on desktop, or with one index
     range per tile on iOS.
 - **Thin lines at overview levels:** simplification can change their look. Tune the
-  Douglas–Peucker tolerance per level against screenshots.
+  Douglas-Peucker tolerance per level against screenshots.
 - **Label cost per frame:** walking letters along thousands of street chains every frame can
   be slow. Cache each chain's screen-free layout (letter positions in world metres) per tile,
   and only redo the collision test per frame.

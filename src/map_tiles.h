@@ -37,9 +37,9 @@ inline constexpr Vrst_float64 kMercatorHalf = kPi * kEarthRadius;
 /// Tile address in the slippy-map scheme: zoom z, column x from the west, row y from
 /// the north.
 struct Vrst_tile_id {
-  /// Zoom level; the grid has 2^z × 2^z tiles.
+  /// Zoom level; the grid has 2^z x 2^z tiles.
   int z;
-  /// Column, 0 at 180°W.
+  /// Column, 0 at 180 degW.
   Vrst_int32 x;
   /// Row, 0 at the northern edge of the Mercator square.
   Vrst_int32 y;
@@ -104,7 +104,7 @@ struct Vrst_tile_level {
   Vrst_float64 max_mpp;
   /// Road classes the tiles hold (bit per RoadClass).
   Vrst_uint32 class_mask;
-  /// Douglas–Peucker tolerance for lines and outlines, Mercator metres; 0 = full detail.
+  /// Douglas-Peucker tolerance for lines and outlines, Mercator metres; 0 = full detail.
   Vrst_float64 tolerance_m;
   /// Areas whose bounding box is smaller than this (Mercator metres) are left out.
   Vrst_float64 min_area_m;
@@ -326,7 +326,7 @@ class Vrst_tile_builder {
     for (Vrst_size i = 0; i < in.size(); ++i) out[i] = mercator(in[i]);
   }
 
-  /// Douglas–Peucker simplification in place; the end points are always kept.
+  /// Douglas-Peucker simplification in place; the end points are always kept.
   /// @param pts Polyline, replaced by the kept points.
   /// @param tol Tolerance in Mercator metres; 0 leaves the line unchanged.
   static void simplify(std::vector<Vrst_vec2d>& pts, Vrst_float64 tol);

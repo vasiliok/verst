@@ -26,8 +26,8 @@ for each of those pixels.
 
 ```
 C++ (CPU)                      GPU
-vertex buffer ──► vertex shader ──► triangles ──► rasteriser ──► fragment shader ──► screen
-uniforms ────────────┘ (per vertex)                 (pixels)       (per pixel)
+vertex buffer --> vertex shader --> triangles --> rasteriser --> fragment shader --> screen
+uniforms ------------+ (per vertex)                 (pixels)       (per pixel)
 ```
 
 ## 2. The three kinds of shader inputs
@@ -35,7 +35,7 @@ uniforms ────────────┘ (per vertex)                 (p
 |---|---|---|---|
 | `in` in the vertex shader (**attribute**) | data of one vertex, read from a GPU buffer | per vertex | `a_pos`: a point in metres; `a_attr`: the road class |
 | `uniform` | a value set by C++ before the draw call, the same for every vertex and pixel | per draw call | `u_view`: the camera matrix; `u_colors[]`: the colour table |
-| `out` in the vertex shader → `in` in the fragment shader (**varying**) | a value handed from a vertex to the pixels between vertices | per pixel | `v_kind`, `v_attr`, `v_along` |
+| `out` in the vertex shader -> `in` in the fragment shader (**varying**) | a value handed from a vertex to the pixels between vertices | per pixel | `v_kind`, `v_attr`, `v_along` |
 
 A varying is normally **interpolated**: a pixel halfway between two vertices gets the average of
 their values. With **`flat`** it is not interpolated: the pixels take the value of one vertex. verst
@@ -76,7 +76,7 @@ Points to notice:
 - **The colours are a uniform table.** The buffer stores only the *kind*, and the shader looks up
   the colour, so changing the style needs no new upload.
 - **Screen coordinates.** `gl_Position` uses "normalised device coordinates": x and y run from
-  −1 to +1 across the window, whatever its size in pixels.
+  -1 to +1 across the window, whatever its size in pixels.
 
 The camera matrix comes from `view_matrix()` in `src/map_scene.h`. Each tile has its own origin,
 so the vertices hold small numbers that stay precise in 32-bit floats. For each tile, the C++ code
@@ -182,23 +182,23 @@ In `Vrst_map_renderer::compile()` / `link()` (`src/map_renderer.h`):
    - It has no `#version` line. C++ prepends `kGlslHeader`: `#version 330 core` on desktop, or
      `#version 300 es` plus `precision highp float;` on iOS.
    - Only features both versions share are used, so the same source works on both.
-2. **Compile:** `glCreateShader` → `glShaderSource` → `glCompileShader`, once for the vertex shader
+2. **Compile:** `glCreateShader` -> `glShaderSource` -> `glCompileShader`, once for the vertex shader
    and once for the fragment shader.
-3. **Link:** `glCreateProgram` → `glAttachShader` ×2 → `glLinkProgram`. A compile or link error
+3. **Link:** `glCreateProgram` -> `glAttachShader` x2 -> `glLinkProgram`. A compile or link error
    throws with the driver's log.
 4. **Look up uniforms:** `glGetUniformLocation(prog, "u_view")` gives a number used to set the
    value later, for example `glUniformMatrix3fv(loc, 1, GL_FALSE, m.data())`.
 5. **Describe the buffer layout:** a **VAO** (vertex array object) records how bytes in a buffer map
-   to attributes. For example, `glVertexAttribPointer(0, 2, GL_FLOAT, …)` means location 0 = two
+   to attributes. For example, `glVertexAttribPointer(0, 2, GL_FLOAT, ...)` means location 0 = two
    floats. `glVertexAttribIPointer` is used for integer attributes such as `a_attr`, and
    `glVertexAttribDivisor(a, 1)` makes an attribute advance per instance rather than per vertex.
-6. **Draw:** `glUseProgram` → set uniforms → `glBindVertexArray` → `glDrawArrays` /
+6. **Draw:** `glUseProgram` -> set uniforms -> `glBindVertexArray` -> `glDrawArrays` /
    `glDrawArraysInstanced`.
 
 ## 9. All shaders in the project
 | Program | File | Draws | Primitive |
 |---|---|---|---|
-| `kFillVs/Fs` | `src/tile_renderer.h` | areas: farmland … water, buildings | triangles |
+| `kFillVs/Fs` | `src/tile_renderer.h` | areas: farmland ... water, buildings | triangles |
 | `kTileLineVs/Fs` | `src/tile_renderer.h` | roads, rivers, railways, building outlines, tile borders | instanced quads |
 | `kPointVs/Fs` | `src/shaders.h` | graph vertex dots, dead ends in red | points |
 | `kOverlayVs/Fs` | `src/shaders.h` | GPS track line, track marker, GPS position dot | lines / points |
@@ -215,4 +215,4 @@ In `Vrst_map_renderer::compile()` / `link()` (`src/map_renderer.h`):
 - **Precision:** the GPU works in 32-bit floats, so positions are stored relative to a nearby
   origin (the tile corner), never as raw world coordinates.
 - **GLSL shared by GL 3.3 and GLES 3.0:** no `#version` in the source, explicit
-  `layout(location = …)`, `flat` for integer varyings, and no desktop-only built-ins.
+  `layout(location = ...)`, `flat` for integer varyings, and no desktop-only built-ins.

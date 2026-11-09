@@ -39,7 +39,7 @@ and run the `verst_ios` target from the generated `verst.xcodeproj` in Xcode.
 | one-finger drag | pan |
 | pinch | zoom around the fingers (and pan with them) |
 | two-finger twist | rotate |
-| double tap / two-finger tap | zoom in / out 2× |
+| double tap / two-finger tap | zoom in / out 2x |
 | Fit / Start | whole map / start view |
 | Roads | menu with the 9 road class groups |
 | Oneway / Dots / Names | highlight oneway roads / show graph vertices / show place names |

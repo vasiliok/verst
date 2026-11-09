@@ -1,11 +1,11 @@
-# verst — Step 1: OSM → binary graph + viewer
+# verst - Step 1: OSM -> binary graph + viewer
 
 Converts car roads from an `.osm.pbf` into four mmap-able files, validates them, and draws them.
 
 | Tool | Usage |
 |---|---|
 | `osm2nav` | `osm2nav <input.osm.pbf> <out_dir>` |
-| `navcheck` | `navcheck <out_dir>` (exit 0 = all PASS) · `navcheck <out_dir> --dump-way <osm_way_id>` |
+| `navcheck` | `navcheck <out_dir>` (exit 0 = all PASS) - `navcheck <out_dir> --dump-way <osm_way_id>` |
 | `navview` | `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--screenshot <file.bmp>]` (screenshot: renders 3 frames, saves the last, exits) |
 | iPhone app | `ios/`: UIKit + OpenGL ES 3.0, same map code as navview; see [ios/README.md](ios/README.md) |
 
@@ -41,31 +41,39 @@ Use `-DNAV_BUILD_VIEWER=OFF` to build without GLFW/OpenGL.
 
 ## Docs
 
-All comments are Doxygen (`///`, `///<`, `@file`, `@return`). With Doxygen installed
-(`brew install doxygen`), configure and run:
+All comments are Doxygen (`///`, `///<`, `@file`, `@return`). All settings are in the
+[`Doxyfile`](Doxyfile) at the repo root. Install Doxygen and Graphviz (`brew install doxygen
+graphviz`), then either:
 
 ```sh
-cmake --build build --target docs    # -> build/docs/html/index.html
+doxygen                               # from the repo root -> ../tmp/verst/doxygen/html/index.html
+cmake --build build --target docs     # -> build/docs/html/index.html (adds the generated vrst_types.h)
 ```
 
-The target is skipped when Doxygen is not found.
+Both also write XML next to `html/` (`xml/index.xml` lists every compound, one `<refid>.xml` per
+class, file, namespace and page; schema in `xml/compound.xsd`), for tools that read the API.
+Both write every warning to `warnings.log` next to `html/`; the project rule is 0 warnings.
+Class, collaboration and include diagrams need Graphviz; without it set `HAVE_DOT = NO`.
+The CMake target is skipped when Doxygen is not found.
 
 Articles (also rendered as Doxygen pages):
 
 - [How Vrst_graph works](docs/vrst_graph.md): forward/backward CSR, arc fields, how osm2nav builds it, file layout and costs, and how the nav_files.h classes and file ids link together.
+- [Where the data lives](docs/storage/README.md): storage decision (proposal) - binary memory-mapped files for routing and pre-built tiles, SQLite (FTS5 + trigram + R*Tree) for search and user data, and the criteria and benchmark for choosing the storage engine.
+- [Architectural bottlenecks & hard engineering challenges](docs/challenges/README.md): the risks on the way from map viewer to turn-by-turn navigation (turn restrictions, contraction hierarchies, map matching, label collisions, maneuvers, offline search, updates).
 
 ## Scalar types
 
-All code uses the `Vrst_` scalar aliases (`Vrst_int8`…`Vrst_int64`, `Vrst_uint8`…`Vrst_uint64`, `Vrst_float32`,
+All code uses the `Vrst_` scalar aliases (`Vrst_int8`...`Vrst_int64`, `Vrst_uint8`...`Vrst_uint64`, `Vrst_float32`,
 `Vrst_float64`, `Vrst_size`). CMake generates them into `<build>/generated/vrst_types.h` from
 `src/vrst_types.h.in`; set one with e.g. `-DVRST_TYPE_UINT32="unsigned int"`. Each alias is checked for size,
 signedness and IEEE 754 at compile time, so a wrong setting fails the build.
 
 ## Viewer controls
 
-drag = pan · wheel = zoom at cursor · `Q`/`E` = rotate · `1`–`9` = toggle motorway, trunk, primary,
-secondary, tertiary, unclassified, residential (+living_street), service, ferry · `O` = highlight oneway ·
-`V` = vertices (red = dead end) · `R` = start view · `F` = fit map · `Esc` = quit. The Dear ImGui panel (top left) has the
+drag = pan - wheel = zoom at cursor - `Q`/`E` = rotate - `1`-`9` = toggle motorway, trunk, primary,
+secondary, tertiary, unclassified, residential (+living_street), service, ferry - `O` = highlight oneway -
+`V` = vertices (red = dead end) - `R` = start view - `F` = fit map - `Esc` = quit. The Dear ImGui panel (top left) has the
 same toggles plus dot size and rotation sliders; input over the panel does not move the map.
 The viewer starts at `--center <lat> <lon>` with `--mpp` ground metres per screen point (smaller = closer).
 Without them it uses the default point 47.322, 5.041 (`kDefaultPoint` in `navview.cpp`) at 5 m per point.
@@ -92,23 +100,23 @@ refuses mixed sets. Layout is in `src/format.h`; the loader is `src/nav_files.h`
 
 | File | Sections |
 |---|---|
-| `graph.dat` `NAVGRAPH` | `VERTEX_COORD` Coord[V] · `FWD_FIRST_OUT` u32[V+1] · `FWD_ARCS` {head, weight ds, seg\|bit31 reversed}[A] · `BWD_FIRST_IN` u32[V+1] · `BWD_ARCS` {tail, weight, fwd_arc}[A] · `BBOX` {min,max}[1] |
-| `edges.dat` `NAVEDGES` | `SEG_ATTR` {length_dm, name_id, ref_id, class, maxspeed, flags}[S] · `SEG_VERTICES` {a,b}[S] · `SEG_OSM_WAY` u64[S] |
-| `geom.dat` `NAVGEOM` | `SEG_FIRST_POINT` u32[S+1] · `POINTS` Coord[P] (each range includes both end points) |
-| `names.dat` `NAVNAMES` | `STR_OFFSETS` u32[N+1] · `STR_DATA` UTF-8 (id 0 = empty, deduplicated) · `PLACES` Place[L] 20 B (city/town/village/hamlet label: pos, name_id, population, kind; sorted by kind, then population) |
+| `graph.dat` `NAVGRAPH` | `VERTEX_COORD` Coord[V] - `FWD_FIRST_OUT` u32[V+1] - `FWD_ARCS` {head, weight ds, seg\|bit31 reversed}[A] - `BWD_FIRST_IN` u32[V+1] - `BWD_ARCS` {tail, weight, fwd_arc}[A] - `BBOX` {min,max}[1] |
+| `edges.dat` `NAVEDGES` | `SEG_ATTR` {length_dm, name_id, ref_id, class, maxspeed, flags}[S] - `SEG_VERTICES` {a,b}[S] - `SEG_OSM_WAY` u64[S] |
+| `geom.dat` `NAVGEOM` | `SEG_FIRST_POINT` u32[S+1] - `POINTS` Coord[P] (each range includes both end points) |
+| `names.dat` `NAVNAMES` | `STR_OFFSETS` u32[N+1] - `STR_DATA` UTF-8 (id 0 = empty, deduplicated) - `PLACES` Place[L] 20 B (city/town/village/hamlet label: pos, name_id, population, kind; sorted by kind, then population) |
 
-Coord = int32 lat/lon in 1e-7°. A segment is an undirected road piece between two vertices, stored in
-OSM way order (a → b). Two-way = 2 arcs, oneway = 1 arc. For `oneway=-1` the single arc runs b → a with
+Coord = int32 lat/lon in 1e-7 deg. A segment is an undirected road piece between two vertices, stored in
+OSM way order (a -> b). Two-way = 2 arcs, oneway = 1 arc. For `oneway=-1` the single arc runs b -> a with
 bit31 set.
 
 Additions beyond the original spec:
 - `BBOX` section in `graph.dat`: the extent of **all nodes in the source file**. The PBF header bbox is
   not used because Geofabrik extracts contain complete ways that reach outside it.
-- `SegFlags::kSegOnewayReverse` (bit 7): set with `kSegOneway` when the allowed direction is b → a.
+- `SegFlags::kSegOnewayReverse` (bit 7): set with `kSegOneway` when the allowed direction is b -> a.
 
 ## Andorra (Geofabrik, 3.5 MB)
 
-4,073 kept ways → V 5,019 · S 5,966 · A 9,657 · P 44,266 · 553.8 km of road. The conversion takes about
+4,073 kept ways -> V 5,019 - S 5,966 - A 9,657 - P 44,266 - 553.8 km of road. The conversion takes about
 55 ms with an 18 MiB peak RSS, and `navcheck` passes every check (32 components; the largest holds 98.7%
 of the vertices).
 

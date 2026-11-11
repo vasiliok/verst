@@ -1,9 +1,10 @@
 /// @file
 /// verst iPhone app: a full-screen map drawn with OpenGL ES 3.0.
 ///
-/// A thin UIKit shell around the shared C++ core: Vrst_nav_data maps the bundled nav
-/// files (map.dat included), the tiles of map_tiles.h are built on worker threads and
-/// Vrst_tile_renderer draws them, exactly as in the desktop viewer. All map layers
+/// A thin UIKit shell around the shared C++ core: open_map() gives the map provider
+/// for the bundled map, which delivers ready-to-draw pieces, and Vrst_tile_renderer
+/// draws them, exactly as in the desktop viewer. The app does not know how the map
+/// is stored. All map layers
 /// are always on. This file only adds the GL context (GLKView), touch gestures, the
 /// GPS position (CoreLocation), a stats line and a toolbar.
 ///
@@ -12,9 +13,15 @@
 /// Launch arguments `--center <lat> <lon>` and `--mpp <metres>` set the start view,
 /// like navview; `--log-dir <dir>` puts the session logs elsewhere (Simulator);
 /// `--scenario <name>` plays a test scenario (scenario.h) after the first frame;
+/// `--stuck-ms <ms>` logs a worker as "stuck" sooner than kStuckMs (to test the dump);
+/// `--record <s>` records the camera path for s seconds from the first frame (debug
+/// menu "Record activity" does the same by hand; the result plays as a scenario);
 /// `--gpx <file>` replays a GPX track (Documents/tracks or a full path) at `--speed <x>`
 /// times its recorded pace (default 10), the camera following the marker. VrstDebugOverlay (clock, frame numbers, touches and gesture names)
 /// is on at start for screen recordings; a tap on the stats box hides or shows it.
+/// The "Log" button (or `--console` at launch) splits the screen: VrstDebugConsole on
+/// top (the map provider's status live and the session log as it is written), the map
+/// below, still usable; the console can also take the whole screen.
 
 #include "gl_api.h"  // OpenGL ES 3.0; before GLKit so the ES3 header wins
 
@@ -22,7 +29,9 @@
 #import <GLKit/GLKit.h>
 #import <UIKit/UIKit.h>
 
+#import "debug_console.h"
 #import "debug_overlay.h"
+#import "root_controller.h"
 
 #include <sys/utsname.h>
 
@@ -31,15 +40,16 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 
 #include "glyph_atlas.h"
 #include "gpx_track.h"
 #include "map_labels.h"
 #include "map_renderer.h"
+#include "map_provider.h"
 #include "map_scene.h"
-#include "map_tiles.h"
-#include "nav_files.h"
+#include "activity_recorder.h"
 #include "scenario.h"
 #include "session_log.h"
 #include "tile_renderer.h"
@@ -52,23 +62,46 @@ static constexpr Vrst_size kTileBudget = 96u << 20;
 static constexpr Vrst_size kKeepSessions = 20;
 /// A display-link gap longer than this (ms) is logged as a main-thread stall.
 static constexpr double kStallMs = 34;
+/// Side of the round buttons on the map (location, record, play), points.
+static constexpr CGFloat kRoundButtonSize = 44;
+/// Build configuration, for the launch record (Debug code runs several times slower).
+#ifdef NDEBUG
+static constexpr const char* kBuildConfig = "release";
+#else
+static constexpr const char* kBuildConfig = "debug";
+#endif
+/// CPU architecture, for the launch record (floating point may round differently).
+#if defined(__aarch64__)
+static constexpr const char* kArch = "arm64";
+#elif defined(__x86_64__)
+static constexpr const char* kArch = "x86_64";
+#else
+static constexpr const char* kArch = "other";
+#endif
+/// A worker this long on one piece is logged as "stuck" with its exact input, ms.
+static constexpr double kStuckMs = 2000;
+/// Most "stuck" records per session (each may hold thousands of points).
+static constexpr Vrst_size kMaxStuckDumps = 20;
+/// File name start of recorded activity in Documents/scenarios.
+static NSString* const kRecordingPrefix = @"rec-";
+/// Seconds between two console refreshes while it is open.
+static constexpr double kConsoleSeconds = 0.25;
 
-/// Full-screen map controller. Owns the shared C++ map state and turns UIKit touch
+/// Map controller (whole screen, or below the console in Split). Owns the shared C++ map state and turns UIKit touch
 /// gestures into camera changes; draws only when something changed.
 @interface VrstMapController : GLKViewController <UIGestureRecognizerDelegate, CLLocationManagerDelegate>
+/// Debug console with the provider status and the session log ("Log" button); placed
+/// by VrstRootController, fed by this controller. Set before the view loads.
+@property(nonatomic, strong) VrstDebugConsole* console;
 @end
 
 @implementation VrstMapController {
-  /// Mapped nav files from the app bundle; spans into them stay valid while open.
-  Vrst_nav_data _data;
-  /// Map center and extent (the world origin); its GPU arrays are not built.
-  Vrst_map_mesh _mesh;
-  /// Which roads, areas and lines touch which tile.
-  Vrst_tile_index _index;
-  /// Builds tile arrays from _data; used by the loader threads.
-  std::unique_ptr<Vrst_tile_builder> _builder;
-  /// Builds missing tiles in the background.
-  std::unique_ptr<Vrst_tile_loader> _loader;
+  /// Map data of the app bundle: pieces, places, status; how it is stored is hidden.
+  std::unique_ptr<Vrst_map_provider> _map;
+  /// World origin, start views and the area on screen, from the map extent.
+  Vrst_map_frame _mapFrame;
+  /// Provider work after the last frame: threads, busy workers, settled.
+  Vrst_provider_status _mapStatus;
   /// GPU tile cache and map drawing.
   Vrst_tile_renderer _tiles;
   /// Frame counter for the tile cache.
@@ -90,11 +123,11 @@ static constexpr double kStallMs = 34;
   /// A GPS position is known.
   BOOL _hasFix;
   /// Last GPS position.
-  Vrst_coord _fix;
+  Vrst_latlon _fix;
   /// Horizontal accuracy of _fix in metres.
   Vrst_float64 _fixAccuracy;
   /// Start view center: kDefaultPoint or --center.
-  Vrst_coord _startCenter;
+  Vrst_latlon _startCenter;
   /// Start zoom in ground metres per screen point: kDefaultMetresPerPoint or --mpp.
   Vrst_float64 _startMpp;
   /// Scale that fits the whole map: zoom 1x in the stats and the zoom-out limit.
@@ -122,6 +155,10 @@ static constexpr double kStallMs = 34;
   NSString* _error;
   /// Clock, frame numbers, touches and gesture names for screen recordings.
   VrstDebugOverlay* _debug;
+  /// Vrst_session_log::appended() when the console was last fed.
+  Vrst_uint64 _consoleSeen;
+  /// [self now] when the console was last fed.
+  double _consoleFedAt;
   /// View scale when the running pinch began, for its "xfactor" text.
   Vrst_float64 _pinchStartScale;
   /// Rotation of the running twist so far, in radians.
@@ -140,12 +177,22 @@ static constexpr double kStallMs = 34;
   std::optional<Vrst_scenario> _scenario;
   /// Scenario named by `--scenario`, started after the first frame; nil when none.
   NSString* _launchScenario;
-  /// Missing tiles in the last frame, for wait_tiles steps.
-  Vrst_size _lastMissing;
+  /// `--console`: open the console after the first frame.
+  BOOL _launchConsole;
+  /// `--record <s>`: record activity from the first frame for this long; 0 = not asked.
+  double _launchRecordSeconds;
+  /// [self now] when a `--record` recording stops; 0 = none running.
+  double _recordStopAt;
   /// Scenario steps logged so far; a slow frame can pass several steps at once.
   Vrst_size _loggedSteps;
   /// `t` of the last "queue" record.
   double _lastQueueLog;
+  /// The last "queue" record said settled: no more until loading starts again.
+  BOOL _queueLoggedSettled;
+  /// "stuck" records written: worker, piece and step text of each (one per area).
+  std::set<std::string> _stuckDumped;
+  /// Time on one piece after which a worker counts as stuck, ms (kStuckMs, or `--stuck-ms`).
+  double _stuckMs;
   /// View size at the last layout pass; a redraw is needed only when it changes.
   CGSize _laidOutSize;
   /// CACurrentMediaTime() when a test scenario last moved the camera; 0 = never.
@@ -166,6 +213,12 @@ static constexpr double kStallMs = 34;
   double _trackSpeed;
   /// Playback running.
   BOOL _trackPlaying;
+  /// Camera path being recorded as a scenario (record button).
+  Vrst_activity_recorder _recorder;
+  /// Round record button: start, or stop and save.
+  UIButton* _recordButton;
+  /// Round play button: pick a recording to play, or stop playing.
+  UIButton* _playButton;
   /// The camera follows the marker; a drag turns it off, the menu turns it on.
   BOOL _trackFollow;
   /// Track file named by `--gpx`, loaded and played after the map is ready; nil = none.
@@ -188,6 +241,7 @@ static constexpr double kStallMs = 34;
   _startCenter = kDefaultPoint;
   _trackSpeed = 10;
   _startMpp = kDefaultMetresPerPoint;
+  _stuckMs = kStuckMs;
   [self parseArguments];
 
   _context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
@@ -210,16 +264,11 @@ static constexpr double kStallMs = 34;
       return ms;
     };
     NSString* dir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"map"];
-    _data.open(dir.UTF8String);
-    const double open_ms = lap();
-    _mesh.build(_data, false);
-    const double mesh_ms = lap();
-    _index.build(_data);
-    const double index_ms = lap();
-    _builder = std::make_unique<Vrst_tile_builder>(_data, _index, _mesh.center());
-    _loader = std::make_unique<Vrst_tile_loader>(*_builder, 2);
-    _loader->record_events(true);  // "build" records in the session log
-    _labels.build(_data, _mesh);
+    _map = open_map(dir.UTF8String, {.threads = 2, .record_events = true});  // events: "build" records
+    _mapFrame = Vrst_map_frame(_map->extent());
+    const double map_ms = lap();
+    const std::vector<Vrst_map_place> places = _map->places();
+    _labels.build(places, _mapFrame);
     NSString* fontDir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"fonts"];
     std::vector<std::string> fonts;
     for (const std::string_view f : kLabelFontFiles) fonts.push_back(std::string(fontDir.UTF8String) + "/" + std::string(f));
@@ -233,13 +282,11 @@ static constexpr double kStallMs = 34;
     _tiles.init();
     _glReady = YES;
     _log.record("load", [self now])
-        .num("open_ms", open_ms, 1)
-        .num("mesh_ms", mesh_ms, 1)
-        .num("index_ms", index_ms, 1)
+        .num("map_ms", map_ms, 1)
         .num("labels_ms", labels_ms, 1)
         .num("gl_ms", lap(), 1)
-        .count("vertices", _data.graph().num_vertices())
-        .count("places", _data.names().places().size());
+        .count("places", places.size());
+    for (const std::string& line : _map->describe()) _log.record("map", [self now]).text("info", line);
   } catch (const std::exception& e) {
     _error = [NSString stringWithFormat:@"cannot load map: %s", e.what()];
     _log.record("error", [self now]).text("what", e.what());
@@ -285,11 +332,16 @@ static constexpr double kStallMs = 34;
       .num("screen_h", screen.height, 0)
       .num("scale", UIScreen.mainScreen.scale, 1)
       .num("max_fps", static_cast<double>(UIScreen.mainScreen.maximumFramesPerSecond), 0)
-      .num("thermal", static_cast<double>(NSProcessInfo.processInfo.thermalState), 0);
+      .num("thermal", static_cast<double>(NSProcessInfo.processInfo.thermalState), 0)
+      .text("config", kBuildConfig)
+      .text("arch", kArch);
   NSNotificationCenter* nc = NSNotificationCenter.defaultCenter;
   __weak VrstMapController* weak = self;
   [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:nil
-              usingBlock:^(NSNotification*) { [weak logSystem:"background"]; }];
+              usingBlock:^(NSNotification*) {
+                [weak logSystem:"background"];
+                [weak stopRecording];  // iOS may end the app in the background: keep what was recorded
+              }];
   [nc addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:nil
               usingBlock:^(NSNotification*) { [weak logSystem:"foreground"]; }];
   [nc addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
@@ -314,7 +366,7 @@ static constexpr double kStallMs = 34;
 
 /// Releases the GL objects while the context is still alive.
 - (void)dealloc {
-  _loader.reset();  // join the workers before the data they read goes away
+  _map.reset();  // stop the map workers
   if (_glReady) {
     [EAGLContext setCurrentContext:_context];
     _renderer.destroy();
@@ -334,7 +386,7 @@ static constexpr double kStallMs = 34;
     if ([a[i] isEqualToString:@"--center"] && i + 2 < a.count) {
       const double lat = a[i + 1].doubleValue, lon = a[i + 2].doubleValue;
       if (std::abs(lat) <= 90 && std::abs(lon) <= 180)
-        _startCenter = {Vrst_int32(std::lround(lat * 1e7)), Vrst_int32(std::lround(lon * 1e7))};
+        _startCenter = {lat, lon};
       i += 2;
     } else if ([a[i] isEqualToString:@"--gpx"] && i + 1 < a.count) {
       _launchGpx = a[i + 1];
@@ -342,6 +394,14 @@ static constexpr double kStallMs = 34;
     } else if ([a[i] isEqualToString:@"--speed"] && i + 1 < a.count) {
       if (a[i + 1].doubleValue > 0) _trackSpeed = a[i + 1].doubleValue;
       ++i;
+    } else if ([a[i] isEqualToString:@"--record"] && i + 1 < a.count) {
+      _launchRecordSeconds = std::max(0.0, a[i + 1].doubleValue);
+      ++i;
+    } else if ([a[i] isEqualToString:@"--stuck-ms"] && i + 1 < a.count) {
+      if (a[i + 1].doubleValue > 0) _stuckMs = a[i + 1].doubleValue;
+      ++i;
+    } else if ([a[i] isEqualToString:@"--console"]) {
+      _launchConsole = YES;
     } else if ([a[i] isEqualToString:@"--scenario"] && i + 1 < a.count) {
       _launchScenario = a[i + 1];
       ++i;
@@ -398,7 +458,7 @@ static constexpr double kStallMs = 34;
   }
   const int w = int(view.drawableWidth), h = int(view.drawableHeight);
   if (!_viewSet && w > 0 && h > 0) {
-    _initialScale = _mesh.fit_scale(w, h);
+    _initialScale = _mapFrame.fit_scale(w, h);
     [self resetView];
     _viewSet = YES;
   }
@@ -413,14 +473,15 @@ static constexpr double kStallMs = 34;
   };
   Vrst_tile_frame tf;
   const std::vector<Vrst_uint64> keys =
-      select_tiles(_tiles, *_loader, _index, _view, w, h, _mesh.center(), ++_frame, kTileBudget, tf);
+      select_tiles(_tiles, *_map, _mapFrame, _view, w, h, ++_frame, kTileBudget, tf);
+  _mapStatus = _map->status();
   const double select_ms = phase();
   _opt.point_px = Vrst_float32(2.5 * px);
   _opt.px_ratio = px;
-  _tiles.draw(_view, w, h, keys, ground_metres_per_point(_view, _mesh.center(), px), _opt);
+  _tiles.draw(_view, w, h, keys, _mapFrame.ground_metres_per_point(_view, px), _opt);
   [self drawTrackWidth:w height:h];
   const double tiles_ms = phase();
-  if (_hasFix) _renderer.draw_position(_view, w, h, _mesh.to_world(_fix), Vrst_float32(16 * px));
+  if (_hasFix) _renderer.draw_position(_view, w, h, _mapFrame.to_world(_fix), Vrst_float32(16 * px));
   const double position_ms = phase();
   if (_showLabels)
     _renderer.draw_labels(_labels.layout(_view, w, h, [self pxPerPoint], _atlas), w, h,
@@ -431,17 +492,25 @@ static constexpr double kStallMs = 34;
   [_debug frameDrawnInMs:(CACurrentMediaTime() - drawStart) * 1000
                  visible:tf.visible
                  missing:tf.missing
-                building:_loader->pending()
+                building:_mapStatus.queued + _mapStatus.working
              uploadBytes:static_cast<NSUInteger>(uploaded - _lastUploaded)];
   const double stats_ms = phase();
   // Keep drawing while tiles are loading so they appear as soon as they are built;
   // otherwise draw only on demand.
-  self.paused = tf.missing == 0 && _loader->pending() == 0;
-  _lastMissing = tf.missing;
+  self.paused = _mapStatus.settled;
   if (_launchScenario) {
     NSString* name = _launchScenario;
     _launchScenario = nil;
     [self startScenario:name];
+  }
+  if (_launchConsole) {
+    _launchConsole = NO;
+    [self onConsole];
+  }
+  if (_launchRecordSeconds > 0) {
+    [self startRecording];
+    _recordStopAt = [self now] + _launchRecordSeconds;
+    _launchRecordSeconds = 0;
   }
   [self logFrame:tf
          start:drawStart
@@ -450,7 +519,7 @@ static constexpr double kStallMs = 34;
   _lastUploaded = uploaded;
 }
 
-/// Writes the "frame" record and one "tile" record per uploaded tile.
+/// Writes the "frame" record and one "tile" record per uploaded piece.
 /// @param tf What select_tiles() did.
 /// @param start CACurrentMediaTime() when the draw callback began.
 /// @param ms Phase times: tile select + uploads, tile draw, position, labels, stats.
@@ -477,11 +546,10 @@ static constexpr double kStallMs = 34;
         .count("upload_bytes", bytes)
         .count("evicted", tf.evicted)
         .num("evict_ms", tf.evict_ms, 2)
-        .count("level", static_cast<Vrst_uint64>(tf.level))
         .count("visible", tf.visible)
         .count("missing", tf.missing)
         .count("fallback", tf.fallback)
-        .count("building", _loader->pending())
+        .count("building", _mapStatus.queued + _mapStatus.working)
         .count("cached", _tiles.size())
         .count("draw_calls", static_cast<Vrst_uint64>(_tiles.draw_calls()))
         .count("labels", _showLabels ? _labels.placed() : 0)
@@ -499,9 +567,7 @@ static constexpr double kStallMs = 34;
   _queuedAt = 0;
   for (const Vrst_tile_upload& u : tf.uploads)
     _log.record("tile", end - _t0)
-        .count("z", static_cast<Vrst_uint64>(u.id.z))
-        .count("x", static_cast<Vrst_uint64>(u.id.x))
-        .count("y", static_cast<Vrst_uint64>(u.id.y))
+        .text("piece", _map->piece_name(u.key))
         .count("bytes", u.bytes)
         .num("build_ms", u.build_ms, 2)
         .count("worker", static_cast<Vrst_uint64>(u.worker))
@@ -510,13 +576,12 @@ static constexpr double kStallMs = 34;
 
 /// Start view: _startCenter at _startMpp, or the whole map if it is outside the data.
 - (void)resetView {
-  _view = _mesh.start_view(_data.graph().bbox(), _startCenter, _startMpp, [self pxPerPoint], [self fbWidth],
-                           [self fbHeight]);
+  _view = _mapFrame.start_view(_startCenter, _startMpp, [self pxPerPoint], [self fbWidth], [self fbHeight]);
 }
 
 /// Whole map, no rotation.
 - (void)fitView {
-  _view = {{0, 0}, _mesh.fit_scale([self fbWidth], [self fbHeight]), 0};
+  _view = {{0, 0}, _mapFrame.fit_scale([self fbWidth], [self fbHeight]), 0};
 }
 
 // --- overlay -------------------------------------------------------------------
@@ -559,10 +624,33 @@ static constexpr double kStallMs = 34;
                                               target:self action:@selector(onDots)];
   _namesItem = [[UIBarButtonItem alloc] initWithTitle:@"Names" style:UIBarButtonItemStylePlain
                                                target:self action:@selector(onNames)];
+  UIBarButtonItem* log = [[UIBarButtonItem alloc] initWithTitle:@"Log" style:UIBarButtonItemStylePlain
+                                                         target:self action:@selector(onConsole)];
+  log.tintColor = UIColor.systemOrangeColor;
   UIBarButtonItem* flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
                                                                         target:nil action:nil];
-  bar.items = @[ fit, flex, start, flex, _roadsItem, flex, _onewayItem, flex, _dotsItem, flex, _namesItem ];
+  bar.items = @[ fit, flex, start, flex, _roadsItem, flex, _onewayItem, flex, _dotsItem, flex, _namesItem, flex, log ];
+  // Seven titles do not fit a 390 pt wide phone at the default 17 pt.
+  NSDictionary* small = @{NSFontAttributeName : [UIFont systemFontOfSize:15]};
+  for (UIBarButtonItem* item in bar.items) {
+    [item setTitleTextAttributes:small forState:UIControlStateNormal];
+    [item setTitleTextAttributes:small forState:UIControlStateHighlighted];
+  }
   [self.view addSubview:bar];
+
+  UIButton* locate = [self roundButton:@"location.fill" color:UIColor.systemBlueColor action:@selector(onLocate)];
+  _recordButton = [self roundButton:@"record.circle" color:UIColor.systemRedColor action:@selector(onRecordButton)];
+  _playButton = [self roundButton:@"play.fill" color:UIColor.systemGreenColor action:@selector(onPlayButton)];
+
+  // Map: the provider's work. User: what the user did. Events: all but the per-frame
+  // and per-touch records. All: everything.
+  _console.filters = @[
+    [VrstConsoleFilter filterNamed:@"Map" only:[NSSet setWithArray:@[ @"build", @"queue", @"load", @"map", @"error" ]]],
+    [VrstConsoleFilter filterNamed:@"User" only:[NSSet setWithArray:@[ @"touch", @"gesture", @"ui" ]]],
+    [VrstConsoleFilter filterNamed:@"Events" except:[NSSet setWithArray:@[ @"frame", @"tile", @"touch", @"queue" ]]],
+    [VrstConsoleFilter filterNamed:@"All" except:[NSSet set]],
+  ];
+  _console.closeHandler = ^{ [weak onConsoleClosed]; };
 
   UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
   [NSLayoutConstraint activateConstraints:@[
@@ -577,6 +665,12 @@ static constexpr double kStallMs = 34;
     [bar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
     [bar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
     [bar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+    [locate.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-12],
+    [locate.bottomAnchor constraintEqualToAnchor:bar.topAnchor constant:-12],
+    [_recordButton.trailingAnchor constraintEqualToAnchor:locate.trailingAnchor],
+    [_recordButton.bottomAnchor constraintEqualToAnchor:locate.topAnchor constant:-12],
+    [_playButton.trailingAnchor constraintEqualToAnchor:locate.trailingAnchor],
+    [_playButton.bottomAnchor constraintEqualToAnchor:_recordButton.topAnchor constant:-12],
   ]];
   [self updateToggles];
   [self updateStats];
@@ -618,14 +712,63 @@ static constexpr double kStallMs = 34;
     return;
   }
   if (!_viewSet) return;
-  const Vrst_float64 lat = inverse_mercator(_mesh.center()).x * kPi / 180;
-  NSString* gps = _hasFix ? [NSString stringWithFormat:@"GPS %.5f, %.5f  +-%.0f m", _fix.lat_e7 * 1e-7,
-                                                       _fix.lon_e7 * 1e-7, _fixAccuracy]
+  const Vrst_float64 lat = inverse_mercator(_mapFrame.center()).lat * kPi / 180;
+  NSString* gps = _hasFix ? [NSString stringWithFormat:@"GPS %.5f, %.5f  +-%.0f m", _fix.lat, _fix.lon, _fixAccuracy]
                           : @"GPS waiting";
-  _stats.text = [NSString stringWithFormat:@" V %u  S %u  A %u  P %zu \n zoom %.2fx  %.2f m/pt  dead ends %zu \n %@ ",
-                 _data.graph().num_vertices(), _data.edges().num_segments(), _data.graph().num_arcs(),
-                 _data.geom().points().size(), _view.scale / _initialScale,
-                 [self pxPerPoint] * std::cos(lat) / _view.scale, _index.dead_ends(), gps];
+  const std::vector<std::string> info = _map->describe();
+  std::vector<std::string> status = status_lines(_mapStatus, *_map);
+  if (_mapStatus.settled) status.resize(1);  // "loading done"; idle workers say nothing
+  std::string work;
+  for (const std::string& line : status) work += " " + line + " \n";
+  NSString* rec = _recorder.recording()
+                     ? [NSString stringWithFormat:@" REC %.0f s \n", _recorder.seconds([self now])]
+                     : @"";
+  _stats.text = [NSString stringWithFormat:@"%@ %s \n zoom %.2fx  %.2f m/pt \n%s %@ ",
+                 rec, info.empty() ? "" : info.front().c_str(), _view.scale / _initialScale,
+                 [self pxPerPoint] * std::cos(lat) / _view.scale, work.c_str(), gps];
+}
+
+/// Toolbar: opens the console above the map (Split), fed from the start of the kept
+/// log; closes it when it is open.
+- (void)onConsole {
+  if (_console.shown) {
+    [_console close];
+    return;
+  }
+  _log.record("ui", [self now]).text("event", "console_open");
+  [_console clearLog];
+  const Vrst_uint64 kept = _log.tail().size();
+  _consoleSeen = _log.appended() - kept;
+  [self feedConsoleAt:[self now]];
+  [_console show:VrstConsoleLayoutSplit];
+}
+
+/// The console closed: logged, so a recording shows when the map got the screen back.
+- (void)onConsoleClosed {
+  _log.record("ui", [self now]).text("event", "console_closed");
+}
+
+/// Gives the console the provider status and the log lines written since the last call.
+/// @param t Seconds since launch.
+- (void)feedConsoleAt:(double)t {
+  _consoleFedAt = t;
+  NSMutableArray<NSString*>* status = [NSMutableArray array];
+  if (_map) {
+    for (const std::string& line : _map->describe()) [status addObject:@(line.c_str())];
+    for (const std::string& line : status_lines(_map->status(), *_map)) [status addObject:@(line.c_str())];
+  } else if (_error) {
+    [status addObject:_error];
+  }
+  [_console setStatusLines:status];
+  const std::deque<std::string>& tail = _log.tail();
+  const Vrst_size fresh = static_cast<Vrst_size>(std::min<Vrst_uint64>(_log.appended() - _consoleSeen, tail.size()));
+  _consoleSeen = _log.appended();
+  NSMutableArray<NSString*>* lines = [NSMutableArray arrayWithCapacity:fresh];
+  for (Vrst_size i = tail.size() - fresh; i < tail.size(); ++i) {
+    NSString* line = @(readable_line(tail[i]).c_str());
+    if (line) [lines addObject:line];  // nil for text that is not UTF-8
+  }
+  [_console appendLogLines:lines];
 }
 
 /// Toolbar: whole map.
@@ -641,6 +784,25 @@ static constexpr double kStallMs = 34;
   [_debug showGesture:@"BUTTON Start"];
   _log.record("ui", [self now]).text("event", "button_start");
   [self resetView];
+  [self redraw];
+}
+
+/// Round button: puts the GPS position in the screen center, keeping zoom and
+/// rotation, and stops following a replayed track (it would pull the camera back).
+- (void)onLocate {
+  if (!_hasFix) {
+    [_debug showGesture:@"BUTTON Locate: GPS waiting"];
+    _log.record("ui", [self now]).text("event", "button_locate").flag("fix", false);
+    return;
+  }
+  [_debug showGesture:@"BUTTON Locate"];
+  _log.record("ui", [self now])
+      .text("event", "button_locate")
+      .flag("fix", true)
+      .num("lat", _fix.lat, 6)
+      .num("lon", _fix.lon, 6);
+  _trackFollow = NO;
+  _view.center = _mapFrame.to_world(_fix);
   [self redraw];
 }
 
@@ -690,41 +852,76 @@ static constexpr double kStallMs = 34;
   if (gapMs > kStallMs) _log.record("stall", now - _t0).num("gap_ms", gapMs, 1);
   if (_scenario && _scenario->running() && _viewSet) [self playScenarioAt:now - _t0];
   if (_trackPlaying && _viewSet) [self playTrackFor:gapMs / 1000];
-  if (_loader) [self logLoaderAt:now - _t0];
+  if (_map) [self logLoaderAt:now - _t0];
+  if (_recorder.recording() && _viewSet) _recorder.sample(now - _t0, _view);
+  [self updateRecordButtons];
+  if (_recordStopAt > 0 && now - _t0 >= _recordStopAt) {
+    _recordStopAt = 0;
+    [self stopRecording];
+  }
+  if (_console.shown && now - _t0 - _consoleFedAt >= kConsoleSeconds) [self feedConsoleAt:now - _t0];
   _log.flush_if_due(now - _t0);
 }
 
-/// Logs the tile loader: every worker start / end since the last tick ("build"), and a
-/// snapshot of the queue and the workers 4 times a second ("queue").
+/// Logs the map provider's work: every event since the last tick ("build": worker
+/// start / done / failed, and "settled" when everything on screen is loaded), and a
+/// snapshot of the queue and the workers 4 times a second while pieces load, plus one
+/// when loading is done ("queue"); idle snapshots would only repeat themselves.
 /// @param t Seconds since launch.
 - (void)logLoaderAt:(double)t {
-  static constexpr const char* kKind[] = {"start", "done", "failed"};
-  for (const Vrst_loader_event& e : _loader->take_events()) {
+  static constexpr const char* kKind[] = {"start", "done", "failed", "settled"};
+  for (const Vrst_work_event& e : _map->take_events()) {
     Vrst_log_record r = _log.record("build", t - e.age_ms / 1000);
-    r.text("event", kKind[static_cast<int>(e.kind)])
-        .count("worker", static_cast<Vrst_uint64>(e.worker))
-        .count("z", static_cast<Vrst_uint64>(e.tile.z))
-        .count("x", static_cast<Vrst_uint64>(e.tile.x))
-        .count("y", static_cast<Vrst_uint64>(e.tile.y));
-    if (e.kind != Vrst_loader_event_kind::Start) r.num("ms", e.build_ms, 2);
+    r.text("event", kKind[static_cast<int>(e.kind)]);
+    if (e.kind == Vrst_work_event_kind::Settled) continue;
+    r.count("worker", static_cast<Vrst_uint64>(e.worker)).text("piece", _map->piece_name(e.key));
+    if (e.kind != Vrst_work_event_kind::Started) r.num("ms", e.ms, 2);
+    if (!e.detail.empty()) r.text("detail", e.detail);
   }
   if (t - _lastQueueLog < 0.25) return;
+  const Vrst_provider_status s = _map->status();
+  if (s.settled && _queueLoggedSettled) return;
   _lastQueueLog = t;
-  const Vrst_loader_status s = _loader->status();
+  _queueLoggedSettled = s.settled;
   Vrst_log_record r = _log.record("queue", t);
-  r.count("queued", s.queued)
-      .count("building", s.building)
-      .count("done", s.done)
-      .count("requested", s.requested)
-      .count("dropped", s.dropped)
-      .count("built", s.built)
-      .count("failed", s.failed);
+  r.count("threads", s.threads)
+      .count("queued", s.queued)
+      .count("building", s.working)
+      .count("done", s.ready)
+      .count("dropped", s.dropped_total)
+      .count("built", s.done_total)
+      .count("failed", s.failed_total)
+      .count("missing", s.missing)
+      .flag("settled", s.settled);
   for (Vrst_size w = 0; w < s.workers.size(); ++w) {
-    const Vrst_worker_state& ws = s.workers[w];
+    const Vrst_worker_info& ws = s.workers[w];
     const std::string key = "w" + std::to_string(w);
-    r.text(key, ws.busy ? std::to_string(ws.tile.z) + "/" + std::to_string(ws.tile.x) + "/" + std::to_string(ws.tile.y)
-                        : "idle");
-    if (ws.busy) r.num(key + "_ms", ws.busy_ms, 0);
+    r.text(key, ws.busy ? _map->piece_name(ws.key) : "idle");
+    if (ws.busy) r.num(key + "_ms", ws.busy_ms, 0).text(key + "_step", ws.step);
+  }
+  [self logStuckWorkers:s at:t];
+}
+
+/// Writes a "stuck" record for each worker that has been on one piece longer than
+/// kStuckMs: the piece, its step, the slowest area so far and, when it is triangulating,
+/// the exact input ring, so the build can be repeated on the Mac. Once per worker,
+/// piece and area; at most kMaxStuckDumps per session.
+/// @param s Provider status.
+/// @param t Seconds since launch.
+- (void)logStuckWorkers:(const Vrst_provider_status&)s at:(double)t {
+  for (Vrst_size w = 0; w < s.workers.size(); ++w) {
+    const Vrst_worker_info& ws = s.workers[w];
+    if (!ws.busy || ws.busy_ms < _stuckMs || _stuckDumped.size() >= kMaxStuckDumps) continue;
+    // The step text without its running time, so one area is dumped once.
+    const std::string step = ws.step.substr(0, ws.step.find(" pts "));
+    const std::string id = std::to_string(w) + " " + _map->piece_name(ws.key) + " " + step;
+    if (!_stuckDumped.insert(id).second) continue;
+    Vrst_log_record r = _log.record("stuck", t);
+    r.count("worker", w).text("piece", _map->piece_name(ws.key)).num("busy_ms", ws.busy_ms, 0);
+    for (const std::string& line : _map->work_dump(static_cast<int>(w))) {
+      const Vrst_size colon = line.find(": ");
+      if (colon != std::string::npos) r.text(line.substr(0, colon), line.substr(colon + 2));
+    }
   }
 }
 
@@ -764,7 +961,8 @@ static constexpr double kStallMs = 34;
                                            handler:^(UIAlertAction*) { [weak stopScenario]; }]];
   } else {
     for (NSString* name in [self scenarioNames])
-      [menu addAction:[UIAlertAction actionWithTitle:[@"Run test: " stringByAppendingString:name]
+      [menu addAction:[UIAlertAction actionWithTitle:[([name hasPrefix:kRecordingPrefix] ? @"Play recording: " : @"Run test: ")
+                                                         stringByAppendingString:name]
                                                style:UIAlertActionStyleDefault
                                              handler:^(UIAlertAction*) { [weak startScenario:name]; }]];
   }
@@ -832,7 +1030,7 @@ static constexpr double kStallMs = 34;
   _trackFollow = YES;
   _trackBannerAt = 0;
   _startCenter = _track.points().front();  // used by the first draw's start view
-  _view.center = _mesh.to_world(_track.points().front());
+  _view.center = _mapFrame.to_world(_track.points().front());
   _log.record("track", [self now])
       .text("event", "play")
       .text("name", _trackName.UTF8String)
@@ -849,7 +1047,7 @@ static constexpr double kStallMs = 34;
 - (void)playTrackFor:(double)seconds {
   _trackTime = std::min(_trackTime + std::min(seconds, 0.25) * _trackSpeed, _track.duration());
   const Vrst_track_sample ts = _track.sample(_trackTime);
-  if (_trackFollow) _view.center = _mesh.to_world(ts.pos);
+  if (_trackFollow) _view.center = _mapFrame.to_world(ts.pos);
   const double t = [self now];
   if (t - _trackBannerAt > 1) {
     _trackBannerAt = t;
@@ -873,12 +1071,12 @@ static constexpr double kStallMs = 34;
   if (_trackDirty) {
     std::vector<Vrst_vec2d> world;
     world.reserve(_track.points().size());
-    for (const Vrst_coord& c : _track.points()) world.push_back(_mesh.to_world(c));
+    for (const Vrst_latlon& c : _track.points()) world.push_back(_mapFrame.to_world(c));
     _renderer.set_track(world);
     _trackDirty = NO;
   }
   const Vrst_track_sample ts = _track.sample(_trackTime);
-  _renderer.draw_track(_view, w, h, ts.index + 1, _mesh.to_world(ts.pos),
+  _renderer.draw_track(_view, w, h, ts.index + 1, _mapFrame.to_world(ts.pos),
                        static_cast<Vrst_float32>(14 * [self pxPerPoint]));
 }
 
@@ -959,6 +1157,136 @@ static constexpr double kStallMs = 34;
   return [[self scenarioDir] stringByAppendingPathComponent:name];
 }
 
+/// A round button on the map, added to the view; the caller places it.
+/// @param symbol SF Symbol name.
+/// @param color Icon color.
+/// @param action Selector called on tap.
+/// @return The button, kRoundButtonSize wide and high.
+- (UIButton*)roundButton:(NSString*)symbol color:(UIColor*)color action:(SEL)action {
+  UIButton* b = [UIButton buttonWithType:UIButtonTypeSystem];
+  b.translatesAutoresizingMaskIntoConstraints = NO;
+  [b setImage:[UIImage systemImageNamed:symbol] forState:UIControlStateNormal];
+  b.tintColor = color;
+  b.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.8];
+  b.layer.cornerRadius = kRoundButtonSize / 2;
+  [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+  [self.view addSubview:b];
+  [NSLayoutConstraint activateConstraints:@[
+    [b.widthAnchor constraintEqualToConstant:kRoundButtonSize],
+    [b.heightAnchor constraintEqualToConstant:kRoundButtonSize],
+  ]];
+  return b;
+}
+
+/// Shows on the record and play buttons what a tap does now: record, or stop and save;
+/// play, or stop playing. Cheap when nothing changed (called on every display tick).
+- (void)updateRecordButtons {
+  NSString* recIcon = _recorder.recording() ? @"stop.circle.fill" : @"record.circle";
+  NSString* playIcon = _scenario && _scenario->running() ? @"stop.fill" : @"play.fill";
+  if (![_recordButton.accessibilityIdentifier isEqualToString:recIcon]) {
+    [_recordButton setImage:[UIImage systemImageNamed:recIcon] forState:UIControlStateNormal];
+    _recordButton.accessibilityIdentifier = recIcon;
+  }
+  if (![_playButton.accessibilityIdentifier isEqualToString:playIcon]) {
+    [_playButton setImage:[UIImage systemImageNamed:playIcon] forState:UIControlStateNormal];
+    _playButton.accessibilityIdentifier = playIcon;
+  }
+}
+
+/// Record button: starts recording, or stops and saves the recording.
+- (void)onRecordButton {
+  if (_recorder.recording()) {
+    [self stopRecording];
+  } else {
+    [self startRecording];
+  }
+}
+
+/// Play button: while a recording or test plays, stops it; otherwise offers the saved
+/// recordings, newest first (each opens chooseRecording:).
+- (void)onPlayButton {
+  if (_scenario && _scenario->running()) {
+    [self stopScenario];
+    return;
+  }
+  NSMutableArray<NSString*>* recs = [NSMutableArray array];
+  for (NSString* name in [self scenarioNames].reverseObjectEnumerator)
+    if ([name hasPrefix:kRecordingPrefix]) [recs addObject:name];
+  if (recs.count == 0) {
+    [_debug showGesture:@"No recordings yet: tap the red button"];
+    return;
+  }
+  UIAlertController* menu = [UIAlertController alertControllerWithTitle:@"Play recording" message:nil
+                                                         preferredStyle:UIAlertControllerStyleActionSheet];
+  __weak VrstMapController* weak = self;
+  for (NSString* name in recs)
+    [menu addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction*) { [weak chooseRecording:name]; }]];
+  [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+  menu.popoverPresentationController.sourceView = _playButton;
+  [self presentViewController:menu animated:YES completion:nil];
+}
+
+/// What to do with one recording: play it or share the file.
+/// @param name Recording file name in Documents/scenarios.
+- (void)chooseRecording:(NSString*)name {
+  UIAlertController* menu = [UIAlertController alertControllerWithTitle:name message:nil
+                                                         preferredStyle:UIAlertControllerStyleActionSheet];
+  __weak VrstMapController* weak = self;
+  [menu addAction:[UIAlertAction actionWithTitle:@"Play" style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction*) { [weak startScenario:name]; }]];
+  [menu addAction:[UIAlertAction actionWithTitle:@"Share..." style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction*) { [weak shareRecording:name]; }]];
+  [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+  menu.popoverPresentationController.sourceView = _playButton;
+  [self presentViewController:menu animated:YES completion:nil];
+}
+
+/// Opens the share sheet (AirDrop, Mail, Messages, Files ...) with a recording file.
+/// @param name Recording file name in Documents/scenarios.
+- (void)shareRecording:(NSString*)name {
+  _log.record("ui", [self now]).text("event", "share_recording").text("file", name.UTF8String);
+  NSURL* url = [NSURL fileURLWithPath:[[self scenarioDir] stringByAppendingPathComponent:name]];
+  UIActivityViewController* share = [[UIActivityViewController alloc] initWithActivityItems:@[ url ]
+                                                                      applicationActivities:nil];
+  share.popoverPresentationController.sourceView = _playButton;
+  [self presentViewController:share animated:YES completion:nil];
+}
+
+/// Starts recording the camera path (whatever moves the map); a playing test or
+/// recording is stopped first, so only the user's own moves are recorded.
+- (void)startRecording {
+  if (!_viewSet || _recorder.recording()) return;
+  if (_scenario && _scenario->running()) [self stopScenario];
+  _recorder.start([self now], _view, _mapFrame.center(), [self pxPerPoint]);
+  _log.record("ui", [self now]).text("event", "record_start");
+  [_debug showGesture:@"REC started"];
+  [self redraw];
+}
+
+/// Ends the recording and saves it as `rec-<YYYYMMDD-HHMMSS>.txt` in Documents/scenarios,
+/// where the play button offers it. Does nothing when not recording.
+- (void)stopRecording {
+  if (!_recorder.recording()) return;
+  const double seconds = _recorder.seconds([self now]);
+  const std::string text = _recorder.finish([self now]);
+  NSDateFormatter* fmt = [[NSDateFormatter alloc] init];
+  fmt.dateFormat = @"yyyyMMdd-HHmmss";
+  NSString* name = [NSString stringWithFormat:@"%@%@.txt", kRecordingPrefix, [fmt stringFromDate:NSDate.date]];
+  NSString* dir = [self scenarioDir];
+  [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+  NSString* body = [[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSUTF8StringEncoding];
+  const BOOL saved = [body writeToFile:[dir stringByAppendingPathComponent:name] atomically:YES
+                              encoding:NSUTF8StringEncoding error:nil];
+  _log.record("ui", [self now])
+      .text("event", "record_stop")
+      .text("file", name.UTF8String)
+      .num("seconds", seconds, 1)
+      .flag("saved", saved);
+  [_debug showGesture:saved ? [NSString stringWithFormat:@"SAVED %@ (%.0f s)", name, seconds] : @"REC not saved"];
+  [self redraw];
+}
+
 /// Starts a scenario: "standard", a file in the scenario directory, or a full path.
 /// A bad file is reported on screen and in the log, and nothing starts.
 /// @param name Scenario name.
@@ -1022,10 +1350,11 @@ static constexpr double kStallMs = 34;
   f.px_per_point = [self pxPerPoint];
   f.min_scale = _initialScale * 0.1;  // same limits as the gestures (zoomBy:at:)
   f.max_scale = 2000.0;
-  f.tiles_ready = _lastMissing == 0;
+  f.tiles_ready = _mapStatus.settled;
+  f.world_origin = _mapFrame.center();  // view steps are in degrees
   const Vrst_scenario_tick tick = _scenario->advance(t, _view, f);
   if (tick.jump)
-    _view = _mesh.start_view(_data.graph().bbox(), tick.jump->at, tick.jump->mpp, f.px_per_point, f.fb_w, f.fb_h);
+    _view = _mapFrame.start_view(tick.jump->at, tick.jump->mpp, f.px_per_point, f.fb_w, f.fb_h);
   if (tick.step_changed) [self logScenarioStep];
   if (tick.finished) {
     _loggedSteps = _scenario->steps().size();
@@ -1101,7 +1430,7 @@ static constexpr double kStallMs = 34;
   (void)manager;
   CLLocation* l = locations.lastObject;
   if (!l || l.horizontalAccuracy < 0) return;  // negative accuracy = invalid fix
-  _fix = {Vrst_int32(std::lround(l.coordinate.latitude * 1e7)), Vrst_int32(std::lround(l.coordinate.longitude * 1e7))};
+  _fix = {l.coordinate.latitude, l.coordinate.longitude};
   _fixAccuracy = l.horizontalAccuracy;
   _hasFix = YES;
   [self redraw];
@@ -1243,7 +1572,7 @@ static constexpr double kStallMs = 34;
 
 @end
 
-/// Application delegate: one window with the map controller.
+/// Application delegate: one window; VrstRootController holds the map and the console.
 @interface VrstAppDelegate : UIResponder <UIApplicationDelegate>
 /// The app's only window.
 @property(strong, nonatomic) UIWindow* window;
@@ -1259,7 +1588,10 @@ static constexpr double kStallMs = 34;
   (void)application;
   (void)options;
   self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-  self.window.rootViewController = [[VrstMapController alloc] init];
+  VrstDebugConsole* console = [[VrstDebugConsole alloc] initWithFrame:CGRectZero];
+  VrstMapController* map = [[VrstMapController alloc] init];
+  map.console = console;
+  self.window.rootViewController = [[VrstRootController alloc] initWithMap:map console:console];
   [self.window makeKeyAndVisible];
   return YES;
 }

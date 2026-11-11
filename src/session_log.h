@@ -6,9 +6,11 @@
 /// last write older than kFlushSeconds, so logging never waits for the disk inside a frame.
 /// Every record starts with its type and `t`, seconds since the run started; the caller
 /// passes `t`, so the log, the on-screen clock and the touch timestamps share one clock.
+/// The last kTailLines records also stay in memory (tail()), for an on-screen console.
 /// Not thread-safe: use it from one thread (the main thread on iOS).
 #pragma once
 
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -75,6 +77,8 @@ class Vrst_session_log {
  public:
   /// Seconds between two writes to the file.
   static constexpr Vrst_float64 kFlushSeconds = 1.0;
+  /// Records kept in memory for tail().
+  static constexpr Vrst_size kTailLines = 2000;
 
   Vrst_session_log() = default;  ///< Closed; open() starts a session.
   /// Writes what is left and closes the file.
@@ -114,6 +118,14 @@ class Vrst_session_log {
   /// @return Path of the current session file; empty when not open.
   const std::filesystem::path& path() const { return m_path; }
 
+  /// The last kTailLines records as JSON lines, oldest first; kept also when no file is open.
+  /// @return Lines.
+  const std::deque<std::string>& tail() const { return m_tail; }
+  /// Records appended since the start. A reader that saw `n` finds the new ones as the
+  /// last `appended() - n` of tail() (all of tail() when more than that were added).
+  /// @return Count.
+  Vrst_uint64 appended() const { return m_appended; }
+
  private:
   friend class Vrst_log_record;
   /// Appends one finished line to the buffer.
@@ -130,6 +142,16 @@ class Vrst_session_log {
   std::string m_buffer;
   /// `t` of the last write.
   Vrst_float64 m_flushed_t = 0;
+  /// The last kTailLines lines.
+  std::deque<std::string> m_tail;
+  /// Lines appended since the start.
+  Vrst_uint64 m_appended = 0;
 };
+
+/// A log line made easy to read on a small screen: `{"type":"build","t":1.5,"ms":3}`
+/// becomes `1.5 build ms=3` (no braces or quotes, `key=value` separated by spaces).
+/// @param json One line from Vrst_session_log::tail().
+/// @return Readable text.
+std::string readable_line(std::string_view json);
 
 }  // namespace nav

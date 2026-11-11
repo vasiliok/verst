@@ -12,6 +12,10 @@
 ///     zoom_in / zoom_out            2x / 0.5x at once (double tap / two-finger tap)
 ///     rotate <degrees> <s>          rotate around the screen center, counter-clockwise
 ///     goto <lat> <lon> <m/pt>       jump to a place and zoom (the front end applies it)
+///     view <s> <lat> <lon> <m/pt> <deg>  move straight to this camera in s seconds: screen
+///                                   center, ground metres per point, rotation (counter-
+///                                   clockwise); 0 s = at once. Vrst_activity_recorder
+///                                   writes these.
 ///
 /// Motion follows the clock, not the frame count: a slow phone shows fewer frames of the
 /// same motion, which is exactly what a before/after comparison needs.
@@ -22,13 +26,12 @@
 #include <string_view>
 #include <vector>
 
-#include "format.h"
 #include "map_scene.h"
 
 namespace nav {
 
 /// What a scenario step does.
-enum class Vrst_step_kind { Wait, WaitTiles, Pan, Fling, Zoom, Rotate, Goto };
+enum class Vrst_step_kind { Wait, WaitTiles, Pan, Fling, Zoom, Rotate, Goto, View };
 
 /// One parsed scenario line.
 struct Vrst_scenario_step {
@@ -36,9 +39,9 @@ struct Vrst_scenario_step {
   Vrst_float64 seconds = 0;                    ///< Duration; for WaitTiles the longest wait.
   Vrst_vec2d pan{};                            ///< Pan, Fling: total move in screen points.
   Vrst_float64 factor = 1;                     ///< Zoom: total scale factor.
-  Vrst_float64 degrees = 0;                    ///< Rotate: total angle, counter-clockwise.
-  Vrst_coord at{};                             ///< Goto: place.
-  Vrst_float64 mpp = 0;                        ///< Goto: ground metres per screen point.
+  Vrst_float64 degrees = 0;                    ///< Rotate: total angle; View: rotation; counter-clockwise.
+  Vrst_latlon at{};                             ///< Goto, View: place (View: screen center).
+  Vrst_float64 mpp = 0;                        ///< Goto, View: ground metres per screen point.
   std::string text;                            ///< Source line, for the overlay and the log.
 };
 
@@ -50,6 +53,7 @@ struct Vrst_scenario_frame {
   Vrst_float64 min_scale = 0;       ///< Zoom-out limit (Vrst_view::scale).
   Vrst_float64 max_scale = 1e9;     ///< Zoom-in limit (Vrst_view::scale).
   bool tiles_ready = true;          ///< No visible tile is missing.
+  Vrst_vec2d world_origin{};        ///< Absolute Mercator point of world (0, 0) (Vrst_map_frame::center()).
 };
 
 /// Result of one Vrst_scenario::advance().
@@ -130,7 +134,14 @@ class Vrst_scenario {
   /// @param f Screen and limits.
   static void apply(const Vrst_scenario_step& s, Vrst_float64 from, Vrst_float64 to, Vrst_view& v,
                     const Vrst_scenario_frame& f);
-  /// Eased progress of a step: smooth start and stop, or fast start for a fling.
+  /// Moves the camera part of the way to a View step's camera.
+  /// @param s The View step.
+  /// @param k Part of the remaining way, 0..1; 1 = exactly there.
+  /// @param v Camera, changed.
+  /// @param f Screen and world origin.
+  static void move_toward(const Vrst_scenario_step& s, Vrst_float64 k, Vrst_view& v, const Vrst_scenario_frame& f);
+  /// Eased progress of a step: smooth start and stop, fast start for a fling, linear
+  /// for View (recorded motion already has its own speed).
   /// @param s The step.
   /// @param x Linear time progress, 0..1.
   /// @return Motion progress, 0..1.

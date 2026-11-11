@@ -33,7 +33,7 @@ set_source_files_properties(${_scenarios} PROPERTIES MACOSX_PACKAGE_LOCATION sce
 set(_assets "${CMAKE_CURRENT_SOURCE_DIR}/Assets.xcassets")
 set_source_files_properties(${_assets} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 
-add_executable(verst_ios MACOSX_BUNDLE main.mm debug_overlay.mm ${_map_files} ${VRST_FONT_FILES} ${_scenarios}
+add_executable(verst_ios MACOSX_BUNDLE main.mm debug_console.mm debug_overlay.mm root_controller.mm ${_map_files} ${VRST_FONT_FILES} ${_scenarios}
   ${_assets})
 target_link_libraries(verst_ios PRIVATE vrst_render
   "-framework Foundation" "-framework CoreGraphics" "-framework UIKit" "-framework GLKit"

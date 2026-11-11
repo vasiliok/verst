@@ -7,18 +7,17 @@
 
 namespace nav {
 
-void Vrst_map_labels::build(const Vrst_nav_data& d, const Vrst_map_mesh& mesh) {
-  const std::span<const Vrst_place> places = d.names().places();
+void Vrst_map_labels::build(const std::vector<Vrst_map_place>& places, const Vrst_map_frame& frame) {
   m_kind.clear();
   m_world.clear();
   m_cos_lat.clear();
   m_text.clear();
   m_text_first.assign(1, 0);
-  for (const Vrst_place& p : places) {
-    m_kind.push_back(p.kind);
-    m_world.push_back(mesh.to_world(p.pos));
-    m_cos_lat.push_back(std::cos(p.pos.lat_e7 * 1e-7 * kPi / 180));
-    const std::vector<char32_t> t = decode_utf8(d.names().get(p.name_id));
+  for (const Vrst_map_place& p : places) {
+    m_kind.push_back(static_cast<Vrst_uint8>(p.kind));
+    m_world.push_back(frame.to_world(p.pos));
+    m_cos_lat.push_back(std::cos(p.pos.lat * kPi / 180));
+    const std::vector<char32_t> t = decode_utf8(p.name);
     m_text.insert(m_text.end(), t.begin(), t.end());
     m_text_first.push_back(static_cast<Vrst_uint32>(m_text.size()));
   }

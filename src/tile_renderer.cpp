@@ -1,5 +1,5 @@
 /// @file
-/// Vrst_tile_renderer: tile upload, cache and drawing; select_tiles().
+/// Vrst_tile_renderer: piece upload, cache and drawing; select_tiles().
 /// Declarations and documentation are in tile_renderer.h.
 #include "tile_renderer.h"
 
@@ -39,15 +39,15 @@ void Vrst_tile_renderer::init() {
   Vrst_map_renderer::check_error("tile renderer init");
 }
 
-void Vrst_tile_renderer::add(const Vrst_tile_data& t, Vrst_uint64 frame) {
-  const Vrst_uint64 key = tile_key(t.id);
+void Vrst_tile_renderer::add(const Vrst_map_piece& t, Vrst_vec2d world_origin, Vrst_uint64 frame) {
+  const Vrst_uint64 key = t.key;
   if (const auto it = m_tiles.find(key); it != m_tiles.end()) {
     release(it->second);
     m_tiles.erase(it);
   }
   Vrst_gpu_tile g{};
-  g.id = t.id;
-  g.origin = t.origin;
+  g.origin = {t.bounds.lo.x - world_origin.x, t.bounds.lo.y - world_origin.y};
+  g.size = {t.bounds.hi.x - t.bounds.lo.x, t.bounds.hi.y - t.bounds.lo.y};
   g.last_used = frame;
   std::copy_n(t.fill_ranges, kAreaKindCount, g.fill_ranges);
   for (int l = 0; l < kTileLayerCount; ++l) std::copy_n(t.line_ranges[l], kLineStyleCount, g.line_ranges[l]);
@@ -70,8 +70,8 @@ void Vrst_tile_renderer::add(const Vrst_tile_data& t, Vrst_uint64 frame) {
   m_tiles.emplace(key, g);
 }
 
-bool Vrst_tile_renderer::use(Vrst_tile_id t, Vrst_uint64 frame) {
-  const auto it = m_tiles.find(tile_key(t));
+bool Vrst_tile_renderer::use(Vrst_uint64 key, Vrst_uint64 frame) {
+  const auto it = m_tiles.find(key);
   if (it == m_tiles.end()) return false;
   it->second.last_used = frame;
   return true;
@@ -255,9 +255,9 @@ void Vrst_tile_renderer::draw_borders(const Vrst_view& v, int fb_w, int fb_h,
                                       Vrst_float64 px_ratio) {
   std::vector<Vrst_line_instance> edges;
   for (const Vrst_gpu_tile& t : tiles) {
-    const auto s = static_cast<Vrst_float32>(tile_side(t.id.z));
+    const auto sx = static_cast<Vrst_float32>(t.size.x), sy = static_cast<Vrst_float32>(t.size.y);
     const auto ox = static_cast<Vrst_float32>(t.origin.x), oy = static_cast<Vrst_float32>(t.origin.y);
-    const Vrst_float32 c[5][2] = {{0, 0}, {s, 0}, {s, s}, {0, s}, {0, 0}};
+    const Vrst_float32 c[5][2] = {{0, 0}, {sx, 0}, {sx, sy}, {0, sy}, {0, 0}};
     for (int i = 0; i < 4; ++i)
       edges.push_back({ox + c[i][0], oy + c[i][1], ox + c[i + 1][0], oy + c[i + 1][1], 0, kStyleTileBorder});
   }
@@ -299,51 +299,45 @@ void Vrst_tile_renderer::release(Vrst_gpu_tile& g) {
   m_bytes -= g.bytes;
 }
 
-std::vector<Vrst_uint64> select_tiles(Vrst_tile_renderer& r, Vrst_tile_loader& loader, const Vrst_tile_index& index,
-                                      const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d map_center, Vrst_uint64 frame,
-                                      Vrst_size budget, Vrst_tile_frame& stats) {
-  Vrst_tile_frame f;
+std::vector<Vrst_uint64> select_tiles(Vrst_tile_renderer& r, Vrst_map_provider& map, const Vrst_map_frame& f,
+                                      const Vrst_view& v, int fb_w, int fb_h, Vrst_uint64 frame, Vrst_size budget,
+                                      Vrst_tile_frame& stats) {
+  Vrst_tile_frame out;
   using Vrst_clock = std::chrono::steady_clock;
   const auto ms_since = [](Vrst_clock::time_point a) {
     return std::chrono::duration<Vrst_float64, std::milli>(Vrst_clock::now() - a).count();
   };
-  for (const std::unique_ptr<Vrst_tile_data>& t : loader.take(8)) {
+  for (const Vrst_map_piece& p : map.take_ready(8)) {
     const Vrst_uint64 before = r.uploaded();
     const Vrst_clock::time_point start = Vrst_clock::now();
-    r.add(*t, frame);
-    f.uploads.push_back({t->id, static_cast<Vrst_size>(r.uploaded() - before), t->build_ms, t->worker, ms_since(start)});
+    r.add(p, f.center(), frame);
+    out.uploads.push_back({p.key, static_cast<Vrst_size>(r.uploaded() - before), p.build_ms, p.worker, ms_since(start)});
   }
-  f.level = level_for(1.0 / v.scale);
-  std::vector<Vrst_tile_id> missing;
+  const std::vector<Vrst_piece_need> needs =
+      map.show(f.area_of(v, fb_w, fb_h), [&r](Vrst_uint64 key) { return r.has(key); });
   std::vector<Vrst_uint64> fine, coarse;
   std::unordered_set<Vrst_uint64> drawn;
-  for (const Vrst_tile_id& t : visible_tiles(v, fb_w, fb_h, map_center, kTileLevels[f.level].z)) {
-    if (!index.contains(t)) continue;  // nothing there
-    ++f.visible;
-    if (r.use(t, frame)) {
-      if (drawn.insert(tile_key(t)).second) fine.push_back(tile_key(t));
+  for (const Vrst_piece_need& n : needs) {
+    if (r.use(n.key, frame)) {
+      if (drawn.insert(n.key).second) fine.push_back(n.key);
       continue;
     }
-    missing.push_back(t);
-    for (int l = f.level + 1; l < kTileLevelCount; ++l) {
-      const int shift = t.z - kTileLevels[l].z;
-      const Vrst_tile_id p{kTileLevels[l].z, t.x >> shift, t.y >> shift};
-      if (r.use(p, frame)) {
-        if (drawn.insert(tile_key(p)).second) coarse.push_back(tile_key(p));
+    ++out.missing;
+    for (const Vrst_uint64 k : n.fallbacks)
+      if (r.use(k, frame)) {
+        if (drawn.insert(k).second) coarse.push_back(k);
         break;
       }
-    }
   }
-  f.missing = missing.size();
-  f.fallback = coarse.size();
-  loader.request(missing);
+  out.visible = needs.size();
+  out.fallback = coarse.size();
   const Vrst_size cached = r.size();
   const Vrst_clock::time_point evict_start = Vrst_clock::now();
   r.evict(budget, frame);
-  f.evict_ms = ms_since(evict_start);
-  f.evicted = cached - r.size();
-  stats = std::move(f);
-  coarse.insert(coarse.end(), fine.begin(), fine.end());  // fallbacks under the fine tiles
+  out.evict_ms = ms_since(evict_start);
+  out.evicted = cached - r.size();
+  stats = std::move(out);
+  coarse.insert(coarse.end(), fine.begin(), fine.end());  // fallbacks under the fine pieces
   return coarse;
 }
 

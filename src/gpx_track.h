@@ -16,7 +16,8 @@
 #include <string_view>
 #include <vector>
 
-#include "format.h"
+#include "geo.h"
+#include "vrst_types.h"
 
 namespace nav {
 
@@ -37,7 +38,7 @@ inline std::optional<Vrst_float64> parse_float64(std::string_view text) {
 /// Interpolated state of a track at one playback time (Vrst_gpx_track::sample()).
 struct Vrst_track_sample {
   /// Position, linearly interpolated between the two surrounding track points.
-  Vrst_coord pos;
+  Vrst_latlon pos;
   /// Index of the last track point at or before the time; the drawn "already driven"
   /// part of the track ends there.
   Vrst_size index;
@@ -82,14 +83,14 @@ class Vrst_gpx_track {
   /// @param a First point.
   /// @param b Second point.
   /// @return Metres.
-  static Vrst_float64 distance_m(Vrst_coord a, Vrst_coord b);
+  static Vrst_float64 distance_m(Vrst_latlon a, Vrst_latlon b);
 
   /// Time of the last point.
   /// @return Seconds since the first point.
   Vrst_float64 duration() const { return m_times.empty() ? 0 : m_times.back(); }
   /// @copydoc m_points
   /// @return Points in file order.
-  const std::vector<Vrst_coord>& points() const { return m_points; }
+  const std::vector<Vrst_latlon>& points() const { return m_points; }
   /// @copydoc m_times
   /// @return Seconds, same index as points().
   const std::vector<Vrst_float64>& times() const { return m_times; }
@@ -119,7 +120,7 @@ class Vrst_gpx_track {
 
   /// Track points in file order, segments joined. Fixed point like the map data, so a
   /// point is converted to the map's world coordinates the same way as a road point.
-  std::vector<Vrst_coord> m_points;
+  std::vector<Vrst_latlon> m_points;
   /// Seconds since the first point, never decreasing. The timing is what makes the
   /// replay realistic: stops at junctions and slow corners keep the dot in place.
   std::vector<Vrst_float64> m_times;

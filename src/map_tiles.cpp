@@ -10,9 +10,25 @@
 
 #include <mapbox/earcut.hpp>
 
+#include "geometry.h"
+
 namespace nav {
 
 namespace {
+
+/// Two outline points closer than this part of the level tolerance are the same point
+/// (1e-3: 25 cm at zoom 10); clipping leaves such pairs on the tile border.
+constexpr Vrst_float64 kSamePointPart = 1e-3;
+
+/// Whether every point lies in a box.
+/// @param pts Points.
+/// @param box Box.
+/// @return true when no point is outside.
+bool inside(const std::vector<Vrst_vec2d>& pts, const Vrst_box2d& box) {
+  return std::ranges::all_of(pts, [&box](const Vrst_vec2d& p) {
+    return p.x >= box.lo.x && p.x <= box.hi.x && p.y >= box.lo.y && p.y <= box.hi.y;
+  });
+}
 
 /// Draw layer of a road or a line from its tunnel and bridge flags.
 /// @param tunnel tunnel=* is set.
@@ -97,11 +113,79 @@ Vrst_box2d Vrst_tile_index::box_of(std::span<const Vrst_coord> pts) {
   return {mercator(lo), mercator(hi)};
 }
 
-std::unique_ptr<Vrst_tile_data> Vrst_tile_builder::build(Vrst_tile_id id) const {
-  auto out = std::make_unique<Vrst_tile_data>();
-  out->id = id;
+void Vrst_build_progress::stage(Vrst_build_stage stage, Vrst_size total) {
+  m_done.store(0, std::memory_order_relaxed);
+  m_total.store(total, std::memory_order_relaxed);
+  m_step.store(static_cast<int>(Vrst_area_step::None), std::memory_order_relaxed);
+  m_stage.store(static_cast<int>(stage), std::memory_order_relaxed);
+}
+
+void Vrst_build_progress::area(Vrst_uint32 id, int kind, Vrst_size raw_points) {
+  m_area.store(id, std::memory_order_relaxed);
+  m_kind.store(kind, std::memory_order_relaxed);
+  m_raw.store(raw_points, std::memory_order_relaxed);
+  m_simplified.store(0, std::memory_order_relaxed);
+  m_clipped.store(0, std::memory_order_relaxed);
+  m_step.store(static_cast<int>(Vrst_area_step::None), std::memory_order_relaxed);
+  m_area_start_ns.store(now_ns(), std::memory_order_relaxed);
+}
+
+void Vrst_build_progress::area_step(Vrst_area_step step, Vrst_size points) {
+  // The points the area has when a step starts are the result of the step before.
+  if (step == Vrst_area_step::Clip) m_simplified.store(points, std::memory_order_relaxed);
+  if (step == Vrst_area_step::Triangulate) m_clipped.store(points, std::memory_order_relaxed);
+  m_step.store(static_cast<int>(step), std::memory_order_relaxed);
+}
+
+void Vrst_build_progress::triangulating(const std::vector<Vrst_vec2d>& ring) {
+  const std::scoped_lock lock(m_mutex);
+  m_ring = std::cref(ring);
+}
+
+void Vrst_build_progress::triangulated() {
+  const std::scoped_lock lock(m_mutex);
+  m_ring.reset();
+}
+
+void Vrst_build_progress::area_done() {
+  const Vrst_float64 ms = static_cast<Vrst_float64>(now_ns() - m_area_start_ns.load(std::memory_order_relaxed)) / 1e6;
+  const std::scoped_lock lock(m_mutex);
+  if (ms <= m_slowest.ms) return;
+  m_slowest = {m_area.load(std::memory_order_relaxed), m_kind.load(std::memory_order_relaxed),
+               m_raw.load(std::memory_order_relaxed),  m_simplified.load(std::memory_order_relaxed),
+               m_clipped.load(std::memory_order_relaxed), ms};
+}
+
+void Vrst_build_progress::reset() {
+  stage(Vrst_build_stage::Idle, 0);
+  const std::scoped_lock lock(m_mutex);
+  m_ring.reset();
+  m_slowest = {};
+}
+
+Vrst_build_snapshot Vrst_build_progress::snapshot(bool with_ring) const {
+  Vrst_build_snapshot s;
+  s.stage = static_cast<Vrst_build_stage>(m_stage.load(std::memory_order_relaxed));
+  s.done = m_done.load(std::memory_order_relaxed);
+  s.total = m_total.load(std::memory_order_relaxed);
+  s.step = static_cast<Vrst_area_step>(m_step.load(std::memory_order_relaxed));
+  s.area = {m_area.load(std::memory_order_relaxed), m_kind.load(std::memory_order_relaxed),
+            m_raw.load(std::memory_order_relaxed),  m_simplified.load(std::memory_order_relaxed),
+            m_clipped.load(std::memory_order_relaxed),
+            static_cast<Vrst_float64>(now_ns() - m_area_start_ns.load(std::memory_order_relaxed)) / 1e6};
+  const std::scoped_lock lock(m_mutex);
+  s.slowest = m_slowest;
+  // The worker holds no lock while earcut reads the ring, and earcut does not change
+  // it; triangulated() waits for this copy before the ring can change.
+  if (with_ring && m_ring) s.ring = m_ring->get();
+  return s;
+}
+
+std::unique_ptr<Vrst_map_piece> Vrst_tile_builder::build(Vrst_tile_id id, Vrst_build_progress& progress) const {
+  auto out = std::make_unique<Vrst_map_piece>();
+  out->key = tile_key(id);
   const Vrst_box2d tb = tile_bounds(id);
-  out->origin = {tb.lo.x - m_center.x, tb.lo.y - m_center.y};
+  out->bounds = tb;
   const Vrst_tile_items& items = m_index.find(id);
   const Vrst_tile_level& level = kTileLevels[level_of_zoom(id.z)];
   // Pieces a little outside the tile are kept, so wide lines meet across the border.
@@ -113,26 +197,36 @@ std::unique_ptr<Vrst_tile_data> Vrst_tile_builder::build(Vrst_tile_id id) const 
     std::vector<Vrst_vec2d> pts;
     // Roads.
     const Vrst_geom& geo = m_data.geom();
+    progress.stage(Vrst_build_stage::Roads, items.segs.size());
     for (const Vrst_uint32 s : items.segs) {
       const Vrst_seg_attr& a = m_data.edges().attr()[s];
       project(geo.points().subspan(geo.seg_first_point()[s], geo.seg_first_point()[s + 1] - geo.seg_first_point()[s]), pts);
-      simplify(pts, level.tolerance_m);
+      simplify_line(pts, level.tolerance_m);
       const int layer = layer_of((a.flags & kSegTunnel) != 0, (a.flags & kSegBridge) != 0);
       const Vrst_uint32 attr = a.road_class | (a.flags & kSegOneway ? kTileLineOneway : 0);
       add_pieces(pts, tb.lo, keep, attr, buckets[layer][a.road_class]);
+      progress.item_done();
     }
     if (m_data.has_map()) {
       const Vrst_map_layers& m = m_data.map();
+      progress.stage(Vrst_build_stage::Lines, items.lines.size());
       for (const Vrst_uint32 l : items.lines) {
         const Vrst_line_attr& la = m.line_attr()[l];
         project(m.line_points(l), pts);
-        simplify(pts, level.tolerance_m);
+        simplify_line(pts, level.tolerance_m);
         const int layer = layer_of((la.flags & kLineTunnel) != 0, (la.flags & kLineBridge) != 0);
         const int style = kStyleLineKind0 + la.kind;
         add_pieces(pts, tb.lo, keep, static_cast<Vrst_uint32>(style), buckets[layer][style]);
+        progress.item_done();
       }
-      for (const Vrst_uint32 ar : items.areas) add_area(ar, level, tb.lo, keep, fills, buckets[kLayerGround]);
+      progress.stage(Vrst_build_stage::Areas, items.areas.size());
+      for (const Vrst_uint32 ar : items.areas) {
+        add_area(ar, level, tb.lo, keep, fills, buckets[kLayerGround], progress);
+        progress.area_done();
+        progress.item_done();
+      }
     }
+    progress.stage(Vrst_build_stage::Points, items.vertices.size());
     // Graph vertex dots, dead ends last so they are drawn on top.
     for (int pass = 0; pass < 2; ++pass)
       for (const Vrst_uint32 v : items.vertices) {
@@ -143,6 +237,7 @@ std::unique_ptr<Vrst_tile_data> Vrst_tile_builder::build(Vrst_tile_id id) const 
                                static_cast<Vrst_uint32>(dead)});
       }
   }
+  progress.stage(Vrst_build_stage::Finish, 0);  // packing the arrays of the piece
   for (int k = 0; k < kAreaKindCount; ++k) {
     out->fill_ranges[k] = {static_cast<Vrst_uint32>(out->fills.size()), static_cast<Vrst_uint32>(fills[k].size())};
     out->fills.insert(out->fills.end(), fills[k].begin(), fills[k].end());
@@ -155,35 +250,6 @@ std::unique_ptr<Vrst_tile_data> Vrst_tile_builder::build(Vrst_tile_id id) const 
       out->lines.insert(out->lines.end(), b.begin(), b.end());
     }
   return out;
-}
-
-void Vrst_tile_builder::simplify(std::vector<Vrst_vec2d>& pts, Vrst_float64 tol) {
-  if (tol <= 0 || pts.size() <= 2) return;
-  const std::vector<Vrst_vec2d>& p = pts;
-  std::vector<Vrst_uint8> keep(p.size(), 0);
-  keep.front() = keep.back() = 1;
-  std::vector<std::pair<Vrst_size, Vrst_size>> stack{{0, p.size() - 1}};
-  while (!stack.empty()) {
-    const auto [i, j] = stack.back();
-    stack.pop_back();
-    const Vrst_float64 dx = p[j].x - p[i].x, dy = p[j].y - p[i].y, len = std::hypot(dx, dy);
-    Vrst_float64 best = -1;
-    Vrst_size at = i;
-    for (Vrst_size k = i + 1; k < j; ++k) {
-      const Vrst_float64 px = p[k].x - p[i].x, py = p[k].y - p[i].y;
-      const Vrst_float64 dist = len > 0 ? std::abs(px * dy - py * dx) / len : std::hypot(px, py);
-      if (dist > best) best = dist, at = k;
-    }
-    if (best > tol) {
-      keep[at] = 1;
-      stack.emplace_back(i, at);
-      stack.emplace_back(at, j);
-    }
-  }
-  Vrst_size n = 0;
-  for (Vrst_size k = 0; k < p.size(); ++k)
-    if (keep[k]) pts[n++] = p[k];
-  pts.resize(n);
 }
 
 void Vrst_tile_builder::add_pieces(const std::vector<Vrst_vec2d>& pts, Vrst_vec2d origin, const Vrst_box2d& keep,
@@ -200,24 +266,39 @@ void Vrst_tile_builder::add_pieces(const std::vector<Vrst_vec2d>& pts, Vrst_vec2
 }
 
 void Vrst_tile_builder::add_area(Vrst_uint32 a, const Vrst_tile_level& level, Vrst_vec2d origin, const Vrst_box2d& keep,
-                                 Vrst_area_buckets& fills, Vrst_style_buckets& lines) const {
+                                 Vrst_area_buckets& fills, Vrst_style_buckets& lines,
+                                 Vrst_build_progress& progress) const {
   const Vrst_map_layers& m = m_data.map();
   const AreaKind kind = m.area_kind(a);
+  progress.area(a, static_cast<int>(kind), m.area_outer(a).size());
   std::vector<Vrst_vec2d> pts;
   std::vector<Vrst_uint32> tris;
   if (level.tolerance_m <= 0) {
+    progress.area_step(Vrst_area_step::Copy, m.area_outer(a).size());
     project(m.area_points(a), pts);
     const std::span<const Vrst_uint32> idx = m.area_indices(a);
     tris.assign(idx.begin(), idx.end());
   } else {
     project(m.area_outer(a), pts);
+    progress.area_step(Vrst_area_step::Simplify, pts.size());
     pts.push_back(pts.front());  // closed, so simplification keeps both ends of the seam
-    simplify(pts, level.tolerance_m);
+    simplify_line(pts, level.tolerance_m);
     pts.pop_back();
+    progress.area_step(Vrst_area_step::Clip, pts.size());
+    // Only the part inside the tile is triangulated: a big forest outline is cut to the
+    // stretch that crosses this tile, so earcut never sees the whole (possibly
+    // self-crossing) simplified outline. Clipped after simplifying, on the few points
+    // left, and only when the outline leaves the tile. Buildings are small and are not
+    // clipped, so their outlines show no fake edges on the tile border.
+    if (kind != AreaKind::Building && !inside(pts, keep)) pts = clip_ring(pts, keep);
+    remove_repeated_points(pts, level.tolerance_m * kSamePointPart);
     if (pts.size() < 3) return;
     std::vector<std::vector<std::array<Vrst_float64, 2>>> poly(1);
     for (const Vrst_vec2d& p : pts) poly[0].push_back({p.x, p.y});
+    progress.area_step(Vrst_area_step::Triangulate, pts.size());
+    progress.triangulating(pts);
     tris = mapbox::earcut<Vrst_uint32>(poly);
+    progress.triangulated();
   }
   std::vector<Vrst_gpu_point>& out = fills[static_cast<int>(kind)];
   for (Vrst_size t = 0; t + 2 < tris.size(); t += 3) {
@@ -230,7 +311,10 @@ void Vrst_tile_builder::add_area(Vrst_uint32 a, const Vrst_tile_level& level, Vr
                      static_cast<Vrst_uint32>(kind)});
   }
   if (kind == AreaKind::Building) {
-    std::vector<Vrst_vec2d> ring(pts.begin(), pts.begin() + static_cast<std::ptrdiff_t>(m.area_outer(a).size()));
+    // Base level: pts holds the outer ring first, then the holes. Coarser levels: pts is
+    // the simplified outer ring alone, shorter than area_outer().
+    std::vector<Vrst_vec2d> ring = pts;
+    if (level.tolerance_m <= 0) ring.resize(m.area_outer(a).size());
     ring.push_back(ring.front());
     add_pieces(ring, origin, keep, kStyleBuildingEdge, lines[kStyleBuildingEdge]);
   }
@@ -241,6 +325,7 @@ Vrst_tile_loader::Vrst_tile_loader(Vrst_build_fn build, int threads) : m_build(s
   m_worker_tile.assign(n, std::nullopt);
   m_worker_since.assign(n, Vrst_clock::now());
   m_worker_built.assign(n, 0);
+  for (Vrst_size i = 0; i < n; ++i) m_progress.push_back(std::make_unique<Vrst_build_progress>());
   for (int i = 0; i < static_cast<int>(n); ++i) m_workers.emplace_back([this, i] { work(i); });
 }
 
@@ -270,11 +355,11 @@ void Vrst_tile_loader::request(const std::vector<Vrst_tile_id>& wanted) {
   m_wake.notify_all();
 }
 
-std::vector<std::unique_ptr<Vrst_tile_data>> Vrst_tile_loader::take(Vrst_size max) {
+std::vector<std::unique_ptr<Vrst_map_piece>> Vrst_tile_loader::take(Vrst_size max) {
   const std::scoped_lock lock(m_mutex);
-  std::vector<std::unique_ptr<Vrst_tile_data>> out;
+  std::vector<std::unique_ptr<Vrst_map_piece>> out;
   while (!m_done.empty() && out.size() < max) {
-    m_busy.erase(tile_key(m_done.front()->id));
+    m_busy.erase(m_done.front()->key);
     out.push_back(std::move(m_done.front()));
     m_done.pop_front();
   }
@@ -284,9 +369,10 @@ std::vector<std::unique_ptr<Vrst_tile_data>> Vrst_tile_loader::take(Vrst_size ma
 void Vrst_tile_loader::work(int worker) {
   // A broken tile must neither end the thread (std::terminate) nor stay busy forever:
   // a failed build counts as null.
-  const auto try_build = [this](Vrst_tile_id tile) -> std::unique_ptr<Vrst_tile_data> {
+  Vrst_build_progress& progress = *m_progress[static_cast<Vrst_size>(worker)];
+  const auto try_build = [this, &progress](Vrst_tile_id tile) -> std::unique_ptr<Vrst_map_piece> {
     try {
-      return m_build(tile);
+      return m_build(tile, progress);
     } catch (const std::exception&) {
       return nullptr;
     }
@@ -303,10 +389,13 @@ void Vrst_tile_loader::work(int worker) {
       const auto w = static_cast<Vrst_size>(worker);
       m_worker_tile[w] = id;
       m_worker_since[w] = Vrst_clock::now();
-      note({Vrst_loader_event_kind::Start, id, worker, 0, 0});
+      note({Vrst_loader_event_kind::Start, id, worker, 0, 0, {}});
     }
     const auto start = std::chrono::steady_clock::now();
-    std::unique_ptr<Vrst_tile_data> t = try_build(id);
+    progress.reset();
+    std::unique_ptr<Vrst_map_piece> t = try_build(id);
+    const Vrst_area_probe slowest = progress.slowest();
+    progress.reset();
     if (t) {
       t->build_ms = std::chrono::duration<Vrst_float64, std::milli>(std::chrono::steady_clock::now() - start).count();
       t->worker = worker;
@@ -317,10 +406,10 @@ void Vrst_tile_loader::work(int worker) {
     const Vrst_float64 ms = std::chrono::duration<Vrst_float64, std::milli>(Vrst_clock::now() - start).count();
     if (t) {
       ++m_worker_built[w];
-      note({Vrst_loader_event_kind::Done, id, worker, ms, 0});
+      note({Vrst_loader_event_kind::Done, id, worker, ms, 0, slowest});
       m_done.push_back(std::move(t));
     } else {
-      note({Vrst_loader_event_kind::Failed, id, worker, ms, 0});
+      note({Vrst_loader_event_kind::Failed, id, worker, ms, 0, slowest});
       m_busy.erase(tile_key(id));
       ++m_failed;
     }
@@ -345,10 +434,16 @@ Vrst_loader_status Vrst_tile_loader::status() const {
       ws.busy = true;
       ws.tile = *m_worker_tile[w];
       ws.busy_ms = std::chrono::duration<Vrst_float64, std::milli>(now - m_worker_since[w]).count();
+      ws.work = m_progress[w]->snapshot(false);
     }
     s.workers.push_back(ws);
   }
   return s;
+}
+
+Vrst_build_snapshot Vrst_tile_loader::work_of(int worker) const {
+  if (worker < 0 || static_cast<Vrst_size>(worker) >= m_progress.size()) return {};
+  return m_progress[static_cast<Vrst_size>(worker)]->snapshot(true);
 }
 
 void Vrst_tile_loader::record_events(bool on) {
@@ -378,19 +473,18 @@ std::vector<Vrst_loader_event> Vrst_tile_loader::take_events() {
   return out;
 }
 
-std::vector<Vrst_tile_id> visible_tiles(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d map_center, int z) {
+std::vector<Vrst_tile_id> visible_tiles(const Vrst_map_area& area, int z) {
   Vrst_vec2d lo{1e300, 1e300}, hi{-1e300, -1e300};
-  for (const auto& [sx, sy] : {std::pair{0, 0}, {fb_w, 0}, {0, fb_h}, {fb_w, fb_h}}) {
-    const Vrst_vec2d w = screen_to_world(v, fb_w, fb_h, sx, sy);
-    lo = {std::min(lo.x, w.x + map_center.x), std::min(lo.y, w.y + map_center.y)};
-    hi = {std::max(hi.x, w.x + map_center.x), std::max(hi.y, w.y + map_center.y)};
+  for (const Vrst_vec2d& w : area.corners) {
+    lo = {std::min(lo.x, w.x), std::min(lo.y, w.y)};
+    hi = {std::max(hi.x, w.x), std::max(hi.y, w.y)};
   }
   const Vrst_tile_id a = tile_at(z, {lo.x, hi.y}), c = tile_at(z, {hi.x, lo.y});
   std::vector<Vrst_tile_id> out;
   if (static_cast<Vrst_int64>(c.x - a.x + 1) * (c.y - a.y + 1) > 4096) return out;
   for (Vrst_int32 y = a.y; y <= c.y; ++y)
     for (Vrst_int32 x = a.x; x <= c.x; ++x) out.push_back({z, x, y});
-  const Vrst_vec2d mid{v.center.x + map_center.x, v.center.y + map_center.y};
+  const Vrst_vec2d mid = area.center;
   const auto dist = [&](const Vrst_tile_id& t) {
     const Vrst_box2d b = tile_bounds(t);
     return std::hypot((b.lo.x + b.hi.x) / 2 - mid.x, (b.lo.y + b.hi.y) / 2 - mid.y);

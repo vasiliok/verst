@@ -1,53 +1,22 @@
 /// @file
-/// Platform-independent map drawing data shared by navview (OpenGL) and the iOS app
-/// (OpenGL ES): Web Mercator projection, road class tables, the GPU vertex format, the
-/// 2D camera and the mesh built from the nav files.
+/// Platform-independent map view shared by navview (OpenGL) and the iOS app (OpenGL
+/// ES): road class tables and colours, the 2D camera and its math, and the map frame
+/// (world origin, start views, what the screen shows) built from the provider's extent.
 ///
-/// Nothing here calls a graphics API. Each front end uploads Vrst_map_mesh's arrays
-/// and feeds view_matrix() to its own shaders, so both draw the same map.
+/// Nothing here calls a graphics API or knows how map data is stored.
 #pragma once
 
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <numbers>
 #include <string_view>
 #include <vector>
 
-#include "nav_files.h"
+#include "geo.h"
+#include "map_kinds.h"
+#include "map_provider.h"
 
 namespace nav {
-
-constexpr Vrst_float64 kPi = std::numbers::pi;  ///< Pi in double, for degree <-> radian conversion.
-/// WGS84 equatorial radius in metres, the sphere radius of Web Mercator (EPSG:3857).
-constexpr Vrst_float64 kEarthRadius = 6378137.0;
-
-/// 2D point or vector in double precision: Web Mercator metres, screen pixels or
-/// (lat, lon) degrees depending on use.
-/// All view math is done with it; only center-relative values are converted to
-/// float for the GPU.
-struct Vrst_vec2d {
-  /// Double on purpose: Web Mercator metres reach 2e7, where float has ~2 m steps.
-  /// Everything is computed in double and only center-relative values go to float.
-  Vrst_float64 x;
-  Vrst_float64 y;  ///< Second component; same units and precision as x.
-};
-
-/// Web Mercator (EPSG:3857) projection.
-/// @param c Geographic coordinate.
-/// @return Mercator metres (x east, y north) in double.
-inline Vrst_vec2d mercator(Vrst_coord c) {
-  const Vrst_float64 lon = c.lon_e7 * 1e-7 * kPi / 180.0;
-  const Vrst_float64 lat = c.lat_e7 * 1e-7 * kPi / 180.0;
-  return {kEarthRadius * lon, kEarthRadius * std::log(std::tan(kPi / 4 + lat / 2))};
-}
-
-/// Inverse of mercator().
-/// @param m Web Mercator metres.
-/// @return Degrees: x = latitude, y = longitude.
-inline Vrst_vec2d inverse_mercator(Vrst_vec2d m) {
-  return {(2 * std::atan(std::exp(m.y / kEarthRadius)) - kPi / 2) * 180.0 / kPi, m.x / kEarthRadius * 180.0 / kPi};
-}
 
 /// Bit of a road class in a class mask.
 /// @param c Road class.
@@ -90,26 +59,11 @@ constexpr Vrst_float32 kClassColors[kRoadClassCount][3] = {
 };
 /// Default start view when none is given: this point (47.322, 5.041) at
 /// street zoom. start_view() falls back to the whole map when it is outside the data.
-constexpr Vrst_coord kDefaultPoint{473220000, 50410000};
+constexpr Vrst_latlon kDefaultPoint{47.322, 5.041};
 constexpr Vrst_float64 kDefaultMetresPerPoint = 5.0;  ///< Start zoom: ground metres per screen point.
 
 /// Background color (RGB) behind the map.
 constexpr Vrst_float32 kBackground[3] = {0.105f, 0.115f, 0.135f};
-
-/// Vertex as uploaded to the GPU: float position relative to the map center plus one
-/// packed attribute.
-/// Kept to 12 bytes so the buffer stays small. All roads are one vertex buffer drawn
-/// with one line-list call; the shader decides color and visibility from attr.
-struct Vrst_gpu_point {
-  /// Mercator metres relative to the map center. Float is enough only because of the
-  /// subtraction: at 25 km from the center the step is ~2 mm, so zoom does not shake.
-  Vrst_float32 x;
-  Vrst_float32 y;  ///< Second component; same units as x.
-  /// Lines: `road_class | flags << 16`. Points: 1 = dead end. One integer attribute
-  /// lets one draw call color, filter and highlight everything in the shader.
-  Vrst_uint32 attr;
-};
-static_assert(sizeof(Vrst_gpu_point) == 12);
 
 /// Camera of the 2D map: center, scale and rotation.
 /// Everything the view matrix is built from; independent of window system and
@@ -227,21 +181,18 @@ inline void rotate_at(Vrst_view& v, int fb_w, int fb_h, Vrst_float64 x, Vrst_flo
   v.center = {before.x - d.x, before.y - d.y};
 }
 
-/// Map geometry ready for the GPU, built once from the nav files.
-/// Projects every shape point to Mercator relative to the map center, packs road
-/// class and flags into each vertex, orders the line index list so minor classes
-/// draw first (major roads end up on top) and lists the graph vertices with dead
-/// ends last (drawn on top).
-class Vrst_map_mesh {
+/// The client's frame of the map: the world origin and the conversions between
+/// degrees, world coordinates and the screen. Built from the provider's extent, so it
+/// needs no map data. World coordinates are Mercator metres relative to the center
+/// of the extent: float vertices relative to it keep about 1 cm precision across a
+/// region.
+class Vrst_map_frame {
  public:
-  /// Builds all arrays: projects the road shape points, computes the map center and
-  /// extent, and (with gpu_arrays) the line vertices, the line index list sorted by
-  /// road class and the vertex dots with dead ends last. The steps are explained at
-  /// the top of the function body.
-  /// @param d Opened nav files; only read during the call.
-  /// @param gpu_arrays false computes only the map center and extent, for front ends
-  ///        that draw tiles (map_tiles.h) instead of one buffer.
-  void build(const Vrst_nav_data& d, bool gpu_arrays = true);
+  /// Empty frame at 0, 0; replace it with one built from an extent.
+  Vrst_map_frame() = default;
+  /// Frame of a map.
+  /// @param extent Area the map covers (Vrst_map_provider::extent()).
+  explicit Vrst_map_frame(const Vrst_geo_box& extent);
 
   /// Scale that shows the whole map with a 5% margin.
   /// @param fb_w Framebuffer width in px.
@@ -254,66 +205,62 @@ class Vrst_map_mesh {
   /// @param metres_per_point Ground metres per screen point (smaller = closer).
   /// @param px_per_point Framebuffer pixels per screen point (Retina factor).
   /// @return Camera with no rotation.
-  Vrst_view view_at(Vrst_coord p, Vrst_float64 metres_per_point, Vrst_float64 px_per_point) const;
+  Vrst_view view_at(Vrst_latlon p, Vrst_float64 metres_per_point, Vrst_float64 px_per_point) const;
 
   /// Start view used by every front end: centered on a point at a ground resolution,
-  /// or the whole map when the point is outside the data.
-  /// @param bbox Extent of the data (Vrst_graph::bbox()).
+  /// or the whole map when the point is outside the extent.
   /// @param p Point to center on.
   /// @param metres_per_point Ground metres per screen point (smaller = closer).
   /// @param px_per_point Framebuffer pixels per screen point (Retina factor).
   /// @param fb_w Framebuffer width in px, for the fit-map fallback.
   /// @param fb_h Framebuffer height in px, for the fit-map fallback.
   /// @return Camera with no rotation.
-  Vrst_view start_view(const Vrst_bbox& bbox, Vrst_coord p, Vrst_float64 metres_per_point,
-                       Vrst_float64 px_per_point, int fb_w, int fb_h) const;
+  Vrst_view start_view(Vrst_latlon p, Vrst_float64 metres_per_point, Vrst_float64 px_per_point, int fb_w,
+                       int fb_h) const;
+
+  /// What a camera shows, for Vrst_map_provider::show().
+  /// @param v Camera.
+  /// @param fb_w Framebuffer width in px.
+  /// @param fb_h Framebuffer height in px.
+  /// @return Screen corners and center in absolute Mercator, and the resolution.
+  Vrst_map_area area_of(const Vrst_view& v, int fb_w, int fb_h) const;
+
+  /// Ground resolution at the screen center, for line widths and label rules.
+  /// @param v Camera.
+  /// @param px_per_point Framebuffer px per screen point.
+  /// @return Ground metres per screen point.
+  Vrst_float64 ground_metres_per_point(const Vrst_view& v, Vrst_float64 px_per_point) const {
+    return px_per_point * std::cos(to_latlon(v.center).lat * kPi / 180) / v.scale;
+  }
 
   /// World position of a geographic point, for overlays such as a GPS track.
-  /// @param p Geographic coordinate.
-  /// @return Mercator metres relative to the map center, like the mesh vertices.
-  Vrst_vec2d to_world(Vrst_coord p) const {
+  /// @param p Geographic point.
+  /// @return Mercator metres relative to the center.
+  Vrst_vec2d to_world(Vrst_latlon p) const {
     const Vrst_vec2d m = mercator(p);
     return {m.x - m_center.x, m.y - m_center.y};
   }
 
   /// Geographic position of a world point.
-  /// @param w Mercator metres relative to the map center.
-  /// @return Degrees: x = latitude, y = longitude.
-  Vrst_vec2d to_latlon(Vrst_vec2d w) const { return inverse_mercator({w.x + m_center.x, w.y + m_center.y}); }
+  /// @param w Mercator metres relative to the center.
+  /// @return Geographic point.
+  Vrst_latlon to_latlon(Vrst_vec2d w) const { return inverse_mercator({w.x + m_center.x, w.y + m_center.y}); }
 
   /// @copydoc m_center
-  /// @return Mercator metres.
+  /// @return Absolute Mercator metres.
   Vrst_vec2d center() const { return m_center; }
-  /// @copydoc m_half_extent
-  /// @return Metres.
-  Vrst_vec2d half_extent() const { return m_half_extent; }
-  /// @copydoc m_line_verts
-  /// @return Vertex array.
-  const std::vector<Vrst_gpu_point>& line_verts() const { return m_line_verts; }
-  /// @copydoc m_line_indices
-  /// @return Index array.
-  const std::vector<Vrst_uint32>& line_indices() const { return m_line_indices; }
-  /// @copydoc m_point_verts
-  /// @return Vertex array.
-  const std::vector<Vrst_gpu_point>& point_verts() const { return m_point_verts; }
-  /// @copydoc m_dead_ends
-  /// @return Count.
-  Vrst_uint32 dead_ends() const { return m_dead_ends; }
+  /// @copydoc m_extent
+  /// @return Box in degrees.
+  const Vrst_geo_box& extent() const { return m_extent; }
 
  private:
-  /// Mercator position subtracted from every point before the float conversion.
-  /// Without it vertices are stored as ~1e6..2e7 m floats and lines jitter at zoom.
-  Vrst_vec2d m_center{};
-  /// Half size of the point extent in metres; used to fit the whole map.
-  Vrst_vec2d m_half_extent{};
-  /// One vertex per shape point, same index as in geom.dat.
-  std::vector<Vrst_gpu_point> m_line_verts;
-  /// Index pairs for a line list, minor road classes first.
-  std::vector<Vrst_uint32> m_line_indices;
-  /// One vertex per graph vertex, dead ends last.
-  std::vector<Vrst_gpu_point> m_point_verts;
-  /// Count of degree-1 vertices.
-  Vrst_uint32 m_dead_ends = 0;
+  /// Area the map covers.
+  Vrst_geo_box m_extent{};
+  /// World origin: Mercator center of the extent, subtracted from every point before
+  /// the float conversion so lines do not jitter at zoom.
+  Vrst_vec2d m_center{0, 0};
+  /// Half size of the extent in Mercator metres; used to fit the whole map.
+  Vrst_vec2d m_half_extent{0, 0};
 };
 
 }  // namespace nav

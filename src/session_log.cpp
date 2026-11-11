@@ -127,6 +127,9 @@ void Vrst_session_log::open(const std::filesystem::path& dir, Vrst_size keep) {
 }
 
 void Vrst_session_log::append(std::string_view line) {
+  if (m_tail.size() == kTailLines) m_tail.pop_front();
+  m_tail.emplace_back(line);
+  ++m_appended;
   if (!m_file.is_open()) return;
   m_buffer += line;
   m_buffer += '\n';
@@ -169,6 +172,52 @@ void Vrst_session_log::delete_old() {
   std::error_code ec;
   for (const std::filesystem::path& p : files())
     if (p != m_path) std::filesystem::remove(p, ec);
+}
+
+std::string readable_line(std::string_view json) {
+  // Fields are written as "type", "t", then the rest: show `t type rest`.
+  std::string type, t, rest;
+  std::string* out = &rest;
+  std::string key;
+  bool in_string = false, in_key = false, escaped = false;
+  for (const char c : json) {
+    if (in_string) {
+      if (escaped) {
+        (in_key ? key : *out) += c;
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        in_string = false;
+      } else {
+        (in_key ? key : *out) += c;
+      }
+      continue;
+    }
+    if (c == '"') {
+      in_string = true;
+      continue;
+    }
+    if (c == '{' || c == ',') {
+      in_key = true;
+      key.clear();
+    } else if (c == ':' && in_key) {
+      in_key = false;
+      if (key == "type") {
+        out = &type;
+      } else if (key == "t") {
+        out = &t;
+      } else {
+        out = &rest;
+        rest += rest.empty() ? "" : " ";
+        rest += key;
+        rest += '=';
+      }
+    } else if (c != '}' && !in_key) {
+      *out += c;
+    }
+  }
+  return t + ' ' + type + (rest.empty() ? "" : " ") + rest;
 }
 
 }  // namespace nav

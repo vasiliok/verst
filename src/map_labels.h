@@ -17,8 +17,8 @@
 #include <vector>
 
 #include "glyph_atlas.h"
+#include "map_provider.h"
 #include "map_scene.h"
-#include "nav_files.h"
 
 namespace nav {
 
@@ -72,9 +72,9 @@ static_assert(sizeof(Vrst_text_vertex) == 16);
 class Vrst_map_labels {
  public:
   /// Collects places, their world positions and decoded names.
-  /// @param d Opened nav files; places and names are copied, d may close afterwards.
-  /// @param mesh Built mesh, for the world coordinates.
-  void build(const Vrst_nav_data& d, const Vrst_map_mesh& mesh);
+  /// @param places Places from Vrst_map_provider::places(), most important first.
+  /// @param frame Map frame, for the world coordinates.
+  void build(const std::vector<Vrst_map_place>& places, const Vrst_map_frame& frame);
 
   /// Every character the labels use, for Vrst_glyph_atlas::build().
   /// @return Code points, unsorted, with duplicates.

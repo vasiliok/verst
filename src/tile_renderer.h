@@ -1,6 +1,7 @@
 /// @file
-/// Tiled map, GPU side: uploads Vrst_tile_data, keeps a byte-limited cache of tiles
-/// and draws the visible ones in layer order. OpenGL 3.3 core / OpenGL ES 3.0, like
+/// Tiled map, GPU side: uploads the Vrst_map_piece pieces a Vrst_map_provider
+/// delivers, keeps a byte-limited cache of them and draws the visible ones in layer
+/// order. Knows pieces only by their opaque keys, never how the map is stored. OpenGL 3.3 core / OpenGL ES 3.0, like
 /// map_renderer.h.
 ///
 /// Lines (roads, rivers, railways, building outlines) are drawn as screen-width quads
@@ -23,8 +24,10 @@
 #include <vector>
 
 #include "gl_api.h"
+#include "map_piece.h"
+#include "map_provider.h"
 #include "map_renderer.h"
-#include "map_tiles.h"
+#include "map_scene.h"
 
 namespace nav {
 
@@ -182,16 +185,22 @@ class Vrst_tile_renderer {
   /// @throws std::runtime_error on a shader or GL error.
   void init();
 
-  /// Uploads a built tile. Replaces a cached tile with the same id.
-  /// @param t Tile from Vrst_tile_builder; may be freed afterwards.
+  /// Uploads a piece. Replaces a cached piece with the same key.
+  /// @param p Piece from Vrst_map_provider::take_ready(); may be freed afterwards.
+  /// @param world_origin Absolute Mercator world origin (Vrst_map_frame::center()).
   /// @param frame Current frame number, for the LRU order.
-  void add(const Vrst_tile_data& t, Vrst_uint64 frame);
+  void add(const Vrst_map_piece& p, Vrst_vec2d world_origin, Vrst_uint64 frame);
 
-  /// Whether a tile is cached; marks it as used this frame.
-  /// @param t Tile.
+  /// Whether a piece is cached.
+  /// @param key Piece key.
+  /// @return true if it can be drawn.
+  bool has(Vrst_uint64 key) const { return m_tiles.contains(key); }
+
+  /// Whether a piece is cached; marks it as used this frame.
+  /// @param key Piece key.
   /// @param frame Current frame number.
   /// @return true if it can be drawn.
-  bool use(Vrst_tile_id t, Vrst_uint64 frame);
+  bool use(Vrst_uint64 key, Vrst_uint64 frame);
 
   /// Frees least recently used tiles until the cache fits its budget. Tiles used in
   /// the current frame are never freed.
@@ -204,7 +213,7 @@ class Vrst_tile_renderer {
   /// @param v Camera.
   /// @param fb_w Framebuffer width in px.
   /// @param fb_h Framebuffer height in px.
-  /// @param keys Tiles to draw (tile_key()); all must be cached.
+  /// @param keys Pieces to draw; all must be cached.
   /// @param ground_mpp Ground metres per screen point at the screen center; sets the line widths.
   /// @param opt Display switches.
   void draw(const Vrst_view& v, int fb_w, int fb_h, const std::vector<Vrst_uint64>& keys, Vrst_float64 ground_mpp,
@@ -237,8 +246,8 @@ class Vrst_tile_renderer {
  private:
   /// One uploaded tile.
   struct Vrst_gpu_tile {
-    Vrst_tile_id id;                                              ///< The tile.
-    Vrst_vec2d origin;                                            ///< World origin of the tile coordinates.
+    Vrst_vec2d origin;                                            ///< World position of the piece origin.
+    Vrst_vec2d size;                                              ///< Width and height of the piece, metres.
     GLuint fill_vao;                                              ///< Area triangles VAO.
     GLuint fill_vbo;                                              ///< Area triangles buffer.
     GLuint line_vao;                                              ///< Line instances VAO.
@@ -287,7 +296,7 @@ class Vrst_tile_renderer {
   /// @param g Tile.
   void release(Vrst_gpu_tile& g);
 
-  /// Cached tiles by tile_key().
+  /// Cached pieces by key.
   std::unordered_map<Vrst_uint64, Vrst_gpu_tile> m_tiles;
   /// Vertex data bytes of all cached tiles.
   Vrst_size m_bytes = 0;
@@ -316,24 +325,22 @@ class Vrst_tile_renderer {
   GLuint m_border_vbo = 0;
 };
 
-/// One tile uploaded by select_tiles(), for the session log.
+/// One piece uploaded by select_tiles(), for the session log.
 struct Vrst_tile_upload {
-  Vrst_tile_id id{};           ///< The tile.
+  Vrst_uint64 key = 0;         ///< The piece.
   Vrst_size bytes = 0;         ///< Vertex data uploaded.
-  Vrst_float64 build_ms = 0;   ///< Build time on the worker (Vrst_tile_data::build_ms).
+  Vrst_float64 build_ms = 0;   ///< Time on the worker (Vrst_map_piece::build_ms).
   int worker = 0;              ///< Worker that built it.
   Vrst_float64 upload_ms = 0;  ///< Time of Vrst_tile_renderer::add() on this thread.
 };
 
 /// What select_tiles() did in one frame, for status displays and the session log.
 struct Vrst_tile_frame {
-  /// Level drawn (index into kTileLevels).
-  int level = 0;
-  /// Tiles with data on screen.
+  /// Pieces with data on screen.
   Vrst_size visible = 0;
-  /// Visible tiles not built yet; the loader was asked for them.
+  /// Visible pieces not cached yet; the provider is making them.
   Vrst_size missing = 0;
-  /// Cached tiles of other levels drawn in place of missing ones.
+  /// Cached coarser pieces drawn in place of missing ones.
   Vrst_size fallback = 0;
   /// Tiles uploaded to the GPU in this frame, in upload order.
   std::vector<Vrst_tile_upload> uploads;
@@ -343,34 +350,22 @@ struct Vrst_tile_frame {
   Vrst_float64 evict_ms = 0;
 };
 
-/// Per-frame tile work shared by the front ends: uploads finished tiles, picks the
-/// level for the zoom, lists the cached tiles to draw, asks the loader for the
-/// missing ones and trims the cache. A missing tile is covered by a cached coarser
-/// tile until it is ready, so the map never shows holes.
+/// Per-frame map work shared by the front ends: uploads ready pieces, tells the
+/// provider what the screen shows, lists the cached pieces to draw and trims the
+/// cache. A missing piece is covered by a cached coarser one until it is ready, so
+/// the map never shows holes.
 /// @param r Tile renderer (GPU cache).
-/// @param loader Background loader.
-/// @param index Tile index.
+/// @param map Map provider.
+/// @param f Map frame (world origin).
 /// @param v Camera.
 /// @param fb_w Framebuffer width in px.
 /// @param fb_h Framebuffer height in px.
-/// @param map_center Mercator map center (world origin).
 /// @param frame Frame number, increasing.
 /// @param budget GPU byte budget of the cache.
-/// @param[out] stats Receives the level and counts.
-/// @return Tile keys for Vrst_tile_renderer::draw(), coarse fallbacks first.
-std::vector<Vrst_uint64> select_tiles(Vrst_tile_renderer& r, Vrst_tile_loader& loader,
-                                             const Vrst_tile_index& index, const Vrst_view& v, int fb_w, int fb_h,
-                                             Vrst_vec2d map_center, Vrst_uint64 frame, Vrst_size budget,
-                                             Vrst_tile_frame& stats);
-
-/// Ground resolution at the screen center, for line widths and label rules.
-/// @param v Camera.
-/// @param map_center Mercator map center (world origin).
-/// @param px_per_point Framebuffer px per screen point.
-/// @return Ground metres per screen point.
-inline Vrst_float64 ground_metres_per_point(const Vrst_view& v, Vrst_vec2d map_center, Vrst_float64 px_per_point) {
-  const Vrst_float64 lat = inverse_mercator({v.center.x + map_center.x, v.center.y + map_center.y}).x;
-  return px_per_point * std::cos(lat * kPi / 180) / v.scale;
-}
+/// @param[out] stats Receives the counts and uploads.
+/// @return Piece keys for Vrst_tile_renderer::draw(), coarse fallbacks first.
+std::vector<Vrst_uint64> select_tiles(Vrst_tile_renderer& r, Vrst_map_provider& map, const Vrst_map_frame& f,
+                                      const Vrst_view& v, int fb_w, int fb_h, Vrst_uint64 frame, Vrst_size budget,
+                                      Vrst_tile_frame& stats);
 
 }  // namespace nav

@@ -15,13 +15,23 @@ One C++ core, thin front ends:
 
 | Layer | Files | Used by |
 |---|---|---|
-| nav files (mmap, typed views) | `src/format.h`, `src/mapped_file.h`, `src/nav_files.h` | all tools and apps |
-| map scene (projection, class tables, camera, mesh) | `src/map_scene.h` | navview, iPhone app |
-| OpenGL renderer (GL 3.3 core / GLES 3.0) | `src/map_renderer.h`, `src/shaders.h`, `src/gl_api.h` | navview, iPhone app |
+| map provider (client API: extent, places, show / take_ready, status, events) | `src/map_provider.h`, `src/map_piece.h`, `src/map_kinds.h`, `src/geo.h` | navview, iPhone app, renderer |
+| nav map provider (today's implementation: nav files, z/x/y tiles, worker threads) | `src/nav_map_provider.h`, `src/map_tiles.h` | only `open_map()` and tests |
+| nav files (mmap, typed views) | `src/format.h`, `src/mapped_file.h`, `src/nav_files.h` | osm2nav, navcheck, nav map provider |
+| map view (class tables, camera, map frame) | `src/map_scene.h` | navview, iPhone app |
+| OpenGL renderer (GL 3.3 core / GLES 3.0) | `src/tile_renderer.h`, `src/map_renderer.h`, `src/shaders.h`, `src/gl_api.h` | navview, iPhone app |
 | desktop front end (GLFW, Dear ImGui, mouse/keys) | `src/navview.cpp` | macOS, Linux, Windows |
 | iPhone front end (UIKit, GLKView, gestures) | `ios/main.mm` | iOS |
 
 New features go into the core first; a front end only adds input and UI.
+
+The front ends and the renderer get map data only through `Vrst_map_provider`
+(`open_map(location)`). They never include a storage header (format.h, nav_files.h,
+map_tiles.h), so the storage can change (for example to the pre-built tiles of
+[docs/storage](docs/storage/README.md)) without touching them. The provider reports its
+work for debugging: `status()` (threads, busy workers and how long, queue, missing,
+`settled` = everything on screen loaded), `take_events()` (Started, Done, Failed,
+Settled) and `describe()` (free text about the data).
 
 ## Build
 

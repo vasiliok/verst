@@ -2,10 +2,10 @@
 /// OpenGL map renderer shared by the desktop viewer (OpenGL 3.3 core) and the iOS
 /// app (OpenGL ES 3.0).
 ///
-/// Uploads a Vrst_map_mesh once and draws roads (one indexed line list) and graph
-/// vertices (one point list) for a camera, plus place name labels (glyph quads from
-/// Vrst_map_labels) and an optional GPS track overlay with a position marker. Uses only calls both APIs have, so the
-/// front ends only create the context, handle input and call draw().
+/// Draws what goes over the tiled map (Vrst_tile_renderer): place name labels (glyph
+/// quads from Vrst_map_labels), an optional GPS track with a position marker and the
+/// GPS position. Uses only calls both APIs have, and shares its program linking with
+/// Vrst_tile_renderer.
 #pragma once
 
 #include <algorithm>
@@ -23,56 +23,31 @@
 
 namespace nav {
 
-/// Per-frame display switches for Vrst_map_renderer::draw().
-struct Vrst_draw_options {
-  /// Bit per RoadClass; a 0 bit hides that class (see bit(), kClassGroups).
-  Vrst_uint32 class_mask = kAllClasses;
-  /// Highlight oneway segments and dim the rest.
-  bool oneway = false;
-  /// Draw the graph vertex dots.
-  bool show_vertices = true;
-  /// Vertex dot size in framebuffer pixels; dead ends are drawn twice as large.
-  Vrst_float32 point_px = 2.5f;
-};
-
-/// GPU side of the map: shader programs, vertex and index buffers, and the draw
-/// calls. Needs a current GL context for init(), draw() and destroy(); the
-/// destructor does not touch GL, because the context may already be gone.
+/// GPU side of the overlays: shader programs, buffers and draw calls. Needs a current
+/// GL context for init_overlays(), the draw calls and destroy(); the destructor does
+/// not touch GL, because the context may already be gone.
 class Vrst_map_renderer {
  public:
-  Vrst_map_renderer() = default;                                    ///< Empty; init() creates the GL objects.
+  Vrst_map_renderer() = default;                                    ///< Empty; init_overlays() creates the GL objects.
   ~Vrst_map_renderer() = default;                                   ///< Does not touch GL; call destroy() first.
   Vrst_map_renderer(const Vrst_map_renderer&) = delete;             ///< Owns GL objects: not copyable.
   Vrst_map_renderer& operator=(const Vrst_map_renderer&) = delete;  ///< Owns GL objects: not copyable.
   Vrst_map_renderer(Vrst_map_renderer&&) = delete;                  ///< Owns GL objects: not movable (destroy() is explicit).
   Vrst_map_renderer& operator=(Vrst_map_renderer&&) = delete;       ///< Owns GL objects: not movable (destroy() is explicit).
 
-  /// Compiles the shaders and uploads the mesh. Call once with the context current.
-  /// @param mesh Built mesh; its arrays are copied to GPU buffers and may be freed.
-  /// @throws std::runtime_error on a shader compile/link error or a GL error.
-  void init(const Vrst_map_mesh& mesh);
-
-  /// Compiles only the overlay program (GPS track, marker), for front ends that draw
-  /// the map itself with Vrst_tile_renderer and use this class for the track and the
-  /// labels. init() calls it too.
+  /// Compiles the overlay program (GPS track, markers). Call once with the context
+  /// current; set_label_atlas() sets up the labels.
   /// @throws std::runtime_error on a shader compile/link error.
   void init_overlays();
 
-  /// Clears the bound framebuffer and draws the map.
-  /// @param v Camera.
-  /// @param fb_w Framebuffer width in px.
-  /// @param fb_h Framebuffer height in px.
-  /// @param opt Display switches.
-  void draw(const Vrst_view& v, int fb_w, int fb_h, const Vrst_draw_options& opt) const;
-
   /// Uploads a GPS track to draw with draw_track(). Replaces an earlier track.
-  /// @param points Track points in world coordinates (Vrst_map_mesh::to_world()).
+  /// @param points Track points in world coordinates (Vrst_map_frame::to_world()).
   /// @throws std::runtime_error on a GL error.
   void set_track(const std::vector<Vrst_vec2d>& points);
 
   /// Draws the track uploaded by set_track() over the map: the part not yet driven
   /// dim, the driven part bright, and a round marker at the current position. Call
-  /// after draw(), with the same camera.
+  /// after the map, with the same camera.
   /// @param v Camera.
   /// @param fb_w Framebuffer width in px.
   /// @param fb_h Framebuffer height in px.
@@ -87,7 +62,7 @@ class Vrst_map_renderer {
   /// @param v Camera.
   /// @param fb_w Framebuffer width in px.
   /// @param fb_h Framebuffer height in px.
-  /// @param pos Position, world coordinates (Vrst_map_mesh::to_world()).
+  /// @param pos Position, world coordinates (Vrst_map_frame::to_world()).
   /// @param px Dot diameter in framebuffer pixels.
   void draw_position(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px);
 
@@ -105,7 +80,7 @@ class Vrst_map_renderer {
   /// @throws std::runtime_error on a shader or GL error.
   void set_label_atlas(const Vrst_glyph_atlas& atlas);
 
-  /// Draws label glyph quads over the map with alpha blending. Call after draw()
+  /// Draws label glyph quads over the map with alpha blending. Call after the map
   /// (and after draw_track(), so names stay readable over the track).
   /// @param verts Quads from Vrst_map_labels::layout(), framebuffer px.
   /// @param fb_w Framebuffer width in px.
@@ -158,34 +133,6 @@ class Vrst_map_renderer {
   /// @return Vertex array object, left bound.
   static GLuint make_vao(const std::vector<Vrst_gpu_point>& verts, GLuint& vbo);
 
-  /// Road program: class color, class mask and oneway highlight.
-  GLuint m_line_prog = 0;
-  /// Vertex dot program: round dots, dead ends larger and red.
-  GLuint m_point_prog = 0;
-  /// Shape point vertices; one per point of geom.dat.
-  GLuint m_line_vbo = 0;
-  /// Graph vertex dots.
-  GLuint m_point_vbo = 0;
-  /// Line index pairs, minor classes first.
-  GLuint m_ibo = 0;
-  /// Line VAO: m_line_vbo layout plus m_ibo.
-  GLuint m_line_vao = 0;
-  /// Point VAO: m_point_vbo layout.
-  GLuint m_point_vao = 0;
-  /// Number of line indices (2 per drawn piece).
-  GLsizei m_index_count = 0;
-  /// Number of vertex dots.
-  GLsizei m_point_count = 0;
-  /// u_view of the line program.
-  GLint m_u_line_view = -1;
-  /// u_class_mask of the line program.
-  GLint m_u_mask = -1;
-  /// u_oneway of the line program.
-  GLint m_u_oneway = -1;
-  /// u_view of the point program.
-  GLint m_u_point_view = -1;
-  /// u_point_px of the point program.
-  GLint m_u_point_px = -1;
   /// Track line and marker program: one uniform color, optional round point.
   GLuint m_overlay_prog = 0;
   /// GPS track points (set_track()), drawn as a line strip.

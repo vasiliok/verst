@@ -31,6 +31,13 @@ STRIP_FROM_PATH        = .
 INPUT_ENCODING         = UTF-8
 
 #---------------------------------------------------------------------------
+# Preprocessor: only the Apple enum macro is expanded, so NS_ENUM types read as enums
+#---------------------------------------------------------------------------
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
+PREDEFINED             = "NS_ENUM(_type,_name)=enum _name : _type"
+
+#---------------------------------------------------------------------------
 # What is extracted: everything is documented, private parts included
 #---------------------------------------------------------------------------
 # Types and fields also live in anonymous namespaces and private sections.

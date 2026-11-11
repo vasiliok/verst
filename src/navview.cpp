@@ -42,9 +42,8 @@
 #include "gpx_track.h"
 #include "map_labels.h"
 #include "map_renderer.h"
+#include "map_provider.h"
 #include "map_scene.h"
-#include "map_tiles.h"
-#include "nav_files.h"
 #include "tile_renderer.h"
 
 /// Everything of the navview tool: projection, camera, input, GPU buffers and the
@@ -65,7 +64,7 @@ struct Vrst_options {
   std::string screenshot;
   /// Start view center (--center), also used by R. Lets a session open directly on
   /// the road being examined instead of panning there by hand.
-  Vrst_coord center = kDefaultPoint;
+  Vrst_latlon center = kDefaultPoint;
   /// Start zoom in ground metres per window point (--mpp); smaller is closer.
   Vrst_float64 metres_per_point = kDefaultMetresPerPoint;
   /// Whether --center was given; without it a --gpx track starts at its first point.
@@ -86,22 +85,18 @@ struct Vrst_options {
 /// One object reached from the GLFW callbacks through the window user pointer, so
 /// the viewer needs no globals and callbacks, panel and render loop share one state.
 struct Vrst_app {
-  /// Mapped nav files; kept open for name lookups and the cursor position.
-  Vrst_nav_data data;
-  /// Map center and extent (the world origin); its GPU arrays are not built.
-  Vrst_map_mesh mesh;
-  /// Which roads, areas and lines touch which tile, per level.
-  Vrst_tile_index tiles;
+  /// Where the map data comes from; how it is stored is not navview's business.
+  std::unique_ptr<Vrst_map_provider> map;
+  /// World origin, start views and the area on screen, from the map extent.
+  Vrst_map_frame frame;
   /// Layer switches and line options for the tile renderer.
   Vrst_tile_draw_options tile_opt;
-  /// Tile level drawn in the last frame (index into kTileLevels).
-  int level = 0;
-  /// Tiles on screen in the last frame.
+  /// Map pieces on screen in the last frame.
   Vrst_size tiles_visible = 0;
-  /// Tiles on screen that were not built yet.
+  /// Pieces on screen that were not loaded yet.
   Vrst_size tiles_missing = 0;
-  /// Tiles whose build failed since start (Vrst_tile_loader::failed()).
-  Vrst_size tiles_failed = 0;
+  /// Provider work at the last frame: threads, busy workers, settled.
+  Vrst_provider_status map_status;
   /// Current pan / zoom / rotation.
   Vrst_view view;
   /// Framebuffer size in pixels. Differs from the window size on HiDPI; the viewport
@@ -136,7 +131,7 @@ struct Vrst_app {
   /// Scale that fits the whole map: zoom 1x in the UI and the zoom-out limit.
   Vrst_float64 initial_scale = 1;
   /// Point the start view and R center on: kDefaultPoint or --center.
-  Vrst_coord start_center = kDefaultPoint;
+  Vrst_latlon start_center = kDefaultPoint;
   /// Zoom of the start view and R, ground metres per window point.
   Vrst_float64 start_metres_per_point = kDefaultMetresPerPoint;
   /// Recorded GPS track (--gpx); empty when none was given.
@@ -155,15 +150,14 @@ struct Vrst_app {
 /// Centers the map, zooms to fit it and resets rotation (F).
 /// @param app Viewer state; its view is replaced.
 void fit_view(Vrst_app& app) {
-  app.view = {{0, 0}, app.mesh.fit_scale(app.fb_w, app.fb_h), 0};
+  app.view = {{0, 0}, app.frame.fit_scale(app.fb_w, app.fb_h), 0};
 }
 
 /// Moves to the start view (R): start_center at start_metres_per_point, or fits the
 /// map when the point is outside the loaded data.
 /// @param app Viewer state; its view is replaced.
 void reset_view(Vrst_app& app) {
-  app.view = app.mesh.start_view(app.data.graph().bbox(), app.start_center, app.start_metres_per_point,
-                                 app.px_ratio, app.fb_w, app.fb_h);
+  app.view = app.frame.start_view(app.start_center, app.start_metres_per_point, app.px_ratio, app.fb_w, app.fb_h);
 }
 
 /// Viewer state of a window, for the GLFW callbacks.
@@ -276,28 +270,28 @@ void on_framebuffer_size(GLFWwindow* win, [[maybe_unused]] int width, [[maybe_un
 
 /// Geographic position under the cursor.
 /// @param app Viewer state.
-/// @return Degrees: x = latitude, y = longitude.
-Vrst_vec2d cursor_latlon(const Vrst_app& app) {
-  return app.mesh.to_latlon(screen_to_world(app.view, app.fb_w, app.fb_h, app.last_x, app.last_y));
+/// @return Degrees.
+Vrst_latlon cursor_latlon(const Vrst_app& app) {
+  return app.frame.to_latlon(screen_to_world(app.view, app.fb_w, app.fb_h, app.last_x, app.last_y));
 }
 
 /// Builds the ImGui panel: counts, fps, cursor, zoom, class toggles and display
 /// options. Changes go straight into the viewer state.
 /// @param app Viewer state, read and changed by the widgets.
 void draw_panel(Vrst_app& app) {
-  const Vrst_graph& g = app.data.graph();
   ImGui::SetNextWindowPos({10, 10}, ImGuiCond_FirstUseEver);
   ImGui::Begin("navview", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
-  ImGui::Text("V %u   S %u   A %u   P %zu", g.num_vertices(), app.data.edges().num_segments(), g.num_arcs(),
-              app.data.geom().points().size());
+  for (const std::string& line : app.map->describe()) ImGui::TextUnformatted(line.c_str());
   ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
-  ImGui::Text("tiles   z%d  %zu on screen, %zu loading", kTileLevels[app.level].z, app.tiles_visible, app.tiles_missing);
-  if (app.tiles_failed > 0)
-    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1), "tiles failed: %zu", app.tiles_failed);
-  const Vrst_vec2d ll = cursor_latlon(app);
-  ImGui::Text("cursor  %.6f, %.6f", ll.x, ll.y);
-  const Vrst_float64 center_lat = inverse_mercator(app.mesh.center()).x * kPi / 180;
+  ImGui::Text("pieces  %zu on screen, %zu loading", app.tiles_visible, app.tiles_missing);
+  ImGui::SeparatorText("Map provider");
+  for (const std::string& line : status_lines(app.map_status, *app.map)) ImGui::TextUnformatted(line.c_str());
+  if (app.map_status.failed_total > 0)
+    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1), "pieces failed: %zu", app.map_status.failed_total);
+  const Vrst_latlon ll = cursor_latlon(app);
+  ImGui::Text("cursor  %.6f, %.6f", ll.lat, ll.lon);
+  const Vrst_float64 center_lat = inverse_mercator(app.frame.center()).lat * kPi / 180;
   ImGui::Text("zoom    %.2fx   %.2f m/px", app.view.scale / app.initial_scale,
               app.px_ratio * std::cos(center_lat) / app.view.scale);
 
@@ -320,7 +314,6 @@ void draw_panel(Vrst_app& app) {
   ImGui::SameLine();
   ImGui::Checkbox("Railways (G)", &app.tile_opt.railways);
   ImGui::Checkbox("Tile borders (T)", &app.tile_opt.borders);
-  if (!app.data.has_map()) ImGui::TextDisabled("no map.dat: roads only");
 
   ImGui::SeparatorText("Display");
   ImGui::Checkbox("Oneway highlight (O)", &app.oneway);
@@ -332,7 +325,6 @@ void draw_panel(Vrst_app& app) {
   ImGui::Checkbox("Vertices (V)", &app.show_vertices);
   if (app.show_vertices) {
     ImGui::SliderFloat("Dot size", &app.point_px, 1.0f, 8.0f, "%.1f");
-    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1), "dead ends: %zu", app.tiles.dead_ends());
   }
   Vrst_float32 deg = static_cast<Vrst_float32>(app.view.angle * 180 / kPi);
   deg = std::remainder(deg, 360.0f);
@@ -411,16 +403,16 @@ int run(const Vrst_options& opt) {
   Vrst_app app;
   app.start_center = opt.center;
   app.start_metres_per_point = opt.metres_per_point;
-  app.data.open(opt.dir);
-  app.mesh.build(app.data, false);
   {
     const auto t0 = std::chrono::steady_clock::now();
-    app.tiles.build(app.data);
+    const int threads = static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 2u, 6u)) - 1;
+    app.map = open_map(opt.dir, {threads, false});
+    app.frame = Vrst_map_frame(app.map->extent());
     const Vrst_float64 ms = std::chrono::duration<Vrst_float64, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    std::printf("tiles: index %.0f ms, %zu z14 tiles%s\n", ms, app.tiles.size(0),
-                app.data.has_map() ? "" : " (no map.dat: roads only)");
+    std::printf("map: opened in %.0f ms, %d worker threads\n", ms, threads);
+    for (const std::string& line : app.map->describe()) std::printf("  %s\n", line.c_str());
   }
-  app.labels.build(app.data, app.mesh);
+  app.labels.build(app.map->places(), app.frame);
   {
     std::vector<std::string> fonts;
     fonts.reserve(std::size(kLabelFontFiles));
@@ -438,8 +430,7 @@ int run(const Vrst_options& opt) {
     std::printf("track %s: %zu points, %.1f km, %.0f s, playing at x%g\n", opt.gpx.c_str(),
                 app.track.points().size(), app.track.length_m() / 1000, app.track.duration(), app.track_speed);
   }
-  const Vrst_uint32 V = app.data.graph().num_vertices(), S = app.data.edges().num_segments();
-  const Vrst_size P = app.data.geom().points().size();
+  const std::string map_line = app.map->describe().front();
 
   // --- window --------------------------------------------------------------
   if (!glfwInit()) throw std::runtime_error("glfwInit failed");
@@ -469,7 +460,7 @@ int run(const Vrst_options& opt) {
   glfwSetScrollCallback(win, on_scroll);
   glfwSetFramebufferSizeCallback(win, on_framebuffer_size);
   update_size(win, app);
-  app.initial_scale = app.mesh.fit_scale(app.fb_w, app.fb_h);  // zoom 1x = whole map
+  app.initial_scale = app.frame.fit_scale(app.fb_w, app.fb_h);  // zoom 1x = whole map
   reset_view(app);
   app.view.angle = opt.rotate_deg * kPi / 180;
   app.tile_opt.borders = opt.tile_borders;
@@ -488,15 +479,13 @@ int run(const Vrst_options& opt) {
   renderer.init_overlays();
   Vrst_tile_renderer tile_renderer;
   tile_renderer.init();
-  const Vrst_tile_builder builder(app.data, app.tiles, app.mesh.center());
-  Vrst_tile_loader loader(builder, static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 2u, 6u)) - 1);
   constexpr Vrst_size kTileBudget = 384u << 20;  // GPU bytes of cached tiles
   Vrst_uint64 frame = 0;
   renderer.set_label_atlas(app.atlas);
   if (!app.track.empty()) {
     std::vector<Vrst_vec2d> world;
     world.reserve(app.track.points().size());
-    for (const Vrst_coord& c : app.track.points()) world.push_back(app.mesh.to_world(c));
+    for (const Vrst_latlon& c : app.track.points()) world.push_back(app.frame.to_world(c));
     renderer.set_track(world);
   }
 
@@ -524,18 +513,17 @@ int run(const Vrst_options& opt) {
     Vrst_track_sample ts{};
     if (!app.track.empty()) {
       ts = app.track.sample(app.track_time);
-      if (app.follow) app.view.center = app.mesh.to_world(ts.pos);
+      if (app.follow) app.view.center = app.frame.to_world(ts.pos);
     }
 
     // Tiles: draw what is cached, ask the workers for the rest.
     Vrst_tile_frame tf;
-    const std::vector<Vrst_uint64> draw_keys = select_tiles(tile_renderer, loader, app.tiles, app.view, app.fb_w,
-                                                            app.fb_h, app.mesh.center(), ++frame, kTileBudget, tf);
-    app.level = tf.level;
+    const std::vector<Vrst_uint64> draw_keys = select_tiles(tile_renderer, *app.map, app.frame, app.view, app.fb_w,
+                                                            app.fb_h, ++frame, kTileBudget, tf);
     app.tiles_visible = tf.visible;
     app.tiles_missing = tf.missing;
-    app.tiles_failed = loader.failed();
-    const Vrst_float64 ground_mpp = ground_metres_per_point(app.view, app.mesh.center(), app.px_ratio);
+    app.map_status = app.map->status();
+    const Vrst_float64 ground_mpp = app.frame.ground_metres_per_point(app.view, app.px_ratio);
     app.tile_opt.class_mask = app.class_mask;
     app.tile_opt.oneway = app.oneway;
     app.tile_opt.show_vertices = app.show_vertices;
@@ -543,7 +531,7 @@ int run(const Vrst_options& opt) {
     app.tile_opt.px_ratio = app.px_ratio;
     tile_renderer.draw(app.view, app.fb_w, app.fb_h, draw_keys, ground_mpp, app.tile_opt);
     if (!app.track.empty())
-      renderer.draw_track(app.view, app.fb_w, app.fb_h, ts.index + 1, app.mesh.to_world(ts.pos),
+      renderer.draw_track(app.view, app.fb_w, app.fb_h, ts.index + 1, app.frame.to_world(ts.pos),
                           static_cast<Vrst_float32>(14 * app.px_ratio));
     if (app.show_labels)
       renderer.draw_labels(app.labels.layout(app.view, app.fb_w, app.fb_h, app.px_ratio, app.atlas), app.fb_w,
@@ -557,7 +545,7 @@ int run(const Vrst_options& opt) {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     // A screenshot waits until every visible tile is built (at most ~20 s).
-    if (!screenshot.empty() && (app.tiles_missing > 0 || loader.pending() > 0) && ++shot_wait < 1200) shot_frame = 0, shot_ms = 0;
+    if (!screenshot.empty() && !app.map_status.settled && ++shot_wait < 1200) shot_frame = 0, shot_ms = 0;
     if (!screenshot.empty() && shot_frame >= 2) {
       glFinish();
       shot_ms += (glfwGetTime() - render_t0) * 1000;
@@ -581,10 +569,10 @@ int run(const Vrst_options& opt) {
       fps = frames / (now - fps_t0);
       frames = 0;
       fps_t0 = now;
-      const Vrst_vec2d ll = cursor_latlon(app);
+      const Vrst_latlon ll = cursor_latlon(app);
       char title[256];
-      std::snprintf(title, sizeof title, "navview  V %u  S %u  P %zu  |  %.0f fps  |  %.6f, %.6f  |  zoom %.2fx%s",
-                    V, S, P, fps, ll.x, ll.y, app.view.scale / app.initial_scale, app.oneway ? "  | oneway" : "");
+      std::snprintf(title, sizeof title, "navview  %s  |  %.0f fps  |  %.6f, %.6f  |  zoom %.2fx%s", map_line.c_str(),
+                    fps, ll.lat, ll.lon, app.view.scale / app.initial_scale, app.oneway ? "  | oneway" : "");
       glfwSetWindowTitle(win, title);
     }
   }
@@ -624,8 +612,7 @@ int start(int argc, char** argv) {
       opt.screenshot = argv[++i];
     } else if (a == "--center" && i + 2 < argc && number(argv[i + 1], lat) && number(argv[i + 2], lon) &&
                std::abs(lat) <= 90 && std::abs(lon) <= 180) {
-      opt.center = {static_cast<nav::Vrst_int32>(std::lround(lat * 1e7)),
-                    static_cast<nav::Vrst_int32>(std::lround(lon * 1e7))};
+      opt.center = {lat, lon};
       i += 2;
       opt.has_center = true;
     } else if (a == "--mpp" && i + 1 < argc && number(argv[i + 1], opt.metres_per_point) && opt.metres_per_point > 0) {

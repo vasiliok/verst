@@ -10,36 +10,6 @@
 
 namespace nav::shaders {
 
-/// Road lines, vertex shader. `a_attr = road_class | flags << 16`.
-inline constexpr std::string_view kLineVs = R"(
-layout(location = 0) in vec2 a_pos;
-layout(location = 1) in uint a_attr;
-uniform mat3 u_view;
-flat out uint v_attr;
-void main() {
-  vec3 p = u_view * vec3(a_pos, 1.0);
-  gl_Position = vec4(p.xy, 0.0, 1.0);
-  v_attr = a_attr;
-}
-)";
-
-/// Road lines, fragment shader: class color, class mask and oneway highlight.
-inline constexpr std::string_view kLineFs = R"(
-flat in uint v_attr;
-uniform vec3 u_colors[16];
-uniform uint u_class_mask;
-uniform bool u_oneway;
-out vec4 o_color;
-void main() {
-  uint cls = v_attr & 0xFFu;
-  uint flags = v_attr >> 16;
-  if (((u_class_mask >> cls) & 1u) == 0u) discard;
-  vec3 c = u_colors[cls];
-  if (u_oneway) c = (flags & 1u) != 0u ? vec3(1.0, 0.25, 0.9) : c * 0.3;
-  o_color = vec4(c, 1.0);
-}
-)";
-
 /// Graph vertices, vertex shader. `a_attr` = 1 for dead ends (undirected degree 1).
 inline constexpr std::string_view kPointVs = R"(
 layout(location = 0) in vec2 a_pos;

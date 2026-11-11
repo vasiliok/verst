@@ -1,37 +1,9 @@
 /// @file
-/// Vrst_map_renderer: GL setup, drawing of roads, overlays and labels.
+/// Vrst_map_renderer: GL setup, overlays (GPS track, position) and labels.
 /// Declarations and documentation are in map_renderer.h.
 #include "map_renderer.h"
 
 namespace nav {
-
-void Vrst_map_renderer::init(const Vrst_map_mesh& mesh) {
-  init_overlays();
-  m_line_prog = link(shaders::kLineVs, shaders::kLineFs);
-  m_point_prog = link(shaders::kPointVs, shaders::kPointFs);
-  m_u_line_view = glGetUniformLocation(m_line_prog, "u_view");
-  m_u_mask = glGetUniformLocation(m_line_prog, "u_class_mask");
-  m_u_oneway = glGetUniformLocation(m_line_prog, "u_oneway");
-  m_u_point_view = glGetUniformLocation(m_point_prog, "u_view");
-  m_u_point_px = glGetUniformLocation(m_point_prog, "u_point_px");
-  glUseProgram(m_line_prog);
-  glUniform3fv(glGetUniformLocation(m_line_prog, "u_colors"), kRoadClassCount, &kClassColors[0][0]);
-
-  m_line_vao = make_vao(mesh.line_verts(), m_line_vbo);
-  glGenBuffers(1, &m_ibo);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ibo);  // recorded in the line VAO
-  glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(mesh.line_indices().size() * sizeof(Vrst_uint32)),
-               mesh.line_indices().data(), GL_STATIC_DRAW);
-  m_point_vao = make_vao(mesh.point_verts(), m_point_vbo);
-  glBindVertexArray(0);
-  m_index_count = static_cast<GLsizei>(mesh.line_indices().size());
-  m_point_count = static_cast<GLsizei>(mesh.point_verts().size());
-#if !VRST_GLES
-  glEnable(GL_PROGRAM_POINT_SIZE);  // always on in OpenGL ES
-  glEnable(GL_MULTISAMPLE);         // ES multisampling is a property of the framebuffer
-#endif
-  check_error("renderer init");
-}
 
 void Vrst_map_renderer::init_overlays() {
   m_overlay_prog = link(shaders::kOverlayVs, shaders::kOverlayFs);
@@ -39,29 +11,6 @@ void Vrst_map_renderer::init_overlays() {
   m_u_overlay_px = glGetUniformLocation(m_overlay_prog, "u_point_px");
   m_u_overlay_color = glGetUniformLocation(m_overlay_prog, "u_color");
   m_u_overlay_round = glGetUniformLocation(m_overlay_prog, "u_round");
-}
-
-void Vrst_map_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const Vrst_draw_options& opt) const {
-  glViewport(0, 0, fb_w, fb_h);
-  glClearColor(kBackground[0], kBackground[1], kBackground[2], 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
-  const std::array<Vrst_float32, 9> m = view_matrix(v, fb_w, fb_h);
-
-  glUseProgram(m_line_prog);
-  glUniformMatrix3fv(m_u_line_view, 1, GL_FALSE, m.data());
-  glUniform1ui(m_u_mask, opt.class_mask);
-  glUniform1i(m_u_oneway, opt.oneway);
-  glBindVertexArray(m_line_vao);
-  glDrawElements(GL_LINES, m_index_count, GL_UNSIGNED_INT, nullptr);
-
-  if (opt.show_vertices) {
-    glUseProgram(m_point_prog);
-    glUniformMatrix3fv(m_u_point_view, 1, GL_FALSE, m.data());
-    glUniform1f(m_u_point_px, opt.point_px);
-    glBindVertexArray(m_point_vao);
-    glDrawArrays(GL_POINTS, 0, m_point_count);
-  }
-  glBindVertexArray(0);
 }
 
 void Vrst_map_renderer::set_track(const std::vector<Vrst_vec2d>& points) {
@@ -176,19 +125,11 @@ void Vrst_map_renderer::draw_labels(const std::vector<Vrst_text_vertex>& verts, 
 }
 
 void Vrst_map_renderer::destroy() {
-  glDeleteBuffers(1, &m_line_vbo);
-  glDeleteBuffers(1, &m_point_vbo);
-  glDeleteBuffers(1, &m_ibo);
-  glDeleteVertexArrays(1, &m_line_vao);
-  glDeleteVertexArrays(1, &m_point_vao);
-  glDeleteProgram(m_line_prog);
-  glDeleteProgram(m_point_prog);
   glDeleteBuffers(1, &m_track_vbo);
   glDeleteBuffers(1, &m_marker_vbo);
   glDeleteVertexArrays(1, &m_track_vao);
   glDeleteVertexArrays(1, &m_marker_vao);
   glDeleteProgram(m_overlay_prog);
-  m_line_vbo = m_point_vbo = m_ibo = m_line_vao = m_point_vao = m_line_prog = m_point_prog = 0;
   m_track_vbo = m_marker_vbo = m_track_vao = m_marker_vao = m_overlay_prog = 0;
   m_track_count = 0;
   glDeleteBuffers(1, &m_text_vbo);

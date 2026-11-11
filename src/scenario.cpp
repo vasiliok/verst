@@ -92,9 +92,19 @@ Vrst_scenario Vrst_scenario::parse(std::string name, std::string_view text) {
       st.kind = Vrst_step_kind::Goto;
       const Vrst_float64 lat = arg(1), lon = arg(2);
       if (std::abs(lat) > 90 || std::abs(lon) > 180) throw bad("lat/lon out of range");
-      st.at = {static_cast<Vrst_int32>(std::lround(lat * 1e7)), static_cast<Vrst_int32>(std::lround(lon * 1e7))};
+      st.at = {lat, lon};
       st.mpp = arg(3);
       if (st.mpp <= 0) throw bad("m/pt must be > 0");
+    } else if (cmd == "view") {
+      args(5);
+      st.kind = Vrst_step_kind::View;
+      st.seconds = arg(1);
+      const Vrst_float64 lat = arg(2), lon = arg(3);
+      if (std::abs(lat) > 85 || std::abs(lon) > 180) throw bad("lat/lon out of range");
+      st.at = {lat, lon};
+      st.mpp = arg(4);
+      if (st.mpp <= 0) throw bad("m/pt must be > 0");
+      st.degrees = arg(5);
     } else {
       throw bad("unknown step");
     }
@@ -121,6 +131,7 @@ Vrst_float64 Vrst_scenario::max_seconds() const {
 Vrst_float64 Vrst_scenario::ease(const Vrst_scenario_step& s, Vrst_float64 x) {
   x = std::clamp(x, 0.0, 1.0);
   if (s.kind == Vrst_step_kind::Fling) return 1 - (1 - x) * (1 - x) * (1 - x);  // fast, then slowing down
+  if (s.kind == Vrst_step_kind::View) return x;
   return x * x * (3 - 2 * x);                                                // smooth start and stop
 }
 
@@ -140,11 +151,27 @@ void Vrst_scenario::apply(const Vrst_scenario_step& s, Vrst_float64 from, Vrst_f
     case Vrst_step_kind::Rotate:
       rotate_at(v, f.fb_w, f.fb_h, cx, cy, s.degrees * part * kPi / 180);
       break;
+    case Vrst_step_kind::View:
+      move_toward(s, from < 1 ? part / (1 - from) : 1.0, v, f);
+      break;
     case Vrst_step_kind::Wait:
     case Vrst_step_kind::WaitTiles:
     case Vrst_step_kind::Goto:
       break;
   }
+}
+
+void Vrst_scenario::move_toward(const Vrst_scenario_step& s, Vrst_float64 k, Vrst_view& v,
+                                const Vrst_scenario_frame& f) {
+  const Vrst_vec2d target = mercator(s.at);
+  const Vrst_vec2d center{target.x - f.world_origin.x, target.y - f.world_origin.y};
+  // Same as Vrst_map_frame::view_at: scale is framebuffer px per Mercator metre.
+  const Vrst_float64 scale = f.px_per_point * std::cos(s.at.lat * kPi / 180) / s.mpp;
+  const Vrst_float64 angle = s.degrees * kPi / 180;
+  v.center.x += (center.x - v.center.x) * k;
+  v.center.y += (center.y - v.center.y) * k;
+  v.scale *= std::pow(scale / v.scale, k);  // even zoom speed: interpolate the logarithm
+  v.angle += std::remainder(angle - v.angle, 2 * kPi) * k;  // the short way round
 }
 
 Vrst_scenario_tick Vrst_scenario::advance(Vrst_float64 now, Vrst_view& v, const Vrst_scenario_frame& f) {
@@ -163,7 +190,8 @@ Vrst_scenario_tick Vrst_scenario::advance(Vrst_float64 now, Vrst_view& v, const 
     if (to > m_done) {
       apply(s, m_done, to, v, f);
       tick.moved = tick.moved || s.kind == Vrst_step_kind::Pan || s.kind == Vrst_step_kind::Fling ||
-                   s.kind == Vrst_step_kind::Zoom || s.kind == Vrst_step_kind::Rotate;
+                   s.kind == Vrst_step_kind::Zoom || s.kind == Vrst_step_kind::Rotate ||
+                   s.kind == Vrst_step_kind::View;
       m_done = to;
     }
     if (!done) break;

@@ -97,16 +97,26 @@ FetchContent_Declare(earcut
   GIT_SHALLOW TRUE
   SOURCE_SUBDIR include)  # header only: no CMakeLists there, so its tests are not added
 FetchContent_MakeAvailable(earcut)
+# earcut decides everything from the sign of a*b - c*d (its area()). A fused multiply-add
+# rounds the two products differently, so for nearly collinear points the sign stops
+# being consistent and earcut can loop forever. arm64 compilers fuse by default: on the
+# iPhone some zoom-10 tiles never finished building (reproduced on the Mac with the
+# phone's logged rings and a fused area()). The files that include earcut never fuse.
+set(VRST_EARCUT_SOURCES src/map_tiles.cpp src/osm_map_layers.cpp tests/earcut_test.cpp)
+set_source_files_properties(${VRST_EARCUT_SOURCES} PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 find_package(Threads REQUIRED)
 
-# --- vrst_core: nav files, road mesh, tiles, GPS tracks (no GL) ---------------
+# --- vrst_core: map provider (nav files, tiles), map frame, GPS tracks (no GL) ----
 # Shared by every tool, the desktop viewer and the iPhone app.
 add_library(vrst_core STATIC
   src/mapped_file.cpp
   src/nav_files.cpp
   src/map_scene.cpp
   src/map_tiles.cpp
+  src/activity_recorder.cpp
+  src/map_provider.cpp
+  src/nav_map_provider.cpp
   src/gpx_track.cpp
   src/scenario.cpp
   src/session_log.cpp)
@@ -161,8 +171,9 @@ if(NAV_BUILD_TESTS)
     GIT_TAG v1.15.2
     GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(googletest)
-  add_executable(tile_test tests/tile_test.cpp tests/scenario_test.cpp)
+  add_executable(tile_test tests/tile_test.cpp tests/scenario_test.cpp tests/activity_recorder_test.cpp tests/geometry_test.cpp tests/earcut_test.cpp tests/map_provider_test.cpp)
   target_link_libraries(tile_test PRIVATE vrst_core GTest::gtest_main)
+  target_include_directories(tile_test SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
   nav_warnings(tile_test)
 endif()
 

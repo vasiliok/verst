@@ -116,7 +116,7 @@ TEST(Scenario, GotoIsReturnedOnce) {
   s.start(0);
   const Vrst_scenario_tick a = s.advance(0, v, phone());
   ASSERT_TRUE(a.jump.has_value());
-  EXPECT_EQ(a.jump->at.lat_e7, 473200000);
+  EXPECT_DOUBLE_EQ(a.jump->at.lat, 47.32);
   EXPECT_DOUBLE_EQ(a.jump->mpp, 20);
   EXPECT_EQ(s.step_index(), 1u);
   const Vrst_scenario_tick b = s.advance(0.01, v, phone());

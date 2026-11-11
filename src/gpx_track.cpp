@@ -40,8 +40,7 @@ void Vrst_gpx_track::parse(std::string_view text, const std::string& name) {
     if (m_points.empty()) t0 = t;
     t -= t0;
     if (!m_times.empty()) t = std::max(t, m_times.back());
-    m_points.push_back({static_cast<Vrst_int32>(std::lround(*lat * 1e7)),
-                        static_cast<Vrst_int32>(std::lround(*lon * 1e7))});
+    m_points.push_back({*lat, *lon});
     m_times.push_back(t);
   }
   if (m_points.empty()) throw std::runtime_error(name + ": no <trkpt> track points");
@@ -52,11 +51,10 @@ Vrst_track_sample Vrst_gpx_track::sample(Vrst_float64 t) const {
   // Last point with time <= t; upper_bound finds the first one after it.
   const Vrst_size i = static_cast<Vrst_size>(std::ranges::upper_bound(m_times, t) - m_times.begin()) - 1;
   if (i + 1 >= m_points.size()) return {m_points.back(), m_points.size() - 1, 0};
-  const Vrst_coord a = m_points[i], b = m_points[i + 1];
+  const Vrst_latlon a = m_points[i], b = m_points[i + 1];
   const Vrst_float64 dt = m_times[i + 1] - m_times[i];
   const Vrst_float64 f = dt > 0 ? (t - m_times[i]) / dt : 0;
-  const Vrst_coord p{static_cast<Vrst_int32>(std::lround(a.lat_e7 + f * (b.lat_e7 - a.lat_e7))),
-                     static_cast<Vrst_int32>(std::lround(a.lon_e7 + f * (b.lon_e7 - a.lon_e7)))};
+  const Vrst_latlon p{a.lat + f * (b.lat - a.lat), a.lon + f * (b.lon - a.lon)};
   return {p, i, dt > 0 ? distance_m(a, b) / dt * 3.6 : 0};
 }
 
@@ -66,10 +64,10 @@ Vrst_float64 Vrst_gpx_track::length_m() const {
   return sum;
 }
 
-Vrst_float64 Vrst_gpx_track::distance_m(Vrst_coord a, Vrst_coord b) {
-  constexpr Vrst_float64 kRad = std::numbers::pi / 180 * 1e-7;
-  const Vrst_float64 la1 = a.lat_e7 * kRad, la2 = b.lat_e7 * kRad;
-  const Vrst_float64 dla = la2 - la1, dlo = (b.lon_e7 - a.lon_e7) * kRad;
+Vrst_float64 Vrst_gpx_track::distance_m(Vrst_latlon a, Vrst_latlon b) {
+  constexpr Vrst_float64 kRad = std::numbers::pi / 180;
+  const Vrst_float64 la1 = a.lat * kRad, la2 = b.lat * kRad;
+  const Vrst_float64 dla = la2 - la1, dlo = (b.lon - a.lon) * kRad;
   const Vrst_float64 h = std::sin(dla / 2) * std::sin(dla / 2) + std::cos(la1) * std::cos(la2) * std::sin(dlo / 2) * std::sin(dlo / 2);
   return 2 * 6371008.8 * std::asin(std::min(1.0, std::sqrt(h)));
 }

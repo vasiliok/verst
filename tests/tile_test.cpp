@@ -140,14 +140,15 @@ TEST(TileLevels, OrderedWithThresholds) {
 /// visible_tiles() contains the tile under every screen point, at random zooms and
 /// rotations, and lists each tile once.
 TEST(VisibleTiles, CoverScreenAtAnyRotation) {
-  const Vrst_vec2d center = mercator({473220000, 50410000});
+  const Vrst_map_frame frame({kDefaultPoint, kDefaultPoint});
+  const Vrst_vec2d center = frame.center();
   std::mt19937 rng(2);
   std::uniform_real_distribution<Vrst_float64> u(0, 1);
   for (int i = 0; i < 500; ++i) {
     const int fb_w = 400 + static_cast<int>(u(rng) * 2400), fb_h = 300 + static_cast<int>(u(rng) * 1600);
     const Vrst_view v{{(u(rng) - 0.5) * 40000, (u(rng) - 0.5) * 40000}, std::pow(10.0, -3 + u(rng) * 3.5), u(rng) * 2 * kPi};
     const int z = kTileLevels[level_for(1 / v.scale)].z;
-    const std::vector<Vrst_tile_id> tiles = visible_tiles(v, fb_w, fb_h, center, z);
+    const std::vector<Vrst_tile_id> tiles = visible_tiles(frame.area_of(v, fb_w, fb_h), z);
     ASSERT_FALSE(tiles.empty());
     ASSERT_LE(tiles.size(), 400u) << "level choice should keep the tile count small";
     std::unordered_set<Vrst_uint64> set;
@@ -163,9 +164,10 @@ TEST(VisibleTiles, CoverScreenAtAnyRotation) {
 
 /// visible_tiles() lists the tile nearest the screen center first.
 TEST(VisibleTiles, NearestFirst) {
-  const Vrst_vec2d center = mercator({473220000, 50410000});
+  const Vrst_map_frame frame({kDefaultPoint, kDefaultPoint});
+  const Vrst_vec2d center = frame.center();
   const Vrst_view v{{1234, -567}, 1.0 / 3, 0.3};
-  const std::vector<Vrst_tile_id> tiles = visible_tiles(v, 2560, 1800, center, 14);
+  const std::vector<Vrst_tile_id> tiles = visible_tiles(frame.area_of(v, 2560, 1800), 14);
   ASSERT_FALSE(tiles.empty());
   const Vrst_tile_id mid = tile_at(14, {v.center.x + center.x, v.center.y + center.y});
   EXPECT_EQ(tile_key(tiles.front()), tile_key(mid));
@@ -174,10 +176,10 @@ TEST(VisibleTiles, NearestFirst) {
 /// A build that throws neither ends the worker nor blocks the tile: the other tiles still
 /// arrive, the failure is counted, and asking for the tile again retries it.
 TEST(TileLoader, FailedBuildIsCountedAndRetried) {
-  const Vrst_tile_loader::Vrst_build_fn build = [](Vrst_tile_id id) {
+  const Vrst_tile_loader::Vrst_build_fn build = [](Vrst_tile_id id, Vrst_build_progress&) {
     if (id.x == 1) throw std::runtime_error("broken tile");
-    std::unique_ptr<Vrst_tile_data> t = std::make_unique<Vrst_tile_data>();
-    t->id = id;
+    std::unique_ptr<Vrst_map_piece> t = std::make_unique<Vrst_map_piece>();
+    t->key = tile_key(id);
     return t;
   };
   Vrst_tile_loader loader(build, 2);
@@ -202,10 +204,10 @@ TEST(TileLoader, FailedBuildIsCountedAndRetried) {
 /// and the event list shows each build's start and end.
 TEST(TileLoader, StatusAndEventsShowTheQueue) {
   std::atomic<bool> release{false};
-  const Vrst_tile_loader::Vrst_build_fn build = [&release](Vrst_tile_id id) {
+  const Vrst_tile_loader::Vrst_build_fn build = [&release](Vrst_tile_id id, Vrst_build_progress&) {
     while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    std::unique_ptr<Vrst_tile_data> t = std::make_unique<Vrst_tile_data>();
-    t->id = id;
+    std::unique_ptr<Vrst_map_piece> t = std::make_unique<Vrst_map_piece>();
+    t->key = tile_key(id);
     return t;
   };
   Vrst_tile_loader loader(build, 1);
@@ -258,17 +260,15 @@ std::string env(const char (&name)[N]) {
 /// Opens the region once for all region tests and builds the index.
 class RegionTest : public ::testing::Test {
  protected:
-  /// Opens VRST_TEST_DIR, builds the mesh center and the tile index once.
+  /// Opens VRST_TEST_DIR and builds the tile index once.
   static void SetUpTestSuite() {
     const std::string dir = env("VRST_TEST_DIR");
     if (dir.empty()) return;
     s_data = std::make_unique<Vrst_nav_data>();
     s_data->open(dir);
-    s_mesh = std::make_unique<Vrst_map_mesh>();
-    s_mesh->build(*s_data, false);
     s_index = std::make_unique<Vrst_tile_index>();
     s_index->build(*s_data);
-    s_builder = std::make_unique<Vrst_tile_builder>(*s_data, *s_index, s_mesh->center());
+    s_builder = std::make_unique<Vrst_tile_builder>(*s_data, *s_index);
     const std::string every = env("VRST_TEST_EVERY");
     Vrst_uint32 n = 0;
     if (std::from_chars(every.data(), every.data() + every.size(), n).ec == std::errc{} && n > 0) s_every = n;
@@ -277,7 +277,6 @@ class RegionTest : public ::testing::Test {
   static void TearDownTestSuite() {
     s_builder.reset();
     s_index.reset();
-    s_mesh.reset();
     s_data.reset();
   }
   /// Skips the test when no region is configured.
@@ -286,13 +285,11 @@ class RegionTest : public ::testing::Test {
   }
 
   static std::unique_ptr<Vrst_nav_data> s_data;         ///< Opened region.
-  static std::unique_ptr<Vrst_map_mesh> s_mesh;         ///< Map center.
   static std::unique_ptr<Vrst_tile_index> s_index;      ///< Tile index.
   static std::unique_ptr<Vrst_tile_builder> s_builder;  ///< Tile builder.
   static Vrst_uint32 s_every;                           ///< Hole tests check every n-th object.
 };
 std::unique_ptr<Vrst_nav_data> RegionTest::s_data;
-std::unique_ptr<Vrst_map_mesh> RegionTest::s_mesh;
 std::unique_ptr<Vrst_tile_index> RegionTest::s_index;
 std::unique_ptr<Vrst_tile_builder> RegionTest::s_builder;
 Vrst_uint32 RegionTest::s_every = 1;
@@ -309,13 +306,14 @@ TEST_F(RegionTest, BuiltTilesWellFormed) {
     ASSERT_FALSE(ids.empty()) << "z" << level.z;
     for (const Vrst_tile_id& id : ids) {
       SCOPED_TRACE("tile " + std::to_string(id.z) + "/" + std::to_string(id.x) + "/" + std::to_string(id.y));
-      const std::unique_ptr<Vrst_tile_data> t = s_builder->build(id);
+      const std::unique_ptr<Vrst_map_piece> t = s_builder->build(id);
       const Vrst_box2d tb = tile_bounds(id);
       const Vrst_float64 m = tile_side(id.z) * 0.021;
       const Vrst_box2d keep{{tb.lo.x - m, tb.lo.y - m}, {tb.hi.x + m, tb.hi.y + m}};
-      const Vrst_vec2d o{t->origin.x + s_mesh->center().x, t->origin.y + s_mesh->center().y};
-      ASSERT_NEAR(o.x, tb.lo.x, 1e-6);
-      ASSERT_NEAR(o.y, tb.lo.y, 1e-6);
+      ASSERT_EQ(t->key, tile_key(id));
+      ASSERT_EQ(t->bounds.lo.x, tb.lo.x);
+      ASSERT_EQ(t->bounds.lo.y, tb.lo.y);
+      const Vrst_vec2d o = t->bounds.lo;
       Vrst_uint32 next = 0;
       for (int k = 0; k < kAreaKindCount; ++k) {
         const Vrst_tile_range r = t->fill_ranges[k];
@@ -409,7 +407,7 @@ TEST_F(RegionTest, BaseLevelHasNoHoles) {
   }
   Vrst_size checked = 0;
   for (const auto& [key, wanted] : expect) {
-    const std::unique_ptr<Vrst_tile_data> t = s_builder->build(tile_of_key(key));
+    const std::unique_ptr<Vrst_map_piece> t = s_builder->build(tile_of_key(key));
     std::unordered_set<std::string> have;
     for (const Vrst_line_instance& li : t->lines)
       have.insert(quant_key(0, {static_cast<Vrst_float64>(li.attr & 0xFF), li.x0, li.y0, li.x1, li.y1}));
@@ -447,8 +445,8 @@ TEST_F(RegionTest, LoaderReturnsEachTileOnce) {
   std::unordered_set<Vrst_uint64> got;
   const auto t0 = std::chrono::steady_clock::now();
   while (got.size() < ids.size() && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(120)) {
-    for (const std::unique_ptr<Vrst_tile_data>& t : loader.take(64))
-      ASSERT_TRUE(got.insert(tile_key(t->id)).second) << "tile returned twice";
+    for (const std::unique_ptr<Vrst_map_piece>& t : loader.take(64))
+      ASSERT_TRUE(got.insert(t->key).second) << "tile returned twice";
     std::vector<Vrst_tile_id> rest;
     for (const Vrst_tile_id& t : ids)
       if (!got.contains(tile_key(t))) rest.push_back(t);

@@ -150,37 +150,6 @@ class Vrst_map_layer_builder {
             static_cast<Vrst_int32>(std::lround((ref.lon() + p.x / kx) * 1e7))};
   }
 
-  /// Douglas-Peucker simplification of a polyline or a closed ring (first point repeated
-  /// at the end): drops every point that lies within tol of the simplified line. Used for
-  /// the map.dat outlines and lines before triangulation. Iterative, so very long
-  /// outlines are safe; the result may cross itself (topology is not kept).
-  /// @param pts Points in local metres; the first and last are always kept.
-  /// @param tol Tolerance in metres.
-  /// @return Kept points, in the original order.
-  static std::vector<Vrst_local> simplify(const std::vector<Vrst_local>& pts, Vrst_float64 tol);
-
-  /// Signed area of a ring (shoelace).
-  /// @param r Ring without the closing point.
-  /// @return Square metres, positive when counter-clockwise.
-  static Vrst_float64 ring_area(const std::vector<Vrst_local>& r);
-
-  /// Smallest rectangle, at any rotation, that contains a ring. Used for buildings: when
-  /// the rectangle is barely bigger than the outline (kRectFactor), the building is stored
-  /// as these 4 corners instead of its full outline, so the map is smaller and edges look
-  /// clean at street zoom.
-  ///
-  /// Method: the convex hull of the points (Andrew's monotone chain), then one candidate
-  /// rectangle per hull edge, aligned with that edge; the smallest wins. This is enough
-  /// because the minimum-area enclosing rectangle always has a side on a hull edge
-  /// (Freeman and Shapira, 1975). Each candidate measures the whole hull, so the cost is
-  /// O(n log n) for the hull plus O(h^2) for h hull points (rotating calipers would make
-  /// the second part O(h); building hulls are small, so this simpler loop is kept).
-  /// @param r Ring without the closing point, at least 3 points, local metres; taken by
-  ///        value because it is sorted in place.
-  /// @return 4 corners, counter-clockwise, local metres; all zero when every point is
-  ///         the same (no hull edge has a length).
-  static std::vector<Vrst_local> min_rectangle(std::vector<Vrst_local> r);
-
   /// Adds one assembled area: simplifies the rings, reduces buildings to rectangles
   /// where they fit, triangulates and stores it. Each outer ring is its own area.
   /// @param a Area from the assembler.

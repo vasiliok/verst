@@ -94,7 +94,7 @@ void Vrst_tile_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const std:
                               Vrst_float64 ground_mpp, const Vrst_tile_draw_options& opt) {
   glViewport(0, 0, fb_w, fb_h);
   glClearColor(kBackground[0], kBackground[1], kBackground[2], 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
+  glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);  // stencil: Vrst_map_renderer::draw_region()
   m_draw_calls = 0;
   std::vector<std::reference_wrapper<const Vrst_gpu_tile>> tiles;
   tiles.reserve(keys.size());
@@ -192,10 +192,14 @@ void Vrst_tile_renderer::draw(const Vrst_view& v, int fb_w, int fb_h, const std:
   glBindVertexArray(0);
 }
 
-void Vrst_tile_renderer::destroy() {
+void Vrst_tile_renderer::clear() {
   for (auto& [k, g] : m_tiles) release(g);
   m_tiles.clear();
   m_bytes = 0;
+}
+
+void Vrst_tile_renderer::destroy() {
+  clear();
   glDeleteBuffers(1, &m_border_vbo);
   glDeleteVertexArrays(1, &m_border_vao);
   glDeleteProgram(m_line_prog);

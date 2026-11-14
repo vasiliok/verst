@@ -219,6 +219,11 @@ class Vrst_tile_renderer {
   void draw(const Vrst_view& v, int fb_w, int fb_h, const std::vector<Vrst_uint64>& keys, Vrst_float64 ground_mpp,
             const Vrst_tile_draw_options& opt);
 
+  /// Deletes every tile on the GPU but keeps the programs: the next map (another
+  /// region) starts with an empty cache, and no tile of the old one is ever drawn.
+  /// Needs the GL context current.
+  void clear();
+
   /// Deletes all GL objects. Call with the context current.
   void destroy();
 

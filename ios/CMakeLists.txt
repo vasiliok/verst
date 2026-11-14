@@ -3,25 +3,11 @@
 # top-level CMakeLists.txt when CMAKE_SYSTEM_NAME is iOS.
 enable_language(OBJCXX)
 
-set(VERST_MAP_DIR "" CACHE PATH "Directory with graph.dat, edges.dat, geom.dat, names.dat (and map.dat) to bundle")
 set(VERST_BUNDLE_ID "com.verst.app" CACHE STRING "iOS bundle identifier")
 set(VERST_IOS_TEAM "" CACHE STRING "Apple development team id; empty = unsigned (Simulator only)")
 
-set(_map_files)
-foreach(f graph.dat edges.dat geom.dat names.dat)
-  if(NOT EXISTS "${VERST_MAP_DIR}/${f}")
-    message(FATAL_ERROR "VERST_MAP_DIR='${VERST_MAP_DIR}' has no ${f}; run osm2nav first and pass -DVERST_MAP_DIR=<out_dir>")
-  endif()
-  list(APPEND _map_files "${VERST_MAP_DIR}/${f}")
-endforeach()
-# Drawing-only layers (water, forest, buildings, railways); without it the app draws roads only.
-if(EXISTS "${VERST_MAP_DIR}/map.dat")
-  list(APPEND _map_files "${VERST_MAP_DIR}/map.dat")
-else()
-  message(WARNING "VERST_MAP_DIR has no map.dat: the app will draw roads only")
-endif()
-# Bundled read-only data: <app>/map/*.dat, mapped in place like on desktop.
-set_source_files_properties(${_map_files} PROPERTIES MACOSX_PACKAGE_LOCATION map)
+# No map is bundled: the app downloads Geofabrik extracts and converts them on the phone
+# (Maps screen); for development `--import-region <osm2nav folder>` copies one in.
 # Label fonts (downloaded by the top-level CMakeLists): <app>/fonts/*.ttf.
 set_source_files_properties(${VRST_FONT_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION fonts)
 
@@ -33,9 +19,9 @@ set_source_files_properties(${_scenarios} PROPERTIES MACOSX_PACKAGE_LOCATION sce
 set(_assets "${CMAKE_CURRENT_SOURCE_DIR}/Assets.xcassets")
 set_source_files_properties(${_assets} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 
-add_executable(verst_ios MACOSX_BUNDLE main.mm debug_console.mm debug_overlay.mm root_controller.mm ${_map_files} ${VRST_FONT_FILES} ${_scenarios}
+add_executable(verst_ios MACOSX_BUNDLE main.mm catalog_controller.mm debug_console.mm debug_overlay.mm download_manager.mm maps_controller.mm region_store.mm root_controller.mm ${VRST_FONT_FILES} ${_scenarios}
   ${_assets})
-target_link_libraries(verst_ios PRIVATE vrst_render
+target_link_libraries(verst_ios PRIVATE vrst_render vrst_convert
   "-framework Foundation" "-framework CoreGraphics" "-framework UIKit" "-framework GLKit"
   "-framework QuartzCore" "-framework CoreLocation")
 target_compile_options(verst_ios PRIVATE -fobjc-arc -Wall -Wextra)

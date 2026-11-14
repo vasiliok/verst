@@ -13,6 +13,9 @@
 /// Launch arguments `--center <lat> <lon>` and `--mpp <metres>` set the start view,
 /// like navview; `--log-dir <dir>` puts the session logs elsewhere (Simulator);
 /// `--scenario <name>` plays a test scenario (scenario.h) after the first frame;
+/// `--download <id>[,<id>...]` queues Geofabrik extracts as one region (development);
+/// `--import-region <folder>` copies an osm2nav folder in as a region (development);
+/// `--follow on|heading` starts in a follow mode of the location button;
 /// `--stuck-ms <ms>` logs a worker as "stuck" sooner than kStuckMs (to test the dump);
 /// `--record <s>` records the camera path for s seconds from the first frame (debug
 /// menu "Record activity" does the same by hand; the result plays as a scenario);
@@ -31,6 +34,10 @@
 
 #import "debug_console.h"
 #import "debug_overlay.h"
+#import "catalog_controller.h"
+#import "download_manager.h"
+#import "maps_controller.h"
+#import "region_store.h"
 #import "root_controller.h"
 
 #include <sys/utsname.h>
@@ -49,6 +56,7 @@
 #include "map_renderer.h"
 #include "map_provider.h"
 #include "map_scene.h"
+#include "region_outline.h"
 #include "activity_recorder.h"
 #include "scenario.h"
 #include "session_log.h"
@@ -64,6 +72,17 @@ static constexpr Vrst_size kKeepSessions = 20;
 static constexpr double kStallMs = 34;
 /// Side of the round buttons on the map (location, record, play), points.
 static constexpr CGFloat kRoundButtonSize = 44;
+/// What the location button does to the camera, like a phone map app.
+enum class Vrst_follow { Off, Follow, Heading };
+/// Seconds for the camera to cover most (63%) of the way to the followed position.
+static constexpr double kFollowSeconds = 0.3;
+/// Heading mode: the position sits this far down the screen (0 top, 1 bottom), so the
+/// road ahead shows.
+static constexpr double kHeadingDotY = 0.7;
+/// GPS course is used only above this speed, m/s; slower, the last heading stays.
+static constexpr double kMinCourseSpeed = 1.5;
+/// Seconds for a zoom button step to cover most (63%) of its zoom.
+static constexpr double kZoomButtonSeconds = 0.08;
 /// Build configuration, for the launch record (Debug code runs several times slower).
 #ifdef NDEBUG
 static constexpr const char* kBuildConfig = "release";
@@ -82,6 +101,8 @@ static constexpr const char* kArch = "other";
 static constexpr double kStuckMs = 2000;
 /// Most "stuck" records per session (each may hold thousands of points).
 static constexpr Vrst_size kMaxStuckDumps = 20;
+/// Camera box when no map is open: most of the inhabited world.
+static constexpr Vrst_geo_box kWorldBox{{-60.0, -170.0}, {75.0, 170.0}};
 /// File name start of recorded activity in Documents/scenarios.
 static NSString* const kRecordingPrefix = @"rec-";
 /// Seconds between two console refreshes while it is open.
@@ -96,8 +117,30 @@ static constexpr double kConsoleSeconds = 0.25;
 @end
 
 @implementation VrstMapController {
-  /// Map data of the app bundle: pieces, places, status; how it is stored is hidden.
+  /// Map data of the shown region: pieces, places, status; null when no map is open.
   std::unique_ptr<Vrst_map_provider> _map;
+  /// Regions on the phone (Documents/regions).
+  VrstRegionStore* _store;
+  /// The region shown; nil when no map is open.
+  VrstRegion* _region;
+  /// Regions being downloaded, merged and converted on the phone.
+  VrstDownloadManager* _downloads;
+  /// Maps toolbar item; shows the progress of a region being made.
+  UIBarButtonItem* _mapsItem;
+  /// `--download <id>[,<id>...]`: Geofabrik extracts queued as one region at launch.
+  NSString* _launchDownload;
+  /// Geofabrik list for `--download`.
+  VrstCatalog* _launchCatalog;
+  /// `--import-region <folder>` (repeatable): copied into the store at launch.
+  NSMutableArray<NSString*>* _importFolders;
+  /// --center or --mpp was given: the first region opens there, not at its saved camera.
+  BOOL _launchView;
+  /// Start rotation (saved camera of the region), radians.
+  Vrst_float64 _startAngle;
+  /// Folder of the label fonts in the app bundle.
+  NSString* _fontDir;
+  /// The Maps screen was shown by itself once (no map at launch).
+  BOOL _mapsOffered;
   /// World origin, start views and the area on screen, from the map extent.
   Vrst_map_frame _mapFrame;
   /// Provider work after the last frame: threads, busy workers, settled.
@@ -146,10 +189,8 @@ static constexpr double kConsoleSeconds = 0.25;
   EAGLContext* _context;
   /// Counts, zoom and errors in the top-left corner.
   UILabel* _stats;
-  /// Toggle buttons, kept to update their tint.
-  UIBarButtonItem* _onewayItem;
-  UIBarButtonItem* _dotsItem;   ///< Vertex dots toggle; see _onewayItem.
-  UIBarButtonItem* _namesItem;  ///< Place names toggle; see _onewayItem.
+  /// Place names toggle, kept to update its tint.
+  UIBarButtonItem* _namesItem;
   UIBarButtonItem* _roadsItem;  ///< Road class menu button.
   /// Load error shown instead of the map, or nil.
   NSString* _error;
@@ -215,6 +256,22 @@ static constexpr double kConsoleSeconds = 0.25;
   BOOL _trackPlaying;
   /// Camera path being recorded as a scenario (record button).
   Vrst_activity_recorder _recorder;
+  /// Round location button; its icon shows the follow mode.
+  UIButton* _locateButton;
+  /// Follow mode of the location button.
+  Vrst_follow _follow;
+  /// GPS course of travel, degrees clockwise from north; valid when _hasCourse.
+  double _course;
+  /// A course was seen while moving fast enough (kMinCourseSpeed).
+  BOOL _hasCourse;
+  /// Map rotation to ease toward once (north up after Heading mode); NAN = none.
+  double _angleTarget;
+  /// Round eye button: hides or shows the info boxes (stats and debug overlay).
+  UIButton* _boxesButton;
+  /// Zoom still to apply from the zoom buttons, natural log of the factor (0 = none).
+  double _pendingZoomLog;
+  /// `--follow on|heading`: follow mode to start with.
+  Vrst_follow _launchFollow;
   /// Round record button: start, or stop and save.
   UIButton* _recordButton;
   /// Round play button: pick a recording to play, or stop playing.
@@ -242,6 +299,7 @@ static constexpr double kConsoleSeconds = 0.25;
   _trackSpeed = 10;
   _startMpp = kDefaultMetresPerPoint;
   _stuckMs = kStuckMs;
+  _angleTarget = NAN;
   [self parseArguments];
 
   _context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
@@ -250,51 +308,277 @@ static constexpr double kConsoleSeconds = 0.25;
   v.delegate = self;
   v.drawableColorFormat = GLKViewDrawableColorFormatRGBA8888;
   v.drawableMultisample = GLKViewDrawableMultisample4X;
+  v.drawableStencilFormat = GLKViewDrawableStencilFormat8;  // region outline (draw_region)
   self.paused = YES;  // draw on demand, not 60 times a second
   self.resumeOnDidBecomeActive = NO;
   [EAGLContext setCurrentContext:_context];
 
+  _fontDir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"fonts"];
   try {
-    CFTimeInterval step = CACurrentMediaTime();
-    // Milliseconds since the previous step, for the "load" record.
-    const auto lap = [&step] {
-      const CFTimeInterval now = CACurrentMediaTime();
-      const double ms = (now - step) * 1000;
-      step = now;
-      return ms;
-    };
-    NSString* dir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"map"];
-    _map = open_map(dir.UTF8String, {.threads = 2, .record_events = true});  // events: "build" records
-    _mapFrame = Vrst_map_frame(_map->extent());
-    const double map_ms = lap();
-    const std::vector<Vrst_map_place> places = _map->places();
-    _labels.build(places, _mapFrame);
-    NSString* fontDir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"fonts"];
-    std::vector<std::string> fonts;
-    for (const std::string_view f : kLabelFontFiles) fonts.push_back(std::string(fontDir.UTF8String) + "/" + std::string(f));
-    _atlas.build(fonts, _labels.codepoints());
-    _labels.measure(_atlas);
-    const double labels_ms = lap();
-    _showLabels = YES;
-    _loaded = YES;
     _renderer.init_overlays();
-    _renderer.set_label_atlas(_atlas);
     _tiles.init();
     _glReady = YES;
-    _log.record("load", [self now])
-        .num("map_ms", map_ms, 1)
-        .num("labels_ms", labels_ms, 1)
-        .num("gl_ms", lap(), 1)
-        .count("places", places.size());
-    for (const std::string& line : _map->describe()) _log.record("map", [self now]).text("info", line);
   } catch (const std::exception& e) {
-    _error = [NSString stringWithFormat:@"cannot load map: %s", e.what()];
+    _error = [NSString stringWithFormat:@"cannot start OpenGL: %s", e.what()];
     _log.record("error", [self now]).text("what", e.what());
   }
+  NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+  _store = [[VrstRegionStore alloc] initWithRoot:[docs stringByAppendingPathComponent:@"regions"]];
+  for (NSString* folder in _importFolders) {
+    NSError* err = nil;
+    VrstRegion* r = [_store importFolder:folder error:&err];
+    Vrst_log_record rec = _log.record("region", [self now]);
+    rec.text("event", "import").text("folder", folder.UTF8String).flag("ok", r != nil);
+    if (r) {
+      _store.activeId = r.regionId;
+    } else {
+      rec.text("error", err.localizedDescription.UTF8String ?: "");
+    }
+  }
+  _downloads = [[VrstDownloadManager alloc] initWithRoot:_store.root];
+  __weak VrstMapController* weakSelf = self;
+  _downloads.logHandler = ^(NSString* type, NSDictionary<NSString*, id>* fields) { [weakSelf logRecord:type fields:fields]; };
+  _downloads.readyHandler = ^(NSString* rid) { [weakSelf regionReady:rid]; };
+  [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(downloadsChanged)
+                                             name:VrstDownloadsChangedNotification object:nil];
+  if (_glReady) [self openRegion:[self startRegion]];
+  if (_launchDownload) [self queueLaunchDownload];
   if (_launchGpx && _loaded) [self loadTrack:_launchGpx];
   [self buildOverlay];
   [self addGestures];
   [self startLocation];
+}
+
+// --- regions ---------------------------------------------------------------------
+
+/// The region to open at launch: the one shown last, else the first on the phone.
+/// @return Region, or nil when the phone has none.
+- (nullable VrstRegion*)startRegion {
+  if (NSString* rid = _store.activeId)
+    if (VrstRegion* r = [_store regionWithId:rid]) return r;
+  return [_store regions].firstObject;
+}
+
+/// Leaves the shown region: saves its camera, stops what is tied to it (recording,
+/// test, follow mode), closes the provider and empties the tile cache.
+- (void)leaveRegion {
+  if (_region && _viewSet) {
+    const Vrst_latlon c = _mapFrame.to_latlon(_view.center);
+    const double mpp = [self pxPerPoint] * std::cos(c.lat * kPi / 180) / _view.scale;
+    [_store saveCamera:{c.lat, c.lon, mpp, _view.angle} forRegion:_region.regionId];
+  }
+  [self stopRecording];
+  [self stopScenario];
+  [self setFollow:Vrst_follow::Off];
+  if (!_track.empty()) _trackDirty = YES;  // its world coordinates change with the region
+  _map.reset();  // stops the workers
+  if (_glReady) {
+    [EAGLContext setCurrentContext:_context];
+    _tiles.clear();
+  }
+  _mapStatus = {};
+  _stuckDumped.clear();
+  _region = nil;
+}
+
+/// Shows a region (or no map): opens its data, places the labels, loads its outline and
+/// restores its camera (the whole region the first time). A region that fails to open
+/// is logged and shown as an error; the map is then empty.
+/// @param r Region, or nil for no map.
+- (void)openRegion:(nullable VrstRegion*)r {
+  [self leaveRegion];
+  CFTimeInterval step = CACurrentMediaTime();
+  // Milliseconds since the previous step, for the "region" record.
+  const auto lap = [&step] {
+    const CFTimeInterval now = CACurrentMediaTime();
+    const double ms = (now - step) * 1000;
+    step = now;
+    return ms;
+  };
+  _error = nil;
+  if (r) {
+    try {
+      _map = open_map(r.path.UTF8String, {.threads = 2, .record_events = true});  // events: "build" records
+      _mapFrame = Vrst_map_frame(_map->extent());
+    } catch (const std::exception& e) {
+      _map.reset();
+      _error = [NSString stringWithFormat:@"cannot open %@: %s", r.name, e.what()];
+      _log.record("error", [self now]).text("what", e.what()).text("region", r.regionId.UTF8String);
+      r = nil;
+    }
+  }
+  if (!r) _mapFrame = Vrst_map_frame(kWorldBox);
+  const double open_ms = lap();
+  const std::vector<Vrst_map_place> places = _map ? _map->places() : std::vector<Vrst_map_place>{};
+  try {
+    _labels.build(places, _mapFrame);
+    std::vector<std::string> fonts;
+    for (const std::string_view f : kLabelFontFiles) fonts.push_back(std::string(_fontDir.UTF8String) + "/" + std::string(f));
+    _atlas.build(fonts, _labels.codepoints());
+    _labels.measure(_atlas);
+    [EAGLContext setCurrentContext:_context];
+    _renderer.set_label_atlas(_atlas);
+    _showLabels = YES;
+  } catch (const std::exception& e) {
+    _showLabels = NO;
+    _log.record("error", [self now]).text("what", e.what());
+  }
+  const double labels_ms = lap();
+  Vrst_size outline_points = 0;
+  if (!r) {
+    _renderer.set_region_everywhere();
+  } else {
+    std::vector<Vrst_poly_ring> rings;
+    for (NSString* f in r.polyFiles) {
+      NSString* text = [NSString stringWithContentsOfFile:f encoding:NSUTF8StringEncoding error:nil];
+      try {
+        for (Vrst_poly_ring& ring : parse_poly(text.UTF8String ?: "")) rings.push_back(std::move(ring));
+      } catch (const std::exception& e) {
+        _log.record("error", [self now]).text("what", e.what()).text("poly", f.lastPathComponent.UTF8String);
+      }
+    }
+    if (rings.empty()) {
+      _renderer.clear_region();  // no outline known: no border, no grid
+    } else {
+      const Vrst_region_shape shape = region_shape(rings);
+      for (const std::vector<Vrst_vec2d>& o : shape.outlines) outline_points += o.size();
+      _renderer.set_region(shape, _mapFrame.center());
+    }
+  }
+  _region = r;
+  if (r) _store.activeId = r.regionId;
+  // Camera: launch arguments, else the region's saved camera, else the whole region.
+  VrstRegionCamera cam{};
+  if (_launchView) {
+    _launchView = NO;
+  } else if (r && [_store camera:&cam forRegion:r.regionId]) {
+    _startCenter = {cam.lat, cam.lon};
+    _startMpp = cam.mpp;
+    _startAngle = cam.angle;
+  } else {
+    _startMpp = 0;  // fit
+    _startAngle = 0;
+  }
+  _viewSet = NO;  // the next draw applies the start view (it needs the drawable size)
+  _loaded = YES;
+  Vrst_log_record rec = _log.record("region", [self now]);
+  rec.text("event", "open")
+      .text("id", r ? r.regionId.UTF8String : "")
+      .text("name", r ? r.name.UTF8String : "no map")
+      .num("open_ms", open_ms, 1)
+      .num("labels_ms", labels_ms, 1)
+      .count("places", places.size())
+      .count("outline_points", outline_points);
+  if (_map)
+    for (const std::string& line : _map->describe()) _log.record("map", [self now]).text("info", line);
+  [self redraw];
+}
+
+/// Toolbar: the Maps screen (regions on the phone; switch, delete).
+- (void)onMaps {
+  _log.record("ui", [self now]).text("event", "button_maps");
+  VrstMapsController* maps = [[VrstMapsController alloc] initWithStore:_store manager:_downloads];
+  __weak VrstMapController* weak = self;
+  maps.chooseHandler = ^(NSString* rid) { [weak switchToRegion:rid]; };
+  maps.deleteHandler = ^(NSString* rid) { [weak regionDeleted:rid]; };
+  UINavigationController* nav = [[UINavigationController alloc] initWithRootViewController:maps];
+  [self presentViewController:nav animated:YES completion:nil];
+}
+
+/// Maps screen: show another region.
+/// @param regionId Region folder name.
+- (void)switchToRegion:(NSString*)regionId {
+  if ([regionId isEqualToString:_region.regionId ?: @""]) return;
+  _log.record("region", [self now])
+      .text("event", "switch")
+      .text("from", _region ? _region.regionId.UTF8String : "")
+      .text("to", regionId.UTF8String);
+  [self openRegion:[_store regionWithId:regionId]];
+}
+
+/// `--download <id>[,<id>...]`: queues those Geofabrik extracts as one region, like the
+/// catalog screen does.
+- (void)queueLaunchDownload {
+  _launchCatalog = [[VrstCatalog alloc] init];
+  NSArray<NSString*>* ids = [_launchDownload componentsSeparatedByString:@","];
+  __weak VrstMapController* weak = self;
+  VrstCatalog* catalog = _launchCatalog;
+  VrstDownloadManager* downloads = _downloads;
+  [catalog loadInto:_store.root
+         completion:^(NSString* error) {
+           NSMutableArray<VrstExtract*>* extracts = [NSMutableArray array];
+           NSMutableArray<NSString*>* names = [NSMutableArray array];
+           NSMutableArray<NSString*>* queue = [NSMutableArray arrayWithObject:@""];
+           while (!error && queue.count) {  // every level of the list
+             NSString* parent = queue.firstObject;
+             [queue removeObjectAtIndex:0];
+             for (NSDictionary* d in [catalog childrenOf:parent]) {
+               [queue addObject:d[@"id"]];
+               if (![ids containsObject:d[@"id"]]) continue;
+               VrstExtract* e = [[VrstExtract alloc] init];
+               e.extractId = d[@"id"];
+               e.name = d[@"name"];
+               e.pbfUrl = d[@"pbf"];
+               e.polyUrl = d[@"poly"];
+               [extracts addObject:e];
+               [names addObject:d[@"name"]];
+             }
+           }
+           [weak logRecord:@"region" fields:@{@"event" : @"launch_download", @"ids" : weak ? [ids componentsJoinedByString:@","] : @"",
+                                               @"found" : @(extracts.count), @"error" : error ?: @""}];
+           if (extracts.count) [downloads addRegion:[names componentsJoinedByString:@" + "] extracts:extracts];
+         }];
+}
+
+/// A region was made on the phone: shown at once when no map is open.
+/// @param regionId Region folder name.
+- (void)regionReady:(NSString*)regionId {
+  VrstRegion* r = [_store regionWithId:regionId];
+  [_debug showGesture:[NSString stringWithFormat:@"MAP READY %@", r.name ?: regionId]];
+  if (!_region && r) [self openRegion:r];
+}
+
+/// Download manager changed: the Maps item shows the progress of the running job.
+- (void)downloadsChanged {
+  const double f = [_downloads activeFraction];
+  _mapsItem.title = f < 0 ? @"Maps" : [NSString stringWithFormat:@"Maps %.0f%%", 100 * f];
+}
+
+/// Writes a log record from Objective-C values: numbers as numbers (booleans as flags),
+/// everything else as text.
+/// @param type Record type.
+/// @param fields Fields.
+- (void)logRecord:(NSString*)type fields:(NSDictionary<NSString*, id>*)fields {
+  Vrst_log_record r = _log.record(type.UTF8String, [self now]);
+  for (NSString* k in [fields.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    id v = fields[k];
+    if ([v isKindOfClass:NSNumber.class]) {
+      NSNumber* n = v;
+      if (strcmp(n.objCType, @encode(BOOL)) == 0 || strcmp(n.objCType, "c") == 0) {
+        r.flag(k.UTF8String, n.boolValue);
+      } else {
+        r.num(k.UTF8String, n.doubleValue, 1);
+      }
+    } else {
+      r.text(k.UTF8String, [v description].UTF8String ?: "");
+    }
+  }
+}
+
+/// Maps screen: a region was deleted.
+/// @param regionId Region folder name.
+- (void)regionDeleted:(NSString*)regionId {
+  _log.record("region", [self now]).text("event", "deleted").text("id", regionId.UTF8String);
+}
+
+/// With no map on the phone, the Maps screen opens by itself once, after launch.
+/// @param animated Animated appearance.
+- (void)viewDidAppear:(BOOL)animated {
+  [super viewDidAppear:animated];
+  if (!_region && !_mapsOffered && _glReady && !_launchScenario) {
+    _mapsOffered = YES;
+    [self onMaps];
+  }
 }
 
 /// Seconds since launch: the `t` of the log and of the overlay clock.
@@ -340,12 +624,27 @@ static constexpr double kConsoleSeconds = 0.25;
   [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:nil
               usingBlock:^(NSNotification*) {
                 [weak logSystem:"background"];
+                [weak backgroundDownloads];
                 [weak stopRecording];  // iOS may end the app in the background: keep what was recorded
               }];
   [nc addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:nil
-              usingBlock:^(NSNotification*) { [weak logSystem:"foreground"]; }];
+              usingBlock:^(NSNotification*) {
+                [weak logSystem:"foreground"];
+                [weak foregroundDownloads];
+              }];
   [nc addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
               usingBlock:^(NSNotification*) { [weak logSystem:"thermal"]; }];
+}
+
+/// The app goes to the background: downloads pause, a conversion stops (both continue
+/// when the app is back).
+- (void)backgroundDownloads {
+  [_downloads background];
+}
+
+/// The app is back: continues the downloads and conversions.
+- (void)foregroundDownloads {
+  [_downloads foreground];
 }
 
 /// Logs a system event and writes the log to the file at once (the app may be
@@ -387,6 +686,7 @@ static constexpr double kConsoleSeconds = 0.25;
       const double lat = a[i + 1].doubleValue, lon = a[i + 2].doubleValue;
       if (std::abs(lat) <= 90 && std::abs(lon) <= 180)
         _startCenter = {lat, lon};
+      _launchView = YES;
       i += 2;
     } else if ([a[i] isEqualToString:@"--gpx"] && i + 1 < a.count) {
       _launchGpx = a[i + 1];
@@ -400,6 +700,16 @@ static constexpr double kConsoleSeconds = 0.25;
     } else if ([a[i] isEqualToString:@"--stuck-ms"] && i + 1 < a.count) {
       if (a[i + 1].doubleValue > 0) _stuckMs = a[i + 1].doubleValue;
       ++i;
+    } else if ([a[i] isEqualToString:@"--follow"] && i + 1 < a.count) {
+      _launchFollow = [a[i + 1] isEqualToString:@"heading"] ? Vrst_follow::Heading : Vrst_follow::Follow;
+      ++i;
+    } else if ([a[i] isEqualToString:@"--download"] && i + 1 < a.count) {
+      _launchDownload = a[i + 1];
+      ++i;
+    } else if ([a[i] isEqualToString:@"--import-region"] && i + 1 < a.count) {
+      if (!_importFolders) _importFolders = [NSMutableArray array];
+      [_importFolders addObject:a[i + 1]];
+      ++i;
     } else if ([a[i] isEqualToString:@"--console"]) {
       _launchConsole = YES;
     } else if ([a[i] isEqualToString:@"--scenario"] && i + 1 < a.count) {
@@ -407,6 +717,7 @@ static constexpr double kConsoleSeconds = 0.25;
       ++i;
     } else if ([a[i] isEqualToString:@"--mpp"] && i + 1 < a.count) {
       if (a[i + 1].doubleValue > 0) _startMpp = a[i + 1].doubleValue;
+      _launchView = YES;
       ++i;
     }
   }
@@ -472,13 +783,20 @@ static constexpr double kConsoleSeconds = 0.25;
     return ms;
   };
   Vrst_tile_frame tf;
-  const std::vector<Vrst_uint64> keys =
-      select_tiles(_tiles, *_map, _mapFrame, _view, w, h, ++_frame, kTileBudget, tf);
-  _mapStatus = _map->status();
+  std::vector<Vrst_uint64> keys;
+  if (_map) {
+    keys = select_tiles(_tiles, *_map, _mapFrame, _view, w, h, ++_frame, kTileBudget, tf);
+    _mapStatus = _map->status();
+  } else {
+    _mapStatus = {};
+    _mapStatus.settled = true;  // nothing to load
+  }
   const double select_ms = phase();
   _opt.point_px = Vrst_float32(2.5 * px);
   _opt.px_ratio = px;
   _tiles.draw(_view, w, h, keys, _mapFrame.ground_metres_per_point(_view, px), _opt);
+  const Vrst_vec2d abs_center{_mapFrame.center().x + _view.center.x, _mapFrame.center().y + _view.center.y};
+  _renderer.draw_region(_view, w, h, _mapFrame.center(), std::cos(inverse_mercator(abs_center).lat * kPi / 180));
   [self drawTrackWidth:w height:h];
   const double tiles_ms = phase();
   if (_hasFix) _renderer.draw_position(_view, w, h, _mapFrame.to_world(_fix), Vrst_float32(16 * px));
@@ -506,6 +824,10 @@ static constexpr double kConsoleSeconds = 0.25;
   if (_launchConsole) {
     _launchConsole = NO;
     [self onConsole];
+  }
+  if (_launchFollow != Vrst_follow::Off) {
+    [self setFollow:_launchFollow];
+    _launchFollow = Vrst_follow::Off;
   }
   if (_launchRecordSeconds > 0) {
     [self startRecording];
@@ -574,9 +896,15 @@ static constexpr double kConsoleSeconds = 0.25;
         .num("upload_ms", u.upload_ms, 2);
 }
 
-/// Start view: _startCenter at _startMpp, or the whole map if it is outside the data.
+/// Start view: _startCenter at _startMpp turned by _startAngle, or the whole map when
+/// _startMpp is 0 or the point is outside the data.
 - (void)resetView {
+  if (_startMpp <= 0) {
+    [self fitView];
+    return;
+  }
   _view = _mapFrame.start_view(_startCenter, _startMpp, [self pxPerPoint], [self fbWidth], [self fbHeight]);
+  _view.angle = _startAngle;
 }
 
 /// Whole map, no rotation.
@@ -618,10 +946,9 @@ static constexpr double kConsoleSeconds = 0.25;
   UIBarButtonItem* start = [[UIBarButtonItem alloc] initWithTitle:@"Start" style:UIBarButtonItemStylePlain
                                                            target:self action:@selector(onStart)];
   _roadsItem = [[UIBarButtonItem alloc] initWithTitle:@"Roads" menu:[self roadsMenu]];
-  _onewayItem = [[UIBarButtonItem alloc] initWithTitle:@"Oneway" style:UIBarButtonItemStylePlain
-                                                target:self action:@selector(onOneway)];
-  _dotsItem = [[UIBarButtonItem alloc] initWithTitle:@"Dots" style:UIBarButtonItemStylePlain
-                                              target:self action:@selector(onDots)];
+  UIBarButtonItem* maps = [[UIBarButtonItem alloc] initWithTitle:@"Maps" style:UIBarButtonItemStylePlain
+                                                          target:self action:@selector(onMaps)];
+  _mapsItem = maps;
   _namesItem = [[UIBarButtonItem alloc] initWithTitle:@"Names" style:UIBarButtonItemStylePlain
                                                target:self action:@selector(onNames)];
   UIBarButtonItem* log = [[UIBarButtonItem alloc] initWithTitle:@"Log" style:UIBarButtonItemStylePlain
@@ -629,7 +956,7 @@ static constexpr double kConsoleSeconds = 0.25;
   log.tintColor = UIColor.systemOrangeColor;
   UIBarButtonItem* flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
                                                                         target:nil action:nil];
-  bar.items = @[ fit, flex, start, flex, _roadsItem, flex, _onewayItem, flex, _dotsItem, flex, _namesItem, flex, log ];
+  bar.items = @[ fit, flex, start, flex, _roadsItem, flex, maps, flex, _namesItem, flex, log ];
   // Seven titles do not fit a 390 pt wide phone at the default 17 pt.
   NSDictionary* small = @{NSFontAttributeName : [UIFont systemFontOfSize:15]};
   for (UIBarButtonItem* item in bar.items) {
@@ -638,7 +965,11 @@ static constexpr double kConsoleSeconds = 0.25;
   }
   [self.view addSubview:bar];
 
-  UIButton* locate = [self roundButton:@"location.fill" color:UIColor.systemBlueColor action:@selector(onLocate)];
+  UIButton* locate = [self roundButton:@"location" color:UIColor.systemBlueColor action:@selector(onLocate)];
+  _locateButton = locate;
+  _boxesButton = [self roundButton:@"eye" color:UIColor.whiteColor action:@selector(onBoxes)];
+  UIButton* zoomOut = [self roundButton:@"minus" color:UIColor.whiteColor action:@selector(onZoomOut)];
+  UIButton* zoomIn = [self roundButton:@"plus" color:UIColor.whiteColor action:@selector(onZoomIn)];
   _recordButton = [self roundButton:@"record.circle" color:UIColor.systemRedColor action:@selector(onRecordButton)];
   _playButton = [self roundButton:@"play.fill" color:UIColor.systemGreenColor action:@selector(onPlayButton)];
 
@@ -667,6 +998,12 @@ static constexpr double kConsoleSeconds = 0.25;
     [bar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
     [locate.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-12],
     [locate.bottomAnchor constraintEqualToAnchor:bar.topAnchor constant:-12],
+    [_boxesButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-12],
+    [_boxesButton.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],
+    [zoomOut.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:12],
+    [zoomOut.bottomAnchor constraintEqualToAnchor:bar.topAnchor constant:-12],
+    [zoomIn.leadingAnchor constraintEqualToAnchor:zoomOut.leadingAnchor],
+    [zoomIn.bottomAnchor constraintEqualToAnchor:zoomOut.topAnchor constant:-12],
     [_recordButton.trailingAnchor constraintEqualToAnchor:locate.trailingAnchor],
     [_recordButton.bottomAnchor constraintEqualToAnchor:locate.topAnchor constant:-12],
     [_playButton.trailingAnchor constraintEqualToAnchor:locate.trailingAnchor],
@@ -679,7 +1016,7 @@ static constexpr double kConsoleSeconds = 0.25;
 /// Menu with one checkable entry per road class group.
 /// @return Menu reflecting the current class mask.
 - (UIMenu*)roadsMenu {
-  NSMutableArray<UIAction*>* items = [NSMutableArray array];
+  NSMutableArray<UIMenuElement*>* items = [NSMutableArray array];
   for (int i = 0; i < kClassGroupCount; ++i) {
     __weak VrstMapController* weak = self;
     UIAction* a = [UIAction actionWithTitle:@(std::string(kGroupNames[i]).c_str()) image:nil identifier:nil
@@ -687,7 +1024,16 @@ static constexpr double kConsoleSeconds = 0.25;
     a.state = (_opt.class_mask & kClassGroups[i]) ? UIMenuElementStateOn : UIMenuElementStateOff;
     [items addObject:a];
   }
-  return [UIMenu menuWithTitle:@"Road classes" children:items];
+  __weak VrstMapController* weak = self;
+  UIAction* oneway = [UIAction actionWithTitle:@"Highlight oneway" image:nil identifier:nil
+                                       handler:^(__kindof UIAction*) { [weak onOneway]; }];
+  oneway.state = _opt.oneway ? UIMenuElementStateOn : UIMenuElementStateOff;
+  UIAction* dots = [UIAction actionWithTitle:@"Show vertices" image:nil identifier:nil
+                                     handler:^(__kindof UIAction*) { [weak onDots]; }];
+  dots.state = _opt.show_vertices ? UIMenuElementStateOn : UIMenuElementStateOff;
+  UIMenu* display = [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline
+                                 children:@[ oneway, dots ]];
+  return [UIMenu menuWithTitle:@"Road classes" children:[items arrayByAddingObject:display]];
 }
 
 /// Shows or hides one road class group.
@@ -698,10 +1044,10 @@ static constexpr double kConsoleSeconds = 0.25;
   [self redraw];
 }
 
-/// Tints the toggle buttons: pink when on, grey when off.
+/// Tints the Names button (pink when on, grey when off) and refreshes the Roads menu
+/// checkmarks (oneway, vertices).
 - (void)updateToggles {
-  _onewayItem.tintColor = _opt.oneway ? UIColor.systemPinkColor : UIColor.lightGrayColor;
-  _dotsItem.tintColor = _opt.show_vertices ? UIColor.systemPinkColor : UIColor.lightGrayColor;
+  _roadsItem.menu = [self roadsMenu];
   _namesItem.tintColor = _showLabels ? UIColor.systemPinkColor : UIColor.lightGrayColor;
 }
 
@@ -715,6 +1061,10 @@ static constexpr double kConsoleSeconds = 0.25;
   const Vrst_float64 lat = inverse_mercator(_mapFrame.center()).lat * kPi / 180;
   NSString* gps = _hasFix ? [NSString stringWithFormat:@"GPS %.5f, %.5f  +-%.0f m", _fix.lat, _fix.lon, _fixAccuracy]
                           : @"GPS waiting";
+  if (!_map) {
+    _stats.text = [NSString stringWithFormat:@" No map yet: tap Maps to add a region \n %@ ", gps];
+    return;
+  }
   const std::vector<std::string> info = _map->describe();
   std::vector<std::string> status = status_lines(_mapStatus, *_map);
   if (_mapStatus.settled) status.resize(1);  // "loading done"; idle workers say nothing
@@ -723,8 +1073,8 @@ static constexpr double kConsoleSeconds = 0.25;
   NSString* rec = _recorder.recording()
                      ? [NSString stringWithFormat:@" REC %.0f s \n", _recorder.seconds([self now])]
                      : @"";
-  _stats.text = [NSString stringWithFormat:@"%@ %s \n zoom %.2fx  %.2f m/pt \n%s %@ ",
-                 rec, info.empty() ? "" : info.front().c_str(), _view.scale / _initialScale,
+  _stats.text = [NSString stringWithFormat:@"%@ %@ \n %s \n zoom %.2fx  %.2f m/pt \n%s %@ ",
+                 rec, _region.name, info.empty() ? "" : info.front().c_str(), _view.scale / _initialScale,
                  [self pxPerPoint] * std::cos(lat) / _view.scale, work.c_str(), gps];
 }
 
@@ -787,26 +1137,95 @@ static constexpr double kConsoleSeconds = 0.25;
   [self redraw];
 }
 
-/// Round button: puts the GPS position in the screen center, keeping zoom and
-/// rotation, and stops following a replayed track (it would pull the camera back).
-- (void)onLocate {
-  if (!_hasFix) {
-    [_debug showGesture:@"BUTTON Locate: GPS waiting"];
-    _log.record("ui", [self now]).text("event", "button_locate").flag("fix", false);
-    return;
-  }
-  [_debug showGesture:@"BUTTON Locate"];
-  _log.record("ui", [self now])
-      .text("event", "button_locate")
-      .flag("fix", true)
-      .num("lat", _fix.lat, 6)
-      .num("lon", _fix.lon, 6);
-  _trackFollow = NO;
-  _view.center = _mapFrame.to_world(_fix);
+/// Zoom button: 2x closer around the screen center, animated (zoomStepFor:).
+- (void)onZoomIn {
+  _pendingZoomLog += std::log(2.0);
+  _log.record("ui", [self now]).text("event", "button_zoom_in");
   [self redraw];
 }
 
-/// Toolbar: oneway highlight.
+/// Zoom button: 2x farther around the screen center, animated (zoomStepFor:).
+- (void)onZoomOut {
+  _pendingZoomLog -= std::log(2.0);
+  _log.record("ui", [self now]).text("event", "button_zoom_out");
+  [self redraw];
+}
+
+/// Applies part of the zoom asked for by the zoom buttons, so a tap glides instead of
+/// jumping; several taps add up. Called on every display tick.
+/// @param dt Seconds since the last tick.
+- (void)zoomStepFor:(double)dt {
+  if (_pendingZoomLog == 0 || !_viewSet) return;
+  double step = _pendingZoomLog * (1 - std::exp(-std::max(dt, 0.0) / kZoomButtonSeconds));
+  if (std::abs(_pendingZoomLog - step) < 1e-3) step = _pendingZoomLog;  // finish exactly
+  _pendingZoomLog -= step;
+  const CGSize size = self.view.bounds.size;
+  [self zoomBy:std::exp(step) at:CGPointMake(size.width / 2, size.height / 2)];
+  [self redraw];
+}
+
+/// Location button, like a phone map app: off -> Follow (the map keeps the position
+/// in the center) -> Heading (also turns the map so the direction of travel points up)
+/// -> Follow again (back to north up). Stops following a replayed track, which would
+/// pull the camera elsewhere.
+- (void)onLocate {
+  const Vrst_follow next = _follow == Vrst_follow::Follow ? Vrst_follow::Heading : Vrst_follow::Follow;
+  _trackFollow = NO;
+  [self setFollow:next];
+  if (!_hasFix) [_debug showGesture:@"BUTTON Locate: GPS waiting"];
+}
+
+/// Changes the follow mode: icon, log, and the turn back to north up when Heading ends.
+/// @param mode New mode.
+- (void)setFollow:(Vrst_follow)mode {
+  static constexpr const char* kNames[] = {"off", "follow", "heading"};
+  static NSString* const kIcons[] = {@"location", @"location.fill", @"location.north.line.fill"};
+  static NSString* const kShown[] = {@"FOLLOW off", @"FOLLOW on", @"FOLLOW heading up"};
+  if (mode == _follow) return;
+  if (_follow == Vrst_follow::Heading && mode == Vrst_follow::Follow) _angleTarget = 0;  // north up again
+  if (mode != Vrst_follow::Follow) _angleTarget = NAN;
+  _follow = mode;
+  const auto i = static_cast<int>(mode);
+  [_locateButton setImage:[UIImage systemImageNamed:kIcons[i]] forState:UIControlStateNormal];
+  [_debug showGesture:kShown[i]];
+  Vrst_log_record r = _log.record("ui", [self now]);
+  r.text("event", "follow").text("mode", kNames[i]).flag("fix", _hasFix);
+  if (_hasFix) r.num("lat", _fix.lat, 6).num("lon", _fix.lon, 6);
+  [self redraw];
+}
+
+/// Moves the camera part of the way to the followed GPS position (and in Heading mode
+/// to the course), so the 1 Hz GPS updates look like smooth motion. Called on every
+/// display tick; redraws only when the camera moved.
+/// @param dt Seconds since the last tick.
+- (void)followFor:(double)dt {
+  if (_follow == Vrst_follow::Off || !_hasFix || !_viewSet || (_scenario && _scenario->running())) return;
+  double angle = _view.angle;
+  if (_follow == Vrst_follow::Heading && _hasCourse) angle = _course * kPi / 180;  // course clockwise = map turned counter-clockwise
+  if (_follow == Vrst_follow::Follow && !std::isnan(_angleTarget)) angle = _angleTarget;
+  const int w = [self fbWidth], h = [self fbHeight];
+  const Vrst_vec2d fix = _mapFrame.to_world(_fix);
+  Vrst_vec2d target = fix;
+  if (_follow == Vrst_follow::Heading) {
+    // Put the position at kHeadingDotY of the screen height: shift the center by the
+    // offset between that screen point and the center, for the target rotation.
+    const Vrst_vec2d at = screen_to_world({fix, _view.scale, angle}, w, h, w / 2.0, h * kHeadingDotY);
+    target = {fix.x - (at.x - fix.x), fix.y - (at.y - fix.y)};
+  }
+  const double k = 1 - std::exp(-std::max(dt, 0.0) / kFollowSeconds);
+  const Vrst_vec2d dc{(target.x - _view.center.x) * k, (target.y - _view.center.y) * k};
+  const double da = std::remainder(angle - _view.angle, 2 * kPi) * k;  // the short way round
+  const double px = std::hypot(dc.x, dc.y) * _view.scale;  // framebuffer px moved
+  if (px < 0.05 && std::abs(da) < 1e-4) {
+    if (!std::isnan(_angleTarget) && std::abs(da) < 1e-4) _angleTarget = NAN;  // north reached
+    return;
+  }
+  _view.center = {_view.center.x + dc.x, _view.center.y + dc.y};
+  _view.angle += da;
+  [self redraw];
+}
+
+/// Roads menu: oneway highlight.
 - (void)onOneway {
   _opt.oneway = !_opt.oneway;
   [_debug showGesture:_opt.oneway ? @"BUTTON Oneway on" : @"BUTTON Oneway off"];
@@ -814,7 +1233,7 @@ static constexpr double kConsoleSeconds = 0.25;
   [self redraw];
 }
 
-/// Toolbar: vertex dots.
+/// Roads menu: vertex dots.
 - (void)onDots {
   _opt.show_vertices = !_opt.show_vertices;
   [_debug showGesture:_opt.show_vertices ? @"BUTTON Dots on" : @"BUTTON Dots off"];
@@ -852,6 +1271,8 @@ static constexpr double kConsoleSeconds = 0.25;
   if (gapMs > kStallMs) _log.record("stall", now - _t0).num("gap_ms", gapMs, 1);
   if (_scenario && _scenario->running() && _viewSet) [self playScenarioAt:now - _t0];
   if (_trackPlaying && _viewSet) [self playTrackFor:gapMs / 1000];
+  [self zoomStepFor:gapMs / 1000];
+  [self followFor:gapMs / 1000];
   if (_map) [self logLoaderAt:now - _t0];
   if (_recorder.recording() && _viewSet) _recorder.sample(now - _t0, _view);
   [self updateRecordButtons];
@@ -1374,6 +1795,16 @@ static constexpr double kConsoleSeconds = 0.25;
   _log.record("ui", [self now]).text("event", _debug.hidden ? "overlay_hidden" : "overlay_shown");
 }
 
+/// Eye button: hides both info boxes (stats box and debug overlay) for a clean map, or
+/// shows them again. Logging goes on either way; the eye shows what a tap will do.
+- (void)onBoxes {
+  const BOOL hide = !_stats.hidden;
+  _stats.hidden = hide;
+  _debug.hidden = hide;
+  [_boxesButton setImage:[UIImage systemImageNamed:hide ? @"eye.slash" : @"eye"] forState:UIControlStateNormal];
+  _log.record("ui", [self now]).text("event", hide ? "boxes_hidden" : "boxes_shown");
+}
+
 /// Opens the share sheet (AirDrop, Mail, Files ...) with session log files.
 /// @param all YES for every stored session, NO for the current one only.
 - (void)shareLogs:(BOOL)all {
@@ -1433,6 +1864,10 @@ static constexpr double kConsoleSeconds = 0.25;
   _fix = {l.coordinate.latitude, l.coordinate.longitude};
   _fixAccuracy = l.horizontalAccuracy;
   _hasFix = YES;
+  if (l.course >= 0 && l.speed >= kMinCourseSpeed) {  // course is -1 when unknown
+    _course = l.course;
+    _hasCourse = YES;
+  }
   [self redraw];
 }
 
@@ -1500,6 +1935,7 @@ static constexpr double kConsoleSeconds = 0.25;
   const CGPoint vel = [g velocityInView:self.view];
   [self logGesture:"pan" recognizer:g value:std::hypot(vel.x, vel.y)];
   if (g.state == UIGestureRecognizerStateBegan) [_debug showGesture:@"PAN"];
+  if (g.state == UIGestureRecognizerStateBegan) [self setFollow:Vrst_follow::Off];  // the user looks elsewhere
   if (g.state == UIGestureRecognizerStateBegan && _trackFollow && !_track.empty()) {
     _trackFollow = NO;  // the user looks elsewhere; the menu turns following back on
     _log.record("track", [self now]).text("event", "follow_off");
@@ -1541,6 +1977,10 @@ static constexpr double kConsoleSeconds = 0.25;
   const CGFloat s = [self pxPerPoint];
   rotate_at(_view, [self fbWidth], [self fbHeight], c.x * s, c.y * s, -g.rotation);
   if (g.state == UIGestureRecognizerStateBegan) _rotationSum = 0;
+  if (g.state == UIGestureRecognizerStateBegan && _follow == Vrst_follow::Heading) {
+    [self setFollow:Vrst_follow::Follow];
+    _angleTarget = NAN;  // the user turns the map: keep their rotation, not north up
+  }
   _rotationSum += g.rotation;
   g.rotation = 0;
   [self logGesture:"rotate" recognizer:g value:_rotationSum * 180 / kPi];

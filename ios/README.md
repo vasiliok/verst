@@ -46,7 +46,9 @@ and run the `verst_ios` target from the generated `verst.xcodeproj` in Xcode.
 | Log | full-screen console (see below) |
 | red record button (round, right) | start recording what you do with the map; tap again (stop square) to stop and save |
 | green play button (above it) | pick a saved recording, then Play or Share... (AirDrop, Mail, Messages, Files); while playing, tap (stop square) to stop |
-| location arrow (round, bottom right) | move the map center to the GPS position; zoom and rotation stay, track following stops |
+| eye (round, top right) | hide or show the black info boxes (stats box and debug overlay) for a clean map; logging goes on |
+| + / - (round, bottom left) | zoom in / out 2x around the screen center, animated; taps add up |
+| location arrow (round, bottom right) | tap: follow your GPS position (map keeps you centred); tap again: heading up (map turns with your direction of travel, you sit lower on screen to see ahead); tap again: follow, north up. A drag stops following; a two-finger twist leaves heading up. Stops following a replayed track |
 | tap on the stats box | debug menu: overlay, send logs, tests, tracks |
 
 The stats box shows V, S, A, P, the zoom relative to the whole map, metres per

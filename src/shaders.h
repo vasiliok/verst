@@ -66,6 +66,36 @@ void main() {
 }
 )";
 
+/// Outside the region, vertex shader: a full-screen quad given in NDC.
+inline constexpr std::string_view kGridVs = R"(
+layout(location = 0) in vec2 a_pos;
+out vec2 v_ndc;
+void main() {
+  v_ndc = a_pos;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}
+)";
+
+/// Outside the region, fragment shader: a dim veil with grid lines. The grid position
+/// is u_origin + u_axis_x * ndc.x + u_axis_y * ndc.y in grid cells, where u_origin is
+/// the screen center modulo the spacing (small numbers, so float stays exact), and the
+/// line is one pixel wide whatever the zoom (fwidth).
+inline constexpr std::string_view kGridFs = R"(
+in vec2 v_ndc;
+uniform vec2 u_origin;
+uniform vec2 u_axis_x;
+uniform vec2 u_axis_y;
+uniform vec4 u_veil;
+uniform vec4 u_line;
+out vec4 o_color;
+void main() {
+  vec2 g = u_origin + u_axis_x * v_ndc.x + u_axis_y * v_ndc.y;
+  vec2 d = abs(fract(g - 0.5) - 0.5) / fwidth(g);
+  float line = 1.0 - min(min(d.x, d.y), 1.0);
+  o_color = mix(u_veil, u_line, line);
+}
+)";
+
 /// Label glyphs, vertex shader: framebuffer px (y down) -> NDC.
 inline constexpr std::string_view kTextVs = R"(
 layout(location = 0) in vec2 a_pos;

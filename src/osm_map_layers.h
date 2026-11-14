@@ -9,6 +9,7 @@
 #pragma once
 
 #include <osmium/handler.hpp>
+#include <osmium/io/reader.hpp>
 #include <osmium/osm/area.hpp>
 #include <osmium/osm/way.hpp>
 
@@ -16,15 +17,28 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <numeric>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "convert_progress.h"
 #include "format.h"
 
 namespace nav {
+
+/// Reports how far a reader is through its file and stops when cancelled; called after
+/// every buffer of every pass.
+/// @param r Reader.
+/// @param p Progress.
+/// @throws Vrst_convert_cancelled after Vrst_convert_progress::cancel().
+inline void report_read(const osmium::io::Reader& r, Vrst_convert_progress& p) {
+  if (r.file_size() > 0) p.set_fraction(static_cast<Vrst_float64>(r.offset()) / static_cast<Vrst_float64>(r.file_size()));
+  p.check();
+}
 
 /// Value of one OSM tag.
 /// @tparam N Length of the key literal.
@@ -46,13 +60,20 @@ std::optional<AreaKind> map_area_kind(const osmium::TagList& tags);
 /// @return Kind, or nullopt when the way is not a drawn river or railway.
 std::optional<LineKind> map_line_kind(const osmium::TagList& tags);
 
-/// Packed map.dat arrays, named like the sections; osm2nav writes them as they are.
+/// map.dat content, named like the sections. The two big area sections (points and
+/// triangle indices, most of the file) are not held in memory: they are in one
+/// temporary file per AreaKind, which written one after the other in kind order are the
+/// section, so areas are neither kept nor copied to sort them by kind.
 struct Vrst_map_layer_data {
   std::vector<Vrst_uint32> area_first_point{0};  ///< AREA_FIRST_POINT, R+1 entries.
   std::vector<Vrst_uint32> area_first_index{0};  ///< AREA_FIRST_INDEX, R+1 entries.
   std::vector<Vrst_uint8> area_kinds;            ///< AREA_KIND, sorted ascending.
-  std::vector<Vrst_coord> area_points;           ///< AREA_POINTS.
-  std::vector<Vrst_uint32> area_indices;         ///< AREA_INDICES.
+  /// AREA_POINTS (Vrst_coord), one temporary file per AreaKind in kind order.
+  std::array<std::filesystem::path, kAreaKindCount> area_point_files;
+  /// AREA_INDICES (Vrst_uint32), one temporary file per AreaKind in kind order.
+  std::array<std::filesystem::path, kAreaKindCount> area_index_files;
+  Vrst_size area_points = 0;                     ///< Elements of AREA_POINTS.
+  Vrst_size area_indices = 0;                    ///< Elements of AREA_INDICES.
   std::vector<Vrst_uint32> area_outer_size;      ///< AREA_OUTER_SIZE.
   std::vector<Vrst_uint32> line_first_point{0};  ///< LINE_FIRST_POINT, L+1 entries.
   std::vector<Vrst_line_attr> line_attr;         ///< LINE_ATTR.
@@ -77,13 +98,32 @@ class Vrst_map_layer_builder {
   /// this factor bigger than the real outline; otherwise the outline is kept.
   static constexpr Vrst_float64 kRectFactor = 1.25;
 
-  /// Reads one extract: relations for the multipolygons, then all objects with node
-  /// locations.
-  /// @param path .osm.pbf file.
-  void read(const std::string& path);
+  /// Starts a builder that keeps area points and triangles in temporary files.
+  /// @param temp_dir Existing folder for them (the conversion's .tmp folder).
+  /// @throws std::runtime_error when a file cannot be created.
+  explicit Vrst_map_layer_builder(const std::filesystem::path& temp_dir);
+  ~Vrst_map_layer_builder() = default;                                         ///< Closes the files.
+  Vrst_map_layer_builder(const Vrst_map_layer_builder&) = delete;             ///< Owns files: not copyable.
+  Vrst_map_layer_builder& operator=(const Vrst_map_layer_builder&) = delete;  ///< Owns files: not copyable.
+  Vrst_map_layer_builder(Vrst_map_layer_builder&&) = delete;                  ///< Handlers point at it: not movable.
+  Vrst_map_layer_builder& operator=(Vrst_map_layer_builder&&) = delete;       ///< Handlers point at it: not movable.
 
-  /// Sorts areas by kind (the draw order) and packs everything into data(). Call once,
-  /// after read().
+  /// Reads one extract in four streaming passes, keeping only the node locations that
+  /// can be needed:
+  /// 1. relations: the multipolygons (the assembler's own selection);
+  /// 2. ways: ids of the nodes of ways that may become an area or a line, and of the
+  ///    member ways of those multipolygons (a superset of what is drawn);
+  /// 3. nodes: the locations of just those nodes;
+  /// 4. ways: locations filled in, areas assembled, lines taken.
+  /// About 16 bytes per needed node instead of an index over every node in the file.
+  /// @param path .osm.pbf file.
+  /// @param progress Phases Relations, AreaWays, AreaNodes, Areas with their fraction.
+  /// @throws Vrst_convert_cancelled after progress.cancel().
+  void read(const std::string& path, Vrst_convert_progress& progress);
+
+  /// Fills the per-area tables (first point and index, kind, outer size) in kind order,
+  /// the draw order, and closes the per-kind files. Call once, after read().
+  /// @throws std::runtime_error when a temporary file could not be written.
   void finish();
 
   /// Number of buildings reduced to a rectangle.
@@ -92,6 +132,9 @@ class Vrst_map_layer_builder {
   /// Number of buildings that kept their (simplified) outline.
   /// @return Count.
   Vrst_size outlines() const { return m_outlines; }
+  /// Number of nodes whose location was kept for the assembly (read()).
+  /// @return Count.
+  Vrst_size needed_nodes() const { return m_needed_nodes; }
 
   /// @copydoc m_out
   /// @return Arrays; complete after finish().
@@ -105,12 +148,12 @@ class Vrst_map_layer_builder {
     Vrst_float64 y;  ///< North, metres.
   };
 
-  /// One area before sorting: kind, points and triangle indices.
-  struct Vrst_area_tmp {
-    AreaKind kind;                     ///< What it is.
-    std::vector<Vrst_coord> points;    ///< Outer ring, then holes.
-    Vrst_uint32 outer_size;            ///< Points of the outer ring.
-    std::vector<Vrst_uint32> indices;  ///< Triangles into points.
+  /// Sizes of the areas of one kind, in the order they were read; their points and
+  /// indices are in the kind's part of m_out.
+  struct Vrst_kind_areas {
+    std::vector<Vrst_uint32> points;      ///< Points of each area.
+    std::vector<Vrst_uint32> indices;     ///< Triangle indices of each area.
+    std::vector<Vrst_uint32> outer_size;  ///< Points of each area's outer ring.
   };
 
   /// libosmium handler: one callback per assembled area and per way.
@@ -159,14 +202,20 @@ class Vrst_map_layer_builder {
   /// @param w Way with node locations.
   void add_line(const osmium::Way& w);
 
-  /// Output arrays: lines as they are read, areas after finish().
+  /// Output arrays: lines as they are read, area tables after finish().
   Vrst_map_layer_data m_out;
-  /// Areas in file order until finish() sorts them.
-  std::vector<Vrst_area_tmp> m_areas;
+  /// Open per-kind files of AREA_POINTS.
+  std::array<std::ofstream, kAreaKindCount> m_point_files;
+  /// Open per-kind files of AREA_INDICES.
+  std::array<std::ofstream, kAreaKindCount> m_index_files;
+  /// Area sizes per kind until finish() turns them into the area tables.
+  std::array<Vrst_kind_areas, kAreaKindCount> m_kind_areas;
   /// Buildings stored as rectangles.
   Vrst_size m_rectangles = 0;
   /// Buildings stored with their own outline.
   Vrst_size m_outlines = 0;
+  /// Nodes whose location read() kept.
+  Vrst_size m_needed_nodes = 0;
 };
 
 }  // namespace nav

@@ -102,7 +102,7 @@ FetchContent_MakeAvailable(earcut)
 # being consistent and earcut can loop forever. arm64 compilers fuse by default: on the
 # iPhone some zoom-10 tiles never finished building (reproduced on the Mac with the
 # phone's logged rings and a fused area()). The files that include earcut never fuse.
-set(VRST_EARCUT_SOURCES src/map_tiles.cpp src/osm_map_layers.cpp tests/earcut_test.cpp)
+set(VRST_EARCUT_SOURCES src/map_tiles.cpp src/osm_map_layers.cpp src/region_outline.cpp tests/earcut_test.cpp)
 set_source_files_properties(${VRST_EARCUT_SOURCES} PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 find_package(Threads REQUIRED)
@@ -117,6 +117,7 @@ add_library(vrst_core STATIC
   src/activity_recorder.cpp
   src/map_provider.cpp
   src/nav_map_provider.cpp
+  src/region_outline.cpp
   src/gpx_track.cpp
   src/scenario.cpp
   src/session_log.cpp)
@@ -144,22 +145,38 @@ if(NAV_BUILD_VIEWER OR IOS)
   nav_warnings(vrst_render)
 endif()
 
+# --- vrst_convert: OSM extract -> nav files (osm2nav and the iPhone app) ----------
+# The converter runs on the phone too, where Debug builds are -O0: its sources are
+# always optimized, or a conversion would take several times longer.
+add_library(vrst_convert STATIC src/osm_convert.cpp src/osm_map_layers.cpp src/pbf_merge.cpp)
+set_property(SOURCE src/osm_convert.cpp src/osm_map_layers.cpp src/pbf_merge.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
+target_include_directories(vrst_convert SYSTEM PUBLIC
+  third_party/libosmium/include
+  third_party/protozero/include)
+target_include_directories(vrst_convert SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
+if(IOS)
+  target_link_libraries(vrst_convert PUBLIC vrst_core z)  # zlib of the iOS SDK
+else()
+  find_package(ZLIB REQUIRED)
+  target_link_libraries(vrst_convert PUBLIC vrst_core ZLIB::ZLIB)
+endif()
+nav_warnings(vrst_convert)
+
 # --- iOS: only the app (cmake -G Xcode -DCMAKE_SYSTEM_NAME=iOS, see ios/README.md) ---
 if(IOS)
   add_subdirectory(ios)
   return()
 endif()
 
-find_package(ZLIB REQUIRED)
-
 # --- osm2nav ---------------------------------------------------------------
-add_executable(osm2nav src/osm2nav.cpp src/osm_map_layers.cpp)
-target_include_directories(osm2nav SYSTEM PRIVATE
-  third_party/libosmium/include
-  third_party/protozero/include
-  ${earcut_SOURCE_DIR}/include)
-target_link_libraries(osm2nav PRIVATE vrst_types ZLIB::ZLIB Threads::Threads)
+add_executable(osm2nav src/osm2nav.cpp)
+target_link_libraries(osm2nav PRIVATE vrst_convert)
 nav_warnings(osm2nav)
+
+# --- pbf_merge: several sorted extracts into one --------------------------------
+add_executable(pbf_merge src/pbf_merge_main.cpp)
+target_link_libraries(pbf_merge PRIVATE vrst_convert)
+nav_warnings(pbf_merge)
 
 # --- tile_test: GoogleTest tests of the tiled map (tests/) --------------------
 option(NAV_BUILD_TESTS "Build the GoogleTest tests (fetches GoogleTest)" ON)

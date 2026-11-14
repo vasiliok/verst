@@ -19,6 +19,7 @@
 #include "glyph_atlas.h"
 #include "map_labels.h"
 #include "map_scene.h"
+#include "region_outline.h"
 #include "shaders.h"
 
 namespace nav {
@@ -75,6 +76,28 @@ class Vrst_map_renderer {
   /// @param b Blue.
   void draw_point(Vrst_vec2d pos, Vrst_float32 px, Vrst_float32 r, Vrst_float32 g, Vrst_float32 b) const;
 
+  /// Shows a region outline: draw_region() dims the screen outside it with a grid and
+  /// draws its border. Replaces an earlier region.
+  /// @param shape Triangles and border strips, absolute Web Mercator.
+  /// @param world_origin Absolute Mercator point of world (0, 0) (Vrst_map_frame::center()).
+  void set_region(const Vrst_region_shape& shape, Vrst_vec2d world_origin);
+  /// No map is open: draw_region() covers the whole screen with the grid.
+  void set_region_everywhere() { m_region_mode = Vrst_region_mode::Everywhere; }
+  /// The open map has no outline: draw_region() draws nothing.
+  void clear_region() { m_region_mode = Vrst_region_mode::Off; }
+
+  /// Draws the outside of the region (dim veil and a grid about 120 px apart, at 1, 2 or
+  /// 5 x 10^n ground metres, anchored to the world so it moves with the map) and the
+  /// border. Call after the map tiles, before the track, position and labels. Needs a
+  /// stencil buffer.
+  /// @param v Camera.
+  /// @param fb_w Framebuffer width in px.
+  /// @param fb_h Framebuffer height in px.
+  /// @param world_origin Absolute Mercator point of world (0, 0).
+  /// @param cos_lat Cosine of the latitude at the screen center (ground metres per
+  ///        Mercator metre), for the grid spacing.
+  void draw_region(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d world_origin, Vrst_float64 cos_lat) const;
+
   /// Uploads the label glyph atlas and compiles the text program. Replaces an earlier atlas.
   /// @param atlas Built atlas; its pixels are copied and it may be freed.
   /// @throws std::runtime_error on a shader or GL error.
@@ -112,6 +135,13 @@ class Vrst_map_renderer {
 #endif
 
  private:
+  /// What draw_region() draws.
+  enum class Vrst_region_mode {
+    Off,         ///< Nothing (no outline known).
+    Everywhere,  ///< Veil and grid on the whole screen (no map).
+    Outside,     ///< Veil and grid outside the region, and its border.
+  };
+
   /// Compiles one shader with kGlslHeader prepended.
   /// @param type GL_VERTEX_SHADER or GL_FRAGMENT_SHADER.
   /// @param body GLSL source without a version line.
@@ -165,6 +195,34 @@ class Vrst_map_renderer {
   GLint m_u_text_fb = -1;
   /// u_halo_px of the text program.
   GLint m_u_text_halo = -1;
+  /// What draw_region() draws.
+  Vrst_region_mode m_region_mode = Vrst_region_mode::Off;
+  /// Veil-and-grid program.
+  GLuint m_grid_prog = 0;
+  /// Full-screen quad (two triangles in NDC).
+  GLuint m_quad_vbo = 0;
+  /// Quad VAO.
+  GLuint m_quad_vao = 0;
+  /// u_origin of the grid program.
+  GLint m_u_grid_origin = -1;
+  /// u_axis_x of the grid program.
+  GLint m_u_grid_axis_x = -1;
+  /// u_axis_y of the grid program.
+  GLint m_u_grid_axis_y = -1;
+  /// u_veil of the grid program.
+  GLint m_u_grid_veil = -1;
+  /// u_line of the grid program.
+  GLint m_u_grid_line = -1;
+  /// Region triangles relative to the world origin, then the border strips.
+  GLuint m_region_vbo = 0;
+  /// Region VAO (overlay layout).
+  GLuint m_region_vao = 0;
+  /// Vertices of the triangles at the start of m_region_vbo.
+  GLsizei m_region_triangles = 0;
+  /// First vertex of each border strip in m_region_vbo.
+  std::vector<GLint> m_border_first;
+  /// Vertices of each border strip.
+  std::vector<GLsizei> m_border_count;
 };
 
 }  // namespace nav

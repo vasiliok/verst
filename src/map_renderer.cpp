@@ -3,6 +3,8 @@
 /// Declarations and documentation are in map_renderer.h.
 #include "map_renderer.h"
 
+#include <cmath>
+
 namespace nav {
 
 void Vrst_map_renderer::init_overlays() {
@@ -11,6 +13,94 @@ void Vrst_map_renderer::init_overlays() {
   m_u_overlay_px = glGetUniformLocation(m_overlay_prog, "u_point_px");
   m_u_overlay_color = glGetUniformLocation(m_overlay_prog, "u_color");
   m_u_overlay_round = glGetUniformLocation(m_overlay_prog, "u_round");
+  m_grid_prog = link(shaders::kGridVs, shaders::kGridFs);
+  m_u_grid_origin = glGetUniformLocation(m_grid_prog, "u_origin");
+  m_u_grid_axis_x = glGetUniformLocation(m_grid_prog, "u_axis_x");
+  m_u_grid_axis_y = glGetUniformLocation(m_grid_prog, "u_axis_y");
+  m_u_grid_veil = glGetUniformLocation(m_grid_prog, "u_veil");
+  m_u_grid_line = glGetUniformLocation(m_grid_prog, "u_line");
+  m_quad_vao = make_vao({{-1, -1, 0}, {1, -1, 0}, {1, 1, 0}, {-1, -1, 0}, {1, 1, 0}, {-1, 1, 0}}, m_quad_vbo);
+  glBindVertexArray(0);
+}
+
+void Vrst_map_renderer::set_region(const Vrst_region_shape& shape, Vrst_vec2d world_origin) {
+  std::vector<Vrst_gpu_point> verts;
+  const auto add = [&](Vrst_vec2d p) {
+    verts.push_back({static_cast<Vrst_float32>(p.x - world_origin.x), static_cast<Vrst_float32>(p.y - world_origin.y), 0});
+  };
+  for (const Vrst_vec2d& p : shape.triangles) add(p);
+  m_region_triangles = static_cast<GLsizei>(verts.size());
+  m_border_first.clear();
+  m_border_count.clear();
+  for (const std::vector<Vrst_vec2d>& strip : shape.outlines) {
+    m_border_first.push_back(static_cast<GLint>(verts.size()));
+    for (const Vrst_vec2d& p : strip) add(p);
+    m_border_count.push_back(static_cast<GLsizei>(strip.size()));
+  }
+  if (!m_region_vao) m_region_vao = make_vao({}, m_region_vbo);
+  glBindVertexArray(m_region_vao);
+  glBindBuffer(GL_ARRAY_BUFFER, m_region_vbo);
+  glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(Vrst_gpu_point)), verts.data(),
+               GL_STATIC_DRAW);
+  glBindVertexArray(0);
+  m_region_mode = Vrst_region_mode::Outside;
+  check_error("set_region");
+}
+
+void Vrst_map_renderer::draw_region(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d world_origin,
+                                    Vrst_float64 cos_lat) const {
+  if (m_region_mode == Vrst_region_mode::Off || !m_grid_prog) return;
+  const std::array<Vrst_float32, 9> m = view_matrix(v, fb_w, fb_h);
+  if (m_region_mode == Vrst_region_mode::Outside) {
+    // The region into the stencil only; the veil then goes where the stencil stayed 0.
+    glEnable(GL_STENCIL_TEST);
+    glStencilFunc(GL_ALWAYS, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glUseProgram(m_overlay_prog);
+    glUniformMatrix3fv(m_u_overlay_view, 1, GL_FALSE, m.data());
+    glUniform1i(m_u_overlay_round, 0);
+    glBindVertexArray(m_region_vao);
+    glDrawArrays(GL_TRIANGLES, 0, m_region_triangles);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilFunc(GL_EQUAL, 0, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+  }
+  // Grid spacing: 1, 2 or 5 x 10^n ground metres, the first at least 120 px apart.
+  const Vrst_float64 ground_per_px = cos_lat / v.scale;
+  Vrst_float64 step = std::pow(10.0, std::floor(std::log10(120 * ground_per_px)));
+  for (const Vrst_float64 f : {1.0, 2.0, 5.0, 10.0})
+    if (f * step >= 120 * ground_per_px) {
+      step *= f;
+      break;
+    }
+  const Vrst_float64 spacing = step / cos_lat;  // Mercator metres
+  // NDC -> world: p = center + R(-angle) * (ndc * fb / 2 / scale), in grid cells.
+  const Vrst_float64 c = std::cos(v.angle), s = std::sin(v.angle);
+  const Vrst_float64 hx = fb_w / 2.0 / v.scale / spacing, hy = fb_h / 2.0 / v.scale / spacing;
+  const Vrst_vec2d abs_center{world_origin.x + v.center.x, world_origin.y + v.center.y};
+  glUseProgram(m_grid_prog);
+  glUniform2f(m_u_grid_origin, static_cast<Vrst_float32>(std::fmod(abs_center.x, spacing) / spacing),
+              static_cast<Vrst_float32>(std::fmod(abs_center.y, spacing) / spacing));
+  glUniform2f(m_u_grid_axis_x, static_cast<Vrst_float32>(c * hx), static_cast<Vrst_float32>(-s * hx));
+  glUniform2f(m_u_grid_axis_y, static_cast<Vrst_float32>(s * hy), static_cast<Vrst_float32>(c * hy));
+  // Bluish veil and clear lines: the outside must read as "no map here" on the dark map.
+  glUniform4f(m_u_grid_veil, 0.10f, 0.12f, 0.18f, 0.75f);
+  glUniform4f(m_u_grid_line, 0.45f, 0.52f, 0.65f, 0.9f);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glBindVertexArray(m_quad_vao);
+  glDrawArrays(GL_TRIANGLES, 0, 6);
+  glDisable(GL_BLEND);
+  glDisable(GL_STENCIL_TEST);
+  if (m_region_mode == Vrst_region_mode::Outside) {
+    glUseProgram(m_overlay_prog);
+    glUniformMatrix3fv(m_u_overlay_view, 1, GL_FALSE, m.data());
+    glUniform4f(m_u_overlay_color, 1.0f, 0.55f, 0.15f, 1.0f);
+    glBindVertexArray(m_region_vao);
+    for (Vrst_size i = 0; i < m_border_first.size(); ++i) glDrawArrays(GL_LINE_STRIP, m_border_first[i], m_border_count[i]);
+  }
+  glBindVertexArray(0);
 }
 
 void Vrst_map_renderer::set_track(const std::vector<Vrst_vec2d>& points) {
@@ -137,6 +227,13 @@ void Vrst_map_renderer::destroy() {
   glDeleteTextures(1, &m_atlas_tex);
   glDeleteProgram(m_text_prog);
   m_text_vbo = m_text_vao = m_atlas_tex = m_text_prog = 0;
+  glDeleteBuffers(1, &m_quad_vbo);
+  glDeleteBuffers(1, &m_region_vbo);
+  glDeleteVertexArrays(1, &m_quad_vao);
+  glDeleteVertexArrays(1, &m_region_vao);
+  glDeleteProgram(m_grid_prog);
+  m_quad_vbo = m_region_vbo = m_quad_vao = m_region_vao = m_grid_prog = 0;
+  m_region_mode = Vrst_region_mode::Off;
 }
 
 void Vrst_map_renderer::check_error(std::string_view where) {

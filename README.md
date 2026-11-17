@@ -7,6 +7,14 @@ graph, plus a map of areas, buildings and lines. It then draws them with one sha
 core. The iPhone app needs no map prepared on a PC: it downloads Geofabrik extracts, merges
 neighbouring ones and converts them on the phone.
 
+## Screenshots
+
+| Region with border and grid | City detail | Maps screen | Console |
+|---|---|---|---|
+| <img src="docs/images/region-andorra.png" width="200" alt="Andorra with its border and the grid outside it"> | <img src="docs/images/city-besancon.png" width="200" alt="Besancon: roads, river, forests and place names"> | <img src="docs/images/maps-screen.png" width="200" alt="Maps screen: regions on the phone and the Geofabrik catalog"> | <img src="docs/images/console.png" width="200" alt="Console over the map near Dijon"> |
+
+iPhone Simulator; the black boxes are the debug info (the eye button hides them).
+
 ## Features
 
 - **Maps made on the phone**: pick one or more Geofabrik regions; the app downloads them,
@@ -229,3 +237,7 @@ of the vertices).
 - Vertices are numbered in OSM node id order. Hilbert ordering goes in `number_vertices()` in `osm2nav.cpp`.
 - 1 px lines only. No spatial index, routing or turn restrictions yet (`SEG_OSM_WAY` is kept for mapping
   restrictions later).
+
+## License
+
+[MIT](LICENSE)

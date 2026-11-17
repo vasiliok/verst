@@ -5,32 +5,74 @@ viewer with the same code (`src/map_scene.h`, `src/map_renderer.h`), using OpenG
 through a `GLKView`. Apple has deprecated OpenGL ES, but it still works on iOS 18 and
 in the Simulator.
 
-## Build and run in the Simulator
+No map is bundled. The app downloads Geofabrik extracts, merges them when there are several,
+and converts them on the phone with the same library as `osm2nav`. The phone stores several regions and
+shows one at a time.
 
-The app bundles one converted map. Convert an extract with osm2nav first; the desktop
-tests already leave Andorra in `<build>/test_out`.
+## Build and run in the Simulator
 
 ```sh
 cmake -G Xcode -S ~/src/verst -B ~/src/tmp/verst/build-ios \
   -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
-  -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
-  -DVERST_MAP_DIR=$HOME/src/tmp/verst/build/test_out
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
 cmake --build ~/src/tmp/verst/build-ios --config Debug -- -sdk iphonesimulator
 
 xcrun simctl boot "iPhone 16 Pro"; open -a Simulator
 xcrun simctl install booted ~/src/tmp/verst/build-ios/ios/Debug-iphonesimulator/Verst.app
-xcrun simctl launch booted com.verst.app --center 42.48014 1.45493 --mpp 1.1
+xcrun simctl launch booted com.verst.app --download andorra
 ```
 
-Use `-DCMAKE_OSX_ARCHITECTURES=arm64` on an Apple silicon Mac. Without launch
-arguments the app starts at the default point, or the whole map if that point is
-outside the data.
+Use `-DCMAKE_OSX_ARCHITECTURES=x86_64` on an Intel Mac. A fresh install has no map: the
+screen shows only the grid and the Maps screen opens by itself.
+
+Launch arguments for development:
+
+| Argument | Effect |
+|---|---|
+| `--download <id>[,<id>...]` | queue those Geofabrik extracts (ids from the catalog, e.g. `andorra`) as one region |
+| `--import-region <folder>` | copy a folder made by `osm2nav` into the phone's regions (repeatable) |
+| `--center <lat> <lon>` `--mpp <m>` | start view |
+| `--gpx <file>` `--speed <x>` | replay a GPS track |
+| `--follow follow\|heading` | start following the position |
+| `--record <s>` / `--scenario <file>` | record for s seconds / play a scenario |
+| `--console` | open the console at start |
+| `--log-dir <dir>` | where the session log goes |
 
 ## Run on an iPhone
 
-Signing needs an Apple ID added in Xcode (Settings > Accounts). Then configure with
-`-DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 -DVERST_IOS_TEAM=<team id>`
-and run the `verst_ios` target from the generated `verst.xcodeproj` in Xcode.
+Signing needs an Apple ID added in Xcode (Settings > Accounts). Configure with
+`-DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 -DVERST_IOS_TEAM=<team id>
+-DVERST_BUNDLE_ID=<your bundle id>`, then build and install:
+
+```sh
+xcodebuild -project verst.xcodeproj -scheme verst_ios -configuration Debug \
+  -destination 'generic/platform=iOS' -allowProvisioningUpdates build
+xcrun devicectl device install app --device <device id> ios/Debug-iphoneos/Verst.app
+```
+
+`xcrun devicectl list devices` shows the device id. Wi-Fi works when the phone and the
+Mac are on the same network. The first launch needs Settings > General > VPN & Device
+Management > Trust. Apps signed with a free team expire after 7 days.
+
+## Maps screen
+
+`Maps` in the toolbar (it shows the progress, e.g. "Maps 45%", while a job runs) opens a list
+with three sections:
+
+- **In progress**: one row per job with its state. A job is Queued, Downloading (percent,
+  MB, speed, time left), Paused, Merging, Converting (phase and percent), Cancelled or
+  Failed (with the reason, e.g. not enough memory). Tap a row to Pause / Resume / Cancel,
+  or Retry / Remove. One download and one conversion run at a time; jobs survive an app restart,
+  and a paused download continues from the bytes it kept.
+- **On this phone**: the ready regions with size and date. The shown one has a checkmark.
+  Tap one to switch to it (the camera of each region is remembered). Swipe left to
+  delete one, except the shown region.
+- **Download more**: the Geofabrik catalog as a tree (continent > country > region).
+  Pick one extract, or several neighbours to join into one region, then name it.
+
+Regions live in Documents/regions/<id>/: the nav files, the `.poly` of each extract and
+`region.json`. The region border is drawn, and outside it the map is dimmed and gets a grid
+whose spacing follows the zoom. A region without a `.poly` still opens, with no border.
 
 ## Using it
 
@@ -41,8 +83,9 @@ and run the `verst_ios` target from the generated `verst.xcodeproj` in Xcode.
 | two-finger twist | rotate |
 | double tap / two-finger tap | zoom in / out 2x |
 | Fit / Start | whole map / start view |
-| Roads | menu with the 9 road class groups |
-| Oneway / Dots / Names | highlight oneway roads / show graph vertices / show place names |
+| Roads | menu with the 9 road class groups, plus Highlight oneway and Show vertices |
+| Maps | the Maps screen (above) |
+| Names | show place names |
 | Log | full-screen console (see below) |
 | red record button (round, right) | start recording what you do with the map; tap again (stop square) to stop and save |
 | green play button (above it) | pick a saved recording, then Play or Share... (AirDrop, Mail, Messages, Files); while playing, tap (stop square) to stop |

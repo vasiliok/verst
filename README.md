@@ -1,13 +1,38 @@
-# verst - Step 1: OSM -> binary graph + viewer
+# verst - offline map and navigation
 
-Converts car roads from an `.osm.pbf` into four mmap-able files, validates them, and draws them.
+Converts an OpenStreetMap extract (`.osm.pbf`) into memory-mapped files: the car road graph
+plus a map of areas, buildings and lines. It then checks the files and draws them. The
+same pipeline runs on the Mac (command-line tools) and on the iPhone. The app downloads
+Geofabrik extracts, merges them and converts them itself, so no map is prepared on a PC.
 
 | Tool | Usage |
 |---|---|
-| `osm2nav` | `osm2nav <input.osm.pbf> <out_dir>` |
+| `osm2nav` | `osm2nav <input.osm.pbf> <out_dir>`: road files + `map.dat`; prints counts, time and peak memory |
+| `pbf_merge` | `pbf_merge <out.osm.pbf> <in1.osm.pbf> <in2.osm.pbf> ...`: joins neighbouring extracts into one (border objects written once) |
 | `navcheck` | `navcheck <out_dir>` (exit 0 = all PASS) - `navcheck <out_dir> --dump-way <osm_way_id>` |
-| `navview` | `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--screenshot <file.bmp>]` (screenshot: renders 3 frames, saves the last, exits) |
-| iPhone app | `ios/`: UIKit + OpenGL ES 3.0, same map code as navview; see [ios/README.md](ios/README.md) |
+| `navview` | `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--rotate <deg>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--tile-borders] [--screenshot <file.bmp>]` (screenshot: renders 3 frames, saves the last, exits) |
+| iPhone app | `ios/`: UIKit + OpenGL ES 3.0, same map code as navview; download, merge and convert on the phone; see [ios/README.md](ios/README.md) |
+
+## Map pipeline
+
+```
+Geofabrik .osm.pbf (+ .poly) --download--> [pbf_merge if several] --osm2nav--> region folder
+```
+
+| Step | Code | Notes |
+|---|---|---|
+| merge | `src/pbf_merge.h` (`merge_pbf`) | streams all sorted inputs at once; small memory whatever the size |
+| convert | `src/osm_convert.h` (`convert_osm`) | road graph first and freed, then map layers using only the nodes they need; writes into `<out>.tmp` and renames at the end, so a cancelled run leaves nothing behind |
+| progress / cancel | `src/convert_progress.h` | phase + fraction, read from any thread; `cancel()` stops between input blocks |
+| region border | `src/region_outline.h` | Geofabrik `.poly` -> filled shape + border lines; the renderer dims the outside and draws a km grid there |
+
+The desktop tools are thin `main()` functions around the same `vrst_convert` library that the
+app links. The converter sources are built with `-O2` even in Debug, because phone builds
+are otherwise `-O0`.
+
+Measured on the Mac: Bourgogne + Franche-Comte (326 MB pbf) peaks at 579 MB.
+Ile-de-France (340 MB pbf) takes 41 s and peaks at 483 MiB (V 560,556 - S 696,633 -
+3,152,351 buildings).
 
 ## Desktop and mobile
 
@@ -18,10 +43,12 @@ One C++ core, thin front ends:
 | map provider (client API: extent, places, show / take_ready, status, events) | `src/map_provider.h`, `src/map_piece.h`, `src/map_kinds.h`, `src/geo.h` | navview, iPhone app, renderer |
 | nav map provider (today's implementation: nav files, z/x/y tiles, worker threads) | `src/nav_map_provider.h`, `src/map_tiles.h` | only `open_map()` and tests |
 | nav files (mmap, typed views) | `src/format.h`, `src/mapped_file.h`, `src/nav_files.h` | osm2nav, navcheck, nav map provider |
+| pipeline (merge, convert, progress) | `src/pbf_merge.h`, `src/osm_convert.h`, `src/osm_map_layers.h`, `src/convert_progress.h` | osm2nav, pbf_merge, iPhone app |
+| region outline (.poly) | `src/region_outline.h` | renderer, iPhone app |
 | map view (class tables, camera, map frame) | `src/map_scene.h` | navview, iPhone app |
 | OpenGL renderer (GL 3.3 core / GLES 3.0) | `src/tile_renderer.h`, `src/map_renderer.h`, `src/shaders.h`, `src/gl_api.h` | navview, iPhone app |
 | desktop front end (GLFW, Dear ImGui, mouse/keys) | `src/navview.cpp` | macOS, Linux, Windows |
-| iPhone front end (UIKit, GLKView, gestures) | `ios/main.mm` | iOS |
+| iPhone front end (UIKit, GLKView, gestures, Maps screen, downloads) | `ios/*.mm` | iOS |
 
 New features go into the core first; a front end only adds input and UI.
 
@@ -41,7 +68,7 @@ mkdir -p data && curl -L -o data/andorra.osm.pbf https://download.geofabrik.de/e
 
 cmake -S . -B build                    # Release by default; -DNAV_TEST_PBF=<pbf> to use another file
 cmake --build build -j
-ctest --test-dir build --output-on-failure   # runs osm2nav + navcheck on NAV_TEST_PBF
+ctest --test-dir build --output-on-failure   # runs osm2nav + navcheck on NAV_TEST_PBF, and the unit tests
 ```
 
 Dependencies: zlib (system). GLFW 3.4, Dear ImGui v1.93.0 and FreeType 2.13.3 are fetched with FetchContent; the
@@ -105,7 +132,7 @@ has time and speed sliders. Example: `navview <bourgogne_dir> --gpx drive.gpx --
 ## File format (v2)
 
 Every file: `FileHeader` (64 B) + `SectionEntry[n]` (24 B each) + sections at 64-byte aligned offsets.
-Little-endian, offsets and indexes only. All four files of one import share `build_id`; the loader
+Little-endian, offsets and indexes only. All files of one import share `build_id`; the loader
 refuses mixed sets. Layout is in `src/format.h`; the loader is `src/nav_files.h`.
 
 | File | Sections |
@@ -114,6 +141,7 @@ refuses mixed sets. Layout is in `src/format.h`; the loader is `src/nav_files.h`
 | `edges.dat` `NAVEDGES` | `SEG_ATTR` {length_dm, name_id, ref_id, class, maxspeed, flags}[S] - `SEG_VERTICES` {a,b}[S] - `SEG_OSM_WAY` u64[S] |
 | `geom.dat` `NAVGEOM` | `SEG_FIRST_POINT` u32[S+1] - `POINTS` Coord[P] (each range includes both end points) |
 | `names.dat` `NAVNAMES` | `STR_OFFSETS` u32[N+1] - `STR_DATA` UTF-8 (id 0 = empty, deduplicated) - `PLACES` Place[L] 20 B (city/town/village/hamlet label: pos, name_id, population, kind; sorted by kind, then population) |
+| `map.dat` `NAVMAP` | areas (water, land use, buildings - a building whose min-area rectangle is at most 1.25x its area is stored as that rectangle) with earcut triangles, and lines; built by `src/osm_map_layers.h`, cut into z/x/y tiles at runtime by `src/map_tiles.h` |
 
 Coord = int32 lat/lon in 1e-7 deg. A segment is an undirected road piece between two vertices, stored in
 OSM way order (a -> b). Two-way = 2 arcs, oneway = 1 arc. For `oneway=-1` the single arc runs b -> a with

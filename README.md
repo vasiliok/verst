@@ -1,9 +1,53 @@
-# verst - offline map and navigation
+# verst
 
-Converts an OpenStreetMap extract (`.osm.pbf`) into memory-mapped files: the car road graph
-plus a map of areas, buildings and lines. It then checks the files and draws them. The
-same pipeline runs on the Mac (command-line tools) and on the iPhone. The app downloads
-Geofabrik extracts, merges them and converts them itself, so no map is prepared on a PC.
+Offline map and navigation for iPhone and desktop, built from OpenStreetMap data.
+
+verst turns an OpenStreetMap extract (`.osm.pbf`) into memory-mapped files: a car road
+graph, plus a map of areas, buildings and lines. It then draws them with one shared C++ / OpenGL
+core. The iPhone app needs no map prepared on a PC: it downloads Geofabrik extracts, merges
+neighbouring ones and converts them on the phone.
+
+## Features
+
+- **Maps made on the phone**: pick one or more Geofabrik regions; the app downloads them,
+  merges them and converts them. Downloads can be paused, resumed and cancelled, and they survive a restart.
+- **Several regions, one shown at a time**: switch between them; each keeps its own camera.
+- **Region border**: outside the region, the map is dimmed and covered by a km grid that follows the zoom.
+- **Tiled vector map**: roads by class, areas, buildings, water and place names (SDF labels
+  placed by priority) are drawn with OpenGL ES 3.0 on iOS and OpenGL 3.3 on desktop.
+- **GPS**: follow mode and heading-up mode, GPX track replay.
+- **Debugging built in**: live console, session log, screen and camera recording with replay.
+- **Desktop tools**: `osm2nav`, `pbf_merge`, `navcheck` and the `navview` viewer, over the same
+  library the app uses.
+
+Status: map viewer and on-phone pipeline work; routing and turn-by-turn are not started
+(see [Known limits](#known-limits) and [docs/challenges](docs/challenges/README.md)).
+
+## Quick start
+
+```sh
+git clone --recursive https://github.com/vasiliok/verst.git
+cd verst
+mkdir -p data && curl -L -o data/andorra.osm.pbf https://download.geofabrik.de/europe/andorra-latest.osm.pbf
+
+cmake -S . -B build && cmake --build build -j
+build/osm2nav data/andorra.osm.pbf out/andorra
+build/navview out/andorra --center 42.48014 1.45493 --mpp 1.1
+```
+
+iPhone app: see [ios/README.md](ios/README.md).
+
+## Repository layout
+
+| Path | What |
+|---|---|
+| `src/` | shared C++ core: pipeline, nav files, map provider, tiles, renderer, labels, tools |
+| `ios/` | UIKit front end (map view, Maps screen, downloads, console) |
+| `tests/` | GoogleTest unit tests |
+| `docs/` | design articles (graph, storage, tiling, shaders, smooth navigation, challenges) |
+| `third_party/` | libosmium and protozero (submodules), pre-generated glad GL loader |
+
+## Tools
 
 | Tool | Usage |
 |---|---|
@@ -101,19 +145,27 @@ Articles (also rendered as Doxygen pages):
 
 ## Scalar types
 
+<details>
+<summary>Show</summary>
+
 All code uses the `Vrst_` scalar aliases (`Vrst_int8`...`Vrst_int64`, `Vrst_uint8`...`Vrst_uint64`, `Vrst_float32`,
 `Vrst_float64`, `Vrst_size`). CMake generates them into `<build>/generated/vrst_types.h` from
 `src/vrst_types.h.in`; set one with e.g. `-DVRST_TYPE_UINT32="unsigned int"`. Each alias is checked for size,
 signedness and IEEE 754 at compile time, so a wrong setting fails the build.
 
+</details>
+
 ## Viewer controls
+
+<details>
+<summary>Show</summary>
 
 drag = pan - wheel = zoom at cursor - `Q`/`E` = rotate - `1`-`9` = toggle motorway, trunk, primary,
 secondary, tertiary, unclassified, residential (+living_street), service, ferry - `O` = highlight oneway -
 `V` = vertices (red = dead end) - `R` = start view - `F` = fit map - `Esc` = quit. The Dear ImGui panel (top left) has the
 same toggles plus dot size and rotation sliders; input over the panel does not move the map.
 The viewer starts at `--center <lat> <lon>` with `--mpp` ground metres per screen point (smaller = closer).
-Without them it uses the default point 47.322, 5.041 (`kDefaultPoint` in `navview.cpp`) at 5 m per point.
+Without them it uses the default point 47.322, 5.041 (central Dijon, `kDefaultPoint` in `src/map_scene.h`) at 5 m per point.
 If the data does not contain the start point, it starts with the whole map in view. Example, the hairpins of
 the CS 600 in Andorra: `navview <out_dir> --center 42.48014 1.45493 --mpp 1.1`. The window title shows counts, FPS, the
 lat/lon under the cursor and the zoom.
@@ -129,7 +181,12 @@ driven part yellow, and the camera follows the marker. `--track-time <s>` starts
 `--center` the view starts at the marker. `Space` = play/pause, `C` = follow (a map drag turns it off); the panel
 has time and speed sliders. Example: `navview <bourgogne_dir> --gpx drive.gpx --speed 2 --mpp 3`.
 
+</details>
+
 ## File format (v2)
+
+<details>
+<summary>Show</summary>
 
 Every file: `FileHeader` (64 B) + `SectionEntry[n]` (24 B each) + sections at 64-byte aligned offsets.
 Little-endian, offsets and indexes only. All files of one import share `build_id`; the loader
@@ -151,6 +208,8 @@ Additions beyond the original spec:
 - `BBOX` section in `graph.dat`: the extent of **all nodes in the source file**. The PBF header bbox is
   not used because Geofabrik extracts contain complete ways that reach outside it.
 - `SegFlags::kSegOnewayReverse` (bit 7): set with `kSegOneway` when the allowed direction is b -> a.
+
+</details>
 
 ## Andorra (Geofabrik, 3.5 MB)
 

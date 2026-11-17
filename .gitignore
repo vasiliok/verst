@@ -1,2 +1,7 @@
 # Local Xcode build directory (build artifacts belong in ~/src/tmp/verst).
 /b/
+
+# Quick start outputs (README): build tree, downloaded extracts, converted maps.
+/build/
+/data/
+/out/

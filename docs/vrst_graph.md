@@ -1,4 +1,4 @@
-# How Vrst_graph works {#vrst_graph_article}
+# How Vrst_graph works
 
 `Vrst_graph` (in `src/nav_files.h`) is a read-only view of `graph.dat`. It owns no
 data of its own: every member is a `std::span` into the memory-mapped file, so opening

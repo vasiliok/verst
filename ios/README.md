@@ -1,4 +1,4 @@
-# verst for iPhone {#ios_readme}
+# verst for iPhone
 
 A thin UIKit app around the shared C++ core. It draws the same map as the desktop
 viewer with the same code (`src/map_scene.h`, `src/map_renderer.h`), using OpenGL ES 3.0

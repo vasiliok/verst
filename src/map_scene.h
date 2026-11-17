@@ -57,7 +57,7 @@ constexpr Vrst_float32 kClassColors[kRoadClassCount][3] = {
     {0.40f, 0.42f, 0.47f},                         // service
     {0.35f, 0.60f, 0.95f},                         // ferry
 };
-/// Default start view when none is given: this point (47.322, 5.041) at
+/// Default start view when none is given: this point (central Dijon, 47.322, 5.041) at
 /// street zoom. start_view() falls back to the whole map when it is outside the data.
 constexpr Vrst_latlon kDefaultPoint{47.322, 5.041};
 constexpr Vrst_float64 kDefaultMetresPerPoint = 5.0;  ///< Start zoom: ground metres per screen point.

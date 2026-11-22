@@ -22,6 +22,17 @@
   <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
   <key>NSLocationWhenInUseUsageDescription</key>
   <string>Shows your position on the map.</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>verst</string>
+      </array>
+    </dict>
+  </array>
   <key>LSRequiresIPhoneOS</key>
   <true/>
   <key>UIFileSharingEnabled</key>

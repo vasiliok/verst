@@ -46,3 +46,40 @@ else()
     XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO
     XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "")
 endif()
+
+# Share extension: "Verst" in the iOS share sheet (Google Maps: Share -> Verst). Reads the
+# point of a shared link or coordinates with src/geo_link.cpp and opens the app with
+# verst://share (see ios/share/share_controller.h). Embedded in the app's PlugIns.
+add_executable(verst_share MACOSX_BUNDLE share/share_controller.mm ${CMAKE_SOURCE_DIR}/src/geo_link.cpp)
+target_include_directories(verst_share PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(verst_share PRIVATE vrst_types
+  "-framework Foundation" "-framework UIKit" "-framework UniformTypeIdentifiers")
+target_compile_options(verst_share PRIVATE -fobjc-arc -Wall -Wextra)
+set_target_properties(verst_share PROPERTIES
+  OUTPUT_NAME VerstShare
+  BUNDLE_EXTENSION appex
+  XCODE_PRODUCT_TYPE com.apple.product-type.app-extension
+  MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/share/Info.plist.in"
+  MACOSX_BUNDLE_GUI_IDENTIFIER "${VERST_BUNDLE_ID}.share"
+  MACOSX_BUNDLE_BUNDLE_NAME VerstShare
+  MACOSX_BUNDLE_SHORT_VERSION_STRING 0.1
+  MACOSX_BUNDLE_BUNDLE_VERSION 1
+  XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${VERST_BUNDLE_ID}.share"
+  XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET 15.0
+  XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY 1
+  XCODE_ATTRIBUTE_APPLICATION_EXTENSION_API_ONLY YES
+  XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES)
+if(VERST_IOS_TEAM)
+  set_target_properties(verst_share PROPERTIES
+    XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${VERST_IOS_TEAM}"
+    XCODE_ATTRIBUTE_CODE_SIGN_STYLE Automatic)
+else()
+  set_target_properties(verst_share PROPERTIES
+    XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO
+    XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "")
+endif()
+add_dependencies(verst_ios verst_share)
+set_target_properties(verst_ios PROPERTIES
+  XCODE_EMBED_APP_EXTENSIONS verst_share
+  XCODE_EMBED_APP_EXTENSIONS_REMOVE_HEADERS_ON_COPY YES
+  XCODE_EMBED_APP_EXTENSIONS_CODE_SIGN_ON_COPY YES)

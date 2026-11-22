@@ -142,6 +142,12 @@ static constexpr double kConsoleSeconds = 0.25;
 /// Debug console with the provider status and the session log ("Log" button); placed
 /// by VrstRootController, fed by this controller. Set before the view loads.
 @property(nonatomic, strong) VrstDebugConsole* console;
+/// A point or place shared to the app (verst://share from the share extension): shown
+/// like a picked search result once the map is drawn; without a result, the search
+/// screen opens with the text.
+/// @param text Coordinates, a map link or an address.
+/// @param items What was shared, for the log.
+- (void)showShared:(NSString*)text items:(NSString*)items;
 @end
 
 @implementation VrstMapController {
@@ -319,6 +325,8 @@ static constexpr double kConsoleSeconds = 0.25;
   NSString* _launchSearch;
   /// `--search-pick <text>`: show the first result of this text after the first frame.
   NSString* _launchSearchPick;
+  /// Text shared to the app (showShared:), shown after the next frame.
+  NSString* _pendingShare;
   /// Zoom still to apply from the zoom buttons, natural log of the factor (0 = none).
   double _pendingZoomLog;
   /// `--follow on|heading`: follow mode to start with.
@@ -548,6 +556,13 @@ static constexpr double kConsoleSeconds = 0.25;
 }
 
 // --- address search ---------------------------------------------------------------
+
+- (void)showShared:(NSString*)text items:(NSString*)items {
+  _log.record("share", [self now]).text("text", text.UTF8String ?: "").text("items", items.UTF8String ?: "");
+  [self.presentedViewController dismissViewControllerAnimated:NO completion:nil];
+  _pendingShare = [text copy];
+  [self redraw];
+}
 
 /// Magnifier button: the search screen over the shown region, nearest to the screen
 /// center first.
@@ -979,6 +994,17 @@ static constexpr double kConsoleSeconds = 0.25;
     _launchSearch = nil;
     [self onSearch];
   }
+  if (_pendingShare) {
+    NSString* text = _pendingShare;
+    _pendingShare = nil;
+    NSArray<VrstSearchHit*>* hits = [self searchFor:text];
+    if (hits.count) {
+      [self showHit:hits.firstObject];
+    } else {
+      _lastQuery = text;
+      [self onSearch];
+    }
+  }
   if (_launchFollow != Vrst_follow::Off) {
     [self setFollow:_launchFollow];
     _launchFollow = Vrst_follow::Off;
@@ -1139,7 +1165,7 @@ static constexpr double kConsoleSeconds = 0.25;
   // and per-touch records. All: everything.
   _console.filters = @[
     [VrstConsoleFilter filterNamed:@"Map" only:[NSSet setWithArray:@[ @"build", @"queue", @"load", @"map", @"error" ]]],
-    [VrstConsoleFilter filterNamed:@"User" only:[NSSet setWithArray:@[ @"touch", @"gesture", @"ui", @"search" ]]],
+    [VrstConsoleFilter filterNamed:@"User" only:[NSSet setWithArray:@[ @"touch", @"gesture", @"ui", @"search", @"share" ]]],
     [VrstConsoleFilter filterNamed:@"Events" except:[NSSet setWithArray:@[ @"frame", @"tile", @"touch", @"queue" ]]],
     [VrstConsoleFilter filterNamed:@"All" except:[NSSet set]],
   ];
@@ -2305,6 +2331,8 @@ static constexpr double kConsoleSeconds = 0.25;
 @interface VrstAppDelegate : UIResponder <UIApplicationDelegate>
 /// The app's only window.
 @property(strong, nonatomic) UIWindow* window;
+/// The map, for links opened in the app.
+@property(strong, nonatomic) VrstMapController* map;
 @end
 
 @implementation VrstAppDelegate
@@ -2320,8 +2348,28 @@ static constexpr double kConsoleSeconds = 0.25;
   VrstDebugConsole* console = [[VrstDebugConsole alloc] initWithFrame:CGRectZero];
   VrstMapController* map = [[VrstMapController alloc] init];
   map.console = console;
+  self.map = map;
   self.window.rootViewController = [[VrstRootController alloc] initWithMap:map console:console];
   [self.window makeKeyAndVisible];
+  return YES;
+}
+
+/// verst://share?text=...&items=... from the share extension: the map shows it.
+/// @param application The app.
+/// @param url The link.
+/// @param options Unused.
+/// @return YES when it was a share link.
+- (BOOL)application:(UIApplication*)application openURL:(NSURL*)url options:(NSDictionary*)options {
+  (void)application;
+  (void)options;
+  if (![url.scheme isEqualToString:@"verst"] || ![url.host isEqualToString:@"share"]) return NO;
+  NSString* text = @"";
+  NSString* items = @"";
+  for (NSURLQueryItem* q in [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO].queryItems) {
+    if ([q.name isEqualToString:@"text"]) text = q.value ?: @"";
+    if ([q.name isEqualToString:@"items"]) items = q.value ?: @"";
+  }
+  [self.map showShared:text items:items];
   return YES;
 }
 

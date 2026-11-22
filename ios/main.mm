@@ -38,6 +38,7 @@
 #import "catalog_controller.h"
 #import "download_manager.h"
 #import "maps_controller.h"
+#import "pin_card.h"
 #import "region_store.h"
 #import "root_controller.h"
 #import "search_controller.h"
@@ -130,6 +131,11 @@ static constexpr double kStuckMs = 2000;
 static constexpr Vrst_size kMaxStuckDumps = 20;
 /// Camera box when no map is open: most of the inhabited world.
 static constexpr Vrst_geo_box kWorldBox{{-60.0, -170.0}, {75.0, 170.0}};
+/// NSUserDefaults key of the travel mode ("who I am": car, bike, walk).
+static NSString* const kTravelModeKey = @"travel_mode";
+/// Seconds a finger must rest on the map to drop a pin.
+static constexpr double kHoldSeconds = 1.0;
+
 /// File name start of recorded activity in Documents/scenarios.
 static NSString* const kRecordingPrefix = @"rec-";
 /// Seconds between two console refreshes while it is open.
@@ -321,6 +327,26 @@ static constexpr double kConsoleSeconds = 0.25;
   Vrst_latlon _pin;
   /// Text of the last search, shown again when the search screen reopens.
   NSString* _lastQuery;
+  /// Card of the pin: place, route, travel mode, Route / Start here.
+  VrstPinCard* _card;
+  /// Bottoms of the lower round buttons on the toolbar (card hidden).
+  NSArray<NSLayoutConstraint*>* _buttonsAboveBar;
+  /// Bottoms of the lower round buttons on the card (card shown).
+  NSArray<NSLayoutConstraint*>* _buttonsAboveCard;
+  /// A start pin is set ("Start here"); routes start there instead of the GPS position.
+  BOOL _hasStart;
+  /// Position of the start pin.
+  Vrst_latlon _startPin;
+  /// The route shown; empty when none.
+  std::vector<Vrst_latlon> _route;
+  /// Travel mode of routes (saved under kTravelModeKey).
+  Vrst_travel_mode _mode;
+  /// Serial queue the routes are computed on; leaveRegion waits for it before closing the map.
+  dispatch_queue_t _routeQueue;
+  /// Number of the newest route request; a slower older result is dropped.
+  Vrst_uint64 _routeRequest;
+  /// A route waits for the first GPS fix (Route, or a shared point, before GPS knew where we are).
+  BOOL _routeWhenFix;
   /// `--search <text>`: open the search screen with this text after the first frame.
   NSString* _launchSearch;
   /// `--search-pick <text>`: show the first result of this text after the first frame.
@@ -357,6 +383,9 @@ static constexpr double kConsoleSeconds = 0.25;
   _startMpp = kDefaultMetresPerPoint;
   _stuckMs = kStuckMs;
   _angleTarget = NAN;
+  _routeQueue = dispatch_queue_create("verst.route", DISPATCH_QUEUE_SERIAL);
+  _mode = static_cast<Vrst_travel_mode>(std::clamp<NSInteger>(
+      [NSUserDefaults.standardUserDefaults integerForKey:kTravelModeKey], 0, static_cast<NSInteger>(Vrst_travel_mode::Foot)));
   [self parseArguments];
 
   _context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
@@ -428,6 +457,8 @@ static constexpr double kConsoleSeconds = 0.25;
   [self stopScenario];
   [self setFollow:Vrst_follow::Off];
   if (!_track.empty()) _trackDirty = YES;  // its world coordinates change with the region
+  dispatch_sync(_routeQueue, ^{});  // a route being computed still reads the map
+  [self clearRoutePins];
   _map.reset();  // stops the workers
   if (_glReady) {
     [EAGLContext setCurrentContext:_context];
@@ -620,8 +651,7 @@ static constexpr double kConsoleSeconds = 0.25;
       .num("lat", hit.lat, 7)
       .num("lon", hit.lon, 7);
   [self setFollow:Vrst_follow::Off];
-  _pin = {hit.lat, hit.lon};
-  _hasPin = YES;
+  [self setDestination:{hit.lat, hit.lon} title:hit.title detail:hit.detail];
   _pendingZoomLog = 0;
   _angleTarget = NAN;
   _view = _mapFrame.start_view(_pin, hit.metresPerPoint, [self pxPerPoint], [self fbWidth], [self fbHeight]);
@@ -629,10 +659,188 @@ static constexpr double kConsoleSeconds = 0.25;
   [self redraw];
 }
 
-/// Removes the pin.
+/// Removes the pin (and the route and start pin with it).
 - (void)clearPin {
   _log.record("ui", [self now]).text("event", "search_clear_pin");
+  [self clearRoutePins];
+  [self redraw];
+}
+
+// --- pins and routes ---------------------------------------------------------------
+
+/// Sets the destination pin and opens its card; a route shown before is dropped.
+/// @param p Position.
+/// @param title Card title (place name, "Dropped pin").
+/// @param detail Card detail (address, coordinates).
+- (void)setDestination:(Vrst_latlon)p title:(NSString*)title detail:(NSString*)detail {
+  _pin = p;
+  _hasPin = YES;
+  _route.clear();
+  _renderer.set_route({});
+  _card.title = title;
+  _card.detail = detail;
+  _card.startOffered = YES;
+  [self showCard:YES];
+  [self redraw];
+}
+
+/// Shows or hides the pin card; the lower round buttons move above it.
+/// @param show Show.
+- (void)showCard:(BOOL)show {
+  if (_card.hidden == !show) return;
+  _card.hidden = !show;
+  [NSLayoutConstraint deactivateConstraints:show ? _buttonsAboveBar : _buttonsAboveCard];
+  [NSLayoutConstraint activateConstraints:show ? _buttonsAboveCard : _buttonsAboveBar];
+}
+
+/// Removes the pins, the route and the card.
+- (void)clearRoutePins {
   _hasPin = NO;
+  _hasStart = NO;
+  _routeWhenFix = NO;
+  _route.clear();
+  _renderer.set_route({});
+  ++_routeRequest;  // a route still being computed is not shown
+  [self showCard:NO];
+}
+
+/// Long press of kHoldSeconds: a pin drops under the finger, its card opens and the
+/// nearest road names it.
+/// @param g Long-press recognizer.
+- (void)onHold:(UILongPressGestureRecognizer*)g {
+  if (g.state != UIGestureRecognizerStateBegan || !_viewSet) return;
+  const CGPoint at = [g locationInView:self.view];
+  const CGFloat s = [self pxPerPoint];
+  const Vrst_latlon p = _mapFrame.to_latlon(screen_to_world(_view, [self fbWidth], [self fbHeight], at.x * s, at.y * s));
+  [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium] impactOccurred];
+  _log.record("ui", [self now]).text("event", "drop_pin").num("lat", p.lat, 7).num("lon", p.lon, 7);
+  [self setDestination:p title:@"Dropped pin" detail:[NSString stringWithFormat:@"%.5f, %.5f", p.lat, p.lon]];
+  if (!_map) return;
+  const Vrst_map_provider* map = _map.get();  // valid while the route queue runs (leaveRegion waits)
+  const Vrst_travel_mode mode = _mode;
+  const Vrst_uint64 request = _routeRequest;
+  __weak VrstMapController* weak = self;
+  dispatch_async(_routeQueue, ^{
+    const std::optional<Vrst_road_at> road = map->road_at(p, mode);
+    NSString* name = road && !road->name.empty() ? @(road->name.c_str()) : nil;
+    dispatch_async(dispatch_get_main_queue(), ^{ [weak namePin:name request:request]; });
+  });
+}
+
+/// Names the dropped pin after its nearest road, unless the pin changed meanwhile.
+/// @param name Road name, or nil.
+/// @param request _routeRequest when the name was asked.
+- (void)namePin:(nullable NSString*)name request:(Vrst_uint64)request {
+  if (name && request == _routeRequest && _hasPin) _card.title = name;
+}
+
+/// "Start here": the pin becomes the start of the next route (green); a new long press
+/// sets the destination.
+- (void)onStartHere {
+  if (!_hasPin) return;
+  _startPin = _pin;
+  _hasStart = YES;
+  _hasPin = NO;
+  _route.clear();
+  _renderer.set_route({});
+  _log.record("ui", [self now]).text("event", "route_start_pin").num("lat", _startPin.lat, 7).num("lon", _startPin.lon, 7);
+  _card.title = [@"Start: " stringByAppendingString:_card.title];
+  _card.detail = @"Hold the map 1 s on the destination, then Route.";
+  _card.startOffered = NO;
+  [self redraw];
+}
+
+/// The travel mode switch: saved as the default; a route shown is laid again for it.
+/// @param mode New mode.
+- (void)onCardMode:(VrstCardMode)mode {
+  _mode = static_cast<Vrst_travel_mode>(mode);
+  [NSUserDefaults.standardUserDefaults setInteger:mode forKey:kTravelModeKey];
+  _log.record("ui", [self now]).text("event", "travel_mode").count("mode", static_cast<Vrst_uint64>(mode));
+  if (!_route.empty()) [self routeToPin];
+}
+
+/// Route button: from the start pin, or else from the GPS position (a replayed track
+/// counts), to the destination pin, computed on the route queue.
+- (void)routeToPin {
+  if (!_hasPin || !_map) return;
+  std::optional<Vrst_latlon> from;
+  if (_hasStart) {
+    from = _startPin;
+  } else if (_hasFix) {
+    from = [self predictedFixAhead:0];
+  }
+  if (!from) {
+    _card.detail = @"GPS waiting - the route follows when it knows where you are, or set a start with Start here.";
+    _routeWhenFix = YES;
+    return;
+  }
+  _routeWhenFix = NO;
+  const Vrst_travel_mode mode = _mode;
+  if (!_map->can_route(mode)) {
+    _card.detail = @"This map routes cars only - download it again for bike and walk.";
+    return;
+  }
+  _card.detail = @"Routing...";
+  const Vrst_uint64 request = ++_routeRequest;
+  const Vrst_map_provider* map = _map.get();  // valid while the route queue runs (leaveRegion waits)
+  const Vrst_latlon a = *from, b = _pin;
+  __weak VrstMapController* weak = self;
+  dispatch_async(_routeQueue, ^{
+    const Vrst_route r = map->route(a, b, mode);
+    dispatch_async(dispatch_get_main_queue(), ^{ [weak routeFound:r request:request from:a]; });
+  });
+}
+
+/// A route was computed: drawn, fitted on screen above the card, summed up on the card.
+/// @param r Route.
+/// @param request Its request number; an older one than the newest is dropped.
+/// @param from Its start.
+- (void)routeFound:(const Vrst_route&)r request:(Vrst_uint64)request from:(Vrst_latlon)from {
+  static const char* const kModes[] = {"car", "bike", "walk"};
+  const char* mode = kModes[static_cast<int>(_mode)];
+  Vrst_log_record rec = _log.record("route", [self now]);
+  rec.text("mode", mode)
+      .num("from_lat", from.lat, 6)
+      .num("from_lon", from.lon, 6)
+      .num("to_lat", _pin.lat, 6)
+      .num("to_lon", _pin.lon, 6)
+      .flag("found", r.found)
+      .num("km", r.length_m / 1000, 2)
+      .num("min", r.time_s / 60, 1)
+      .count("settled", r.settled)
+      .num("ms", r.ms, 1)
+      .flag("stale", request != _routeRequest);
+  if (!r.found) rec.text("error", r.error);
+  if (request != _routeRequest || !_hasPin) return;
+  if (!r.found) {
+    _card.detail = [NSString stringWithFormat:@"No route: %s.", r.error.c_str()];
+    return;
+  }
+  _route = r.points;
+  std::vector<Vrst_vec2d> world;
+  world.reserve(_route.size());
+  Vrst_vec2d lo{INFINITY, INFINITY}, hi{-INFINITY, -INFINITY};
+  for (const Vrst_latlon& p : _route) {
+    const Vrst_vec2d w = _mapFrame.to_world(p);
+    world.push_back(w);
+    lo = {std::min(lo.x, w.x), std::min(lo.y, w.y)};
+    hi = {std::max(hi.x, w.x), std::max(hi.y, w.y)};
+  }
+  _renderer.set_route(std::move(world));
+  const int minutes = static_cast<int>(std::lround(r.time_s / 60));
+  NSString* time = minutes < 60 ? [NSString stringWithFormat:@"%d min", minutes]
+                                : [NSString stringWithFormat:@"%d h %02d", minutes / 60, minutes % 60];
+  _card.detail = [NSString stringWithFormat:@"%.1f km - %@ (%s)", r.length_m / 1000, time, mode];
+  // Fit the route in the part of the screen above the card, north up.
+  [self setFollow:Vrst_follow::Off];
+  const double px = [self pxPerPoint];
+  const double w = [self fbWidth], h = [self fbHeight];
+  const double card = (_card.bounds.size.height + 24) * px, top = 60 * px;
+  const double sx = (w * 0.85) / std::max(hi.x - lo.x, 1.0), sy = ((h - card - top) * 0.85) / std::max(hi.y - lo.y, 1.0);
+  _view.scale = std::min({sx, sy, 2000.0});
+  _view.angle = 0;
+  _angleTarget = NAN;
+  _view.center = {(lo.x + hi.x) / 2, (lo.y + hi.y) / 2 - (card - top) / 2 / _view.scale};
   [self redraw];
 }
 
@@ -865,6 +1073,9 @@ static constexpr double kConsoleSeconds = 0.25;
     } else if ([a[i] isEqualToString:@"--search"] && i + 1 < a.count) {
       _launchSearch = a[i + 1];
       ++i;
+    } else if ([a[i] isEqualToString:@"--share"] && i + 1 < a.count) {
+      _pendingShare = a[i + 1];  // as if shared from Google Maps (verst://share)
+      ++i;
     } else if ([a[i] isEqualToString:@"--search-pick"] && i + 1 < a.count) {
       _launchSearchPick = a[i + 1];
       ++i;
@@ -956,6 +1167,8 @@ static constexpr double kConsoleSeconds = 0.25;
   const Vrst_vec2d abs_center{_mapFrame.center().x + _view.center.x, _mapFrame.center().y + _view.center.y};
   _renderer.draw_region(_view, w, h, _mapFrame.center(), std::cos(inverse_mercator(abs_center).lat * kPi / 180));
   [self drawTrackWidth:w height:h];
+  _renderer.draw_route(_view, w, h, Vrst_float32(6 * px));
+  if (_hasStart) _renderer.draw_pin(_view, w, h, _mapFrame.to_world(_startPin), Vrst_float32(22 * px), 0.15f, 0.75f, 0.30f);
   if (_hasPin) _renderer.draw_pin(_view, w, h, _mapFrame.to_world(_pin), Vrst_float32(22 * px));
   const double tiles_ms = phase();
   if (_hasFix) _renderer.draw_position(_view, w, h, _mapFrame.to_world([self predictedFixAhead:0]), Vrst_float32(16 * px));
@@ -1000,6 +1213,7 @@ static constexpr double kConsoleSeconds = 0.25;
     NSArray<VrstSearchHit*>* hits = [self searchFor:text];
     if (hits.count) {
       [self showHit:hits.firstObject];
+      [self routeToPin];  // a shared point starts route mode: it is the destination
     } else {
       _lastQuery = text;
       [self onSearch];
@@ -1156,6 +1370,14 @@ static constexpr double kConsoleSeconds = 0.25;
   _locateButton = locate;
   _boxesButton = [self roundButton:@"eye" color:UIColor.whiteColor action:@selector(onBoxes)];
   _searchButton = [self roundButton:@"magnifyingglass" color:UIColor.whiteColor action:@selector(onSearch)];
+  _card = [[VrstPinCard alloc] initWithFrame:CGRectZero];
+  _card.translatesAutoresizingMaskIntoConstraints = NO;
+  _card.mode = static_cast<VrstCardMode>(_mode);
+  _card.routeHandler = ^{ [weak routeToPin]; };
+  _card.startHandler = ^{ [weak onStartHere]; };
+  _card.closeHandler = ^{ [weak clearPin]; };
+  _card.modeHandler = ^(VrstCardMode m) { [weak onCardMode:m]; };
+  [self.view addSubview:_card];
   UIButton* zoomOut = [self roundButton:@"minus" color:UIColor.whiteColor action:@selector(onZoomOut)];
   UIButton* zoomIn = [self roundButton:@"plus" color:UIColor.whiteColor action:@selector(onZoomIn)];
   _recordButton = [self roundButton:@"record.circle" color:UIColor.systemRedColor action:@selector(onRecordButton)];
@@ -1165,13 +1387,18 @@ static constexpr double kConsoleSeconds = 0.25;
   // and per-touch records. All: everything.
   _console.filters = @[
     [VrstConsoleFilter filterNamed:@"Map" only:[NSSet setWithArray:@[ @"build", @"queue", @"load", @"map", @"error" ]]],
-    [VrstConsoleFilter filterNamed:@"User" only:[NSSet setWithArray:@[ @"touch", @"gesture", @"ui", @"search", @"share" ]]],
+    [VrstConsoleFilter filterNamed:@"User" only:[NSSet setWithArray:@[ @"touch", @"gesture", @"ui", @"search", @"share", @"route" ]]],
     [VrstConsoleFilter filterNamed:@"Events" except:[NSSet setWithArray:@[ @"frame", @"tile", @"touch", @"queue" ]]],
     [VrstConsoleFilter filterNamed:@"All" except:[NSSet set]],
   ];
   _console.closeHandler = ^{ [weak onConsoleClosed]; };
 
   UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
+  _buttonsAboveBar = @[ [locate.bottomAnchor constraintEqualToAnchor:bar.topAnchor constant:-12],
+                        [zoomOut.bottomAnchor constraintEqualToAnchor:bar.topAnchor constant:-12] ];
+  _buttonsAboveCard = @[ [locate.bottomAnchor constraintEqualToAnchor:_card.topAnchor constant:-12],
+                         [zoomOut.bottomAnchor constraintEqualToAnchor:_card.topAnchor constant:-12] ];
+  [NSLayoutConstraint activateConstraints:_buttonsAboveBar];
   [NSLayoutConstraint activateConstraints:@[
     [_stats.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],
     [_stats.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:8],
@@ -1185,13 +1412,14 @@ static constexpr double kConsoleSeconds = 0.25;
     [bar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
     [bar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
     [locate.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-12],
-    [locate.bottomAnchor constraintEqualToAnchor:bar.topAnchor constant:-12],
     [_boxesButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-12],
     [_boxesButton.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],
     [_searchButton.trailingAnchor constraintEqualToAnchor:_boxesButton.trailingAnchor],
     [_searchButton.topAnchor constraintEqualToAnchor:_boxesButton.bottomAnchor constant:12],
     [zoomOut.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:12],
-    [zoomOut.bottomAnchor constraintEqualToAnchor:bar.topAnchor constant:-12],
+    [_card.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:8],
+    [_card.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
+    [_card.bottomAnchor constraintEqualToAnchor:bar.topAnchor constant:-8],
     [zoomIn.leadingAnchor constraintEqualToAnchor:zoomOut.leadingAnchor],
     [zoomIn.bottomAnchor constraintEqualToAnchor:zoomOut.topAnchor constant:-12],
     [_recordButton.trailingAnchor constraintEqualToAnchor:locate.trailingAnchor],
@@ -2187,6 +2415,7 @@ static constexpr double kConsoleSeconds = 0.25;
     _autoFollowed = YES;  // the first fix: the map centers on the user once by itself
     [self setFollow:Vrst_follow::Follow];
   }
+  if (_routeWhenFix) [self routeToPin];  // the route was waiting for this
   [self redraw];
 }
 
@@ -2221,7 +2450,9 @@ static constexpr double kConsoleSeconds = 0.25;
   [two requireGestureRecognizerToFail:rot];
   _pinchRecognizer = pinch;
   _rotateRecognizer = rot;
-  for (UIGestureRecognizer* g in @[ pan, pinch, rot, dbl, two ]) [self.view addGestureRecognizer:g];
+  UILongPressGestureRecognizer* hold = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onHold:)];
+  hold.minimumPressDuration = kHoldSeconds;
+  for (UIGestureRecognizer* g in @[ pan, pinch, rot, dbl, two, hold ]) [self.view addGestureRecognizer:g];
   [_debug trackTouchesOf:self.view];
 }
 

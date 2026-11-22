@@ -17,8 +17,35 @@ static_assert(std::endian::native == std::endian::little, "nav files are little-
 namespace nav {
 
 /// Layout version written to Vrst_file_header::format_version. Bump on any change to
-/// an on-disk struct or enum value; loaders refuse every other version.
-inline constexpr Vrst_uint32 kFormatVersion = 3;
+/// an on-disk struct or enum value. Version 4 added the travel modes (arc and segment
+/// mode bits, path and cycleway road classes) without changing any layout.
+inline constexpr Vrst_uint32 kFormatVersion = 4;
+/// Oldest version the loaders read: version 3 files are car-only graphs (no mode bits).
+inline constexpr Vrst_uint32 kMinFormatVersion = 3;
+
+/// Travel modes, as a bit mask: who may use an arc or a segment.
+enum TravelModes : Vrst_uint32 {
+  kModeCar = 1u << 0,   ///< Car driver.
+  kModeBike = 1u << 1,  ///< Cyclist.
+  kModeFoot = 1u << 2,  ///< Walker.
+  kModeAll = 7u,        ///< All three.
+};
+/// Arc weights keep the modes allowed on the arc in their top bits (format 4); the
+/// car travel time is in the bits below.
+inline constexpr Vrst_uint32 kArcModeShift = 29;
+/// Travel time part of an arc weight.
+inline constexpr Vrst_uint32 kArcTimeMask = (1u << kArcModeShift) - 1;
+/// Car travel time of an arc weight.
+/// @param weight Vrst_fwd_arc::weight or Vrst_bwd_arc::weight.
+/// @return Deciseconds.
+constexpr Vrst_uint32 arc_time(Vrst_uint32 weight) { return weight & kArcTimeMask; }
+/// Travel modes allowed on an arc.
+/// @param weight Vrst_fwd_arc::weight or Vrst_bwd_arc::weight.
+/// @return TravelModes mask; kModeCar for a format 3 arc, which has no mode bits.
+constexpr Vrst_uint32 arc_modes(Vrst_uint32 weight) {
+  const Vrst_uint32 m = weight >> kArcModeShift;
+  return m != 0 ? m : kModeCar;
+}
 /// Section offset alignment in bytes: one cache line, and enough for any element type.
 inline constexpr Vrst_uint64 kSectionAlign = 64;
 
@@ -203,9 +230,11 @@ struct Vrst_fwd_arc {
   /// Target vertex. The tail is implicit (the CSR row), which saves 4 B per arc on
   /// the router's hottest array.
   Vrst_uint32 head;
-  /// Travel time in deciseconds, precomputed so the router does no division and no
-  /// attribute lookup. Seconds would round short city segments to 0 or 1 and make
-  /// many routes tie; deciseconds keep them apart.
+  /// Car travel time in deciseconds (arc_time()), precomputed so the router does no
+  /// division and no attribute lookup; seconds would round short city segments to 0
+  /// or 1 and make many routes tie. The top 3 bits (format 4) are the travel modes
+  /// allowed on the arc (arc_modes()); walkers and cyclists get their time from the
+  /// segment length.
   Vrst_uint32 weight;
   /// Segment id | kSegReversed. The router never needs it, but path unpacking does:
   /// it is the only link from an arc to its geometry, name and OSM way. Bit31 says
@@ -242,7 +271,7 @@ struct Vrst_bwd_arc {
 /// the graph structure alone cannot tell. A plain enum, not enum class, so flags
 /// combine with | into the 16-bit field without casts.
 enum SegFlags : Vrst_uint16 {
-  kSegOneway = 1u << 0,         ///< exactly one arc exists
+  kSegOneway = 1u << 0,         ///< cars may drive one way only (exactly one car arc)
   kSegRoundabout = 1u << 1,     ///< junction=roundabout/circular; guidance counts exits
   kSegLink = 1u << 2,           ///< *_link ramp; guidance says "take the exit"
   kSegToll = 1u << 3,           ///< toll=yes; for avoid-tolls
@@ -250,7 +279,12 @@ enum SegFlags : Vrst_uint16 {
   kSegBridge = 1u << 5,         ///< bridge=* except no; for rendering and guidance
   kSegFerry = 1u << 6,          ///< route=ferry; for avoid-ferries
   kSegOnewayReverse = 1u << 7,  ///< with kSegOneway: allowed direction is b -> a
+  kSegModeCar = 1u << 8,        ///< cars may use it (format 4; a format 3 segment is car only)
+  kSegModeBike = 1u << 9,       ///< cyclists may use it
+  kSegModeFoot = 1u << 10,      ///< walkers may use it
 };
+/// Shift of the travel mode bits in Vrst_seg_attr::flags (TravelModes << shift).
+inline constexpr int kSegModeShift = 8;
 
 /// Attributes of one segment (a road piece between two vertices), indexed by
 /// segment id. Holds everything that is not needed during the shortest-path search

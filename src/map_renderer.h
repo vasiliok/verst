@@ -67,14 +67,32 @@ class Vrst_map_renderer {
   /// @param px Dot diameter in framebuffer pixels.
   void draw_position(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px);
 
-  /// Draws the pin of a search result: a red dot in a white disc, the same size at every
-  /// zoom. Call after the map and the track, before the GPS position and the labels.
+  /// Draws a pin (search result, dropped pin, route start): a colored dot in a white
+  /// disc, the same size at every zoom. Call after the map, the route and the track,
+  /// before the GPS position and the labels.
   /// @param v Camera.
   /// @param fb_w Framebuffer width in px.
   /// @param fb_h Framebuffer height in px.
   /// @param pos Position, world coordinates (Vrst_map_frame::to_world()).
   /// @param px Diameter of the white disc in framebuffer pixels.
-  void draw_pin(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px);
+  /// @param r Red of the dot.
+  /// @param g Green of the dot.
+  /// @param b Blue of the dot.
+  void draw_pin(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px, Vrst_float32 r = 0.90f,
+                Vrst_float32 g = 0.12f, Vrst_float32 b = 0.10f);
+
+  /// Sets the route to draw with draw_route(); empty = none.
+  /// @param points Route, world coordinates (Vrst_map_frame::to_world()).
+  void set_route(std::vector<Vrst_vec2d> points) { m_route = std::move(points); }
+
+  /// Draws the route as a blue line with a dark casing, the same width at every zoom.
+  /// Rebuilt every frame from the route points (a few thousand at most). Call after
+  /// the map tiles and the region, before the track, pins, position and labels.
+  /// @param v Camera.
+  /// @param fb_w Framebuffer width in px.
+  /// @param fb_h Framebuffer height in px.
+  /// @param px Line width in framebuffer pixels.
+  void draw_route(const Vrst_view& v, int fb_w, int fb_h, Vrst_float32 px);
 
   /// Draws one round marker with the overlay program, which must be in use with its
   /// view matrix set. The marker moves every frame: one point, rewritten in place.
@@ -178,6 +196,12 @@ class Vrst_map_renderer {
   GLuint m_track_vbo = 0;
   /// Track VAO: m_track_vbo layout.
   GLuint m_track_vao = 0;
+  /// The route, world coordinates (set_route()).
+  std::vector<Vrst_vec2d> m_route;
+  /// Route triangles, rewritten every draw_route().
+  GLuint m_route_vbo = 0;
+  /// Route VAO: m_route_vbo layout.
+  GLuint m_route_vao = 0;
   /// One marker point, rewritten every draw_track().
   GLuint m_marker_vbo = 0;
   /// Marker VAO: m_marker_vbo layout.

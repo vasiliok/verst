@@ -11,6 +11,7 @@
 #include "map_provider.h"
 #include "map_tiles.h"
 #include "nav_files.h"
+#include "router.h"
 #include "search_engine.h"
 
 namespace nav {
@@ -38,6 +39,15 @@ class Vrst_nav_map_provider final : public Vrst_map_provider {
   bool has_search() const override { return m_search != nullptr; }
   std::vector<Vrst_search_result> search(std::string_view text, std::optional<Vrst_latlon> near,
                                          Vrst_size max) const override;
+  bool can_route(Vrst_travel_mode mode) const override {
+    return mode == Vrst_travel_mode::Car || m_data.graph().file().header().format_version >= 4;
+  }
+  Vrst_route route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode) const override {
+    return m_router.route(from, to, mode);
+  }
+  std::optional<Vrst_road_at> road_at(Vrst_latlon p, Vrst_travel_mode mode) const override {
+    return m_router.road_at(p, mode);
+  }
 
  private:
   /// Clock of the Settled events.
@@ -56,6 +66,8 @@ class Vrst_nav_map_provider final : public Vrst_map_provider {
   Vrst_tile_index m_index;
   /// Builds tiles from m_data and m_index; read-only, shared by the workers.
   Vrst_tile_builder m_builder{m_data, m_index};
+  /// Routes and nearest roads over m_data and m_index; read-only.
+  Vrst_router m_router{m_data, m_index};
   /// Box of all road shape points, the area the map covers.
   Vrst_geo_box m_extent{};
   /// Address search database of the folder; null when there is none or it does not

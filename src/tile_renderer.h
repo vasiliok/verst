@@ -45,7 +45,7 @@ layout(location = 3) in uint a_attr;
 uniform mat3 u_view;
 uniform vec2 u_half_fb;
 uniform float u_px_per_m;
-uniform float u_width[24];
+uniform float u_width[28];
 uniform float u_extra_px;
 uniform uint u_class_mask;
 flat out uint v_attr;
@@ -62,7 +62,7 @@ void main() {
   float end = float(gl_VertexID & 1);
   float side = (gl_VertexID & 2) != 0 ? 1.0 : -1.0;
   vec2 p = mix(s0 - dir * hw, s1 + dir * hw, end) + n * side * hw;
-  bool hidden = style < 16u && ((u_class_mask >> style) & 1u) == 0u;
+  bool hidden = style < 20u && ((u_class_mask >> style) & 1u) == 0u;
   gl_Position = hidden ? vec4(2.0, 2.0, 2.0, 1.0) : vec4(p / u_half_fb, 0.0, 1.0);
   v_attr = a_attr;
   v_along = a_d0 * u_px_per_m + mix(-hw, len + hw, end);
@@ -74,7 +74,7 @@ void main() {
 inline constexpr std::string_view kTileLineFs = R"(
 flat in uint v_attr;
 in float v_along;
-uniform vec3 u_colors[24];
+uniform vec3 u_colors[28];
 uniform int u_pass;
 uniform vec3 u_pass_color;
 uniform float u_dash_px;
@@ -84,7 +84,7 @@ out vec4 o_color;
 void main() {
   uint style = v_attr & 0xFFu;
   vec3 c = u_colors[style];
-  if (u_oneway && style < 16u) c = (v_attr & 0x100u) != 0u ? vec3(1.0, 0.25, 0.9) : c * 0.3;
+  if (u_oneway && style < 20u) c = (v_attr & 0x100u) != 0u ? vec3(1.0, 0.25, 0.9) : c * 0.3;
   if (u_pass == 1) c = u_pass_color;
   if (u_pass == 2) {
     if (mod(v_along, 2.0 * u_dash_px) > u_dash_px) discard;

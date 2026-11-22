@@ -9,7 +9,8 @@
 
 namespace nav {
 
-/// Car-relevant road type, derived from highway=* (and route=ferry for Ferry).
+/// Road type, derived from highway=* (and route=ferry for Ferry): the car roads, then
+/// the ways only walkers and cyclists use (format 4).
 /// Groups dozens of OSM tag values into a fixed set that the profile, router,
 /// guidance and renderer can index arrays by (kClasses, kClassColors, class_mask
 /// bits). Values are stored in Vrst_seg_attr::road_class, so reordering them is a
@@ -25,6 +26,10 @@ enum class RoadClass : Vrst_uint8 {
   LivingStreet,
   Service,
   Ferry,
+  Pedestrian,  ///< highway=pedestrian (pedestrian streets and squares)
+  Footway,     ///< highway=footway, path, steps, bridleway
+  Cycleway,    ///< highway=cycleway
+  Track,       ///< highway=track (field and forest tracks)
   Count
 };
 /// Number of road classes: size of every per-class table and bits used in class masks.

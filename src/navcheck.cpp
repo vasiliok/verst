@@ -183,7 +183,8 @@ void check_csr(const Vrst_graph& g) {
 }
 
 /// Checks every arc: head and segment ids in range, tail/head equal the segment ends,
-/// one arc per oneway segment and two otherwise, positive weights, and backward arcs
+/// one car arc per car oneway segment and two per other car road (none for paths),
+/// every segment with at least one arc, positive car times, and backward arcs
 /// that mirror the forward arcs one to one. Indexes through the CSR, so main() runs
 /// it only when the earlier checks passed.
 /// @param d Opened files.
@@ -193,6 +194,7 @@ void check_arcs(const Vrst_nav_data& d) {
 
   Vrst_uint64 bad_head = 0, bad_seg = 0, bad_seg_ends = 0;
   std::vector<Vrst_uint8> arcs_per_seg(S, 0);
+  std::vector<Vrst_uint8> car_arcs_per_seg(S, 0);
   for (Vrst_uint32 v = 0; v < V; ++v) {
     for (const Vrst_fwd_arc& a : g.out_arcs(v)) {
       if (a.head >= V) ++bad_head;
@@ -205,18 +207,23 @@ void check_arcs(const Vrst_nav_data& d) {
       const bool rev = a.seg & kSegReversed;
       if ((rev ? sv.b : sv.a) != v || (rev ? sv.a : sv.b) != a.head) ++bad_seg_ends;
       if (arcs_per_seg[s] < 255) ++arcs_per_seg[s];
+      if ((arc_modes(a.weight) & kModeCar) && car_arcs_per_seg[s] < 255) ++car_arcs_per_seg[s];
     }
   }
   report(bad_head == 0, "Vrst_fwd_arc.head < V", std::format("{} bad", bad_head));
   report(bad_seg == 0, "Vrst_fwd_arc.seg < S", std::format("{} bad", bad_seg));
   report(bad_seg_ends == 0, "Vrst_fwd_arc tail/head == seg a/b", std::format("{} bad", bad_seg_ends));
 
-  Vrst_uint64 bad_oneway = 0;
+  Vrst_uint64 bad_oneway = 0, no_arc = 0;
+  const bool v3 = g.file().header().format_version < 4;  // car only, no mode bits
   for (Vrst_uint32 s = 0; s < S; ++s) {
-    const bool oneway = d.edges().attr()[s].flags & kSegOneway;
-    if (arcs_per_seg[s] != (oneway ? 1 : 2)) ++bad_oneway;
+    const Vrst_uint16 flags = d.edges().attr()[s].flags;
+    const bool car = v3 || (flags & kSegModeCar);
+    if (car_arcs_per_seg[s] != (car ? ((flags & kSegOneway) ? 1 : 2) : 0)) ++bad_oneway;
+    no_arc += arcs_per_seg[s] == 0;
   }
-  report(bad_oneway == 0, "arcs per segment match oneway", std::format("{} bad", bad_oneway));
+  report(bad_oneway == 0, "car arcs per segment match oneway", std::format("{} bad", bad_oneway));
+  report(no_arc == 0, "every segment has an arc", std::format("{} without", no_arc));
 
   Vrst_uint64 bad_tail = 0, bad_ref = 0, bad_match = 0;
   std::vector<Vrst_uint8> seen(A, 0);
@@ -238,8 +245,8 @@ void check_arcs(const Vrst_nav_data& d) {
          std::format("{} mismatched, {} fwd arcs without bwd", bad_match, unseen));
 
   Vrst_uint64 zero_weight = 0;
-  for (const Vrst_fwd_arc& a : g.fwd_arcs()) zero_weight += a.weight == 0;
-  report(zero_weight == 0, "arc weight >= 1", std::format("{} zero", zero_weight));
+  for (const Vrst_fwd_arc& a : g.fwd_arcs()) zero_weight += arc_time(a.weight) == 0;
+  report(zero_weight == 0, "arc time >= 1", std::format("{} zero", zero_weight));
 }
 
 /// Checks that SEG_FIRST_POINT is a valid prefix array and that every segment has at
@@ -401,7 +408,7 @@ void dump_way(const Vrst_nav_data& d, Vrst_uint64 way_id) {
   static constexpr std::array<std::string_view, kRoadClassCount> kClassNames = {
       "motorway", "motorway_link", "trunk",        "trunk_link",  "primary",       "primary_link",
       "secondary", "secondary_link", "tertiary",   "tertiary_link", "unclassified", "residential",
-      "living_street", "service", "ferry"};
+      "living_street", "service", "ferry", "pedestrian", "footway", "cycleway", "track"};
   bool found = false;
   for (Vrst_uint32 s = 0; s < d.edges().num_segments(); ++s) {
     if (d.edges().osm_way()[s] != way_id) continue;

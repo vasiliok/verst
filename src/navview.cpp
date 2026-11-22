@@ -188,8 +188,8 @@ void update_size(GLFWwindow* win, Vrst_app& app) {
 void on_key(GLFWwindow* win, int key, [[maybe_unused]] int scancode, int action, [[maybe_unused]] int mods) {
   if (action == GLFW_RELEASE || ImGui::GetIO().WantCaptureKeyboard) return;
   Vrst_app& app = app_of(win);
-  if (key >= GLFW_KEY_1 && key <= GLFW_KEY_9 && action == GLFW_PRESS) {
-    const int g = key - GLFW_KEY_1;
+  if (((key >= GLFW_KEY_1 && key <= GLFW_KEY_9) || key == GLFW_KEY_0) && action == GLFW_PRESS) {
+    const int g = key == GLFW_KEY_0 ? 9 : key - GLFW_KEY_1;  // 0 = the tenth group (paths)
     app.class_mask ^= kClassGroups[g];
     std::printf("%-12s %s\n", std::string(kGroupNames[g]).c_str(), (app.class_mask & kClassGroups[g]) ? "on" : "off");
     return;

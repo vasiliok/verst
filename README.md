@@ -25,6 +25,10 @@ iPhone Simulator; the black boxes are the debug info (the eye button hides them)
   placed by priority) are drawn with OpenGL ES 3.0 on iOS and OpenGL 3.3 on desktop.
 - **Address search, offline**: house numbers, streets and places, found as you type and
   shown with a pin; the index is built during the same conversion (`search.db`).
+- **Routes for car, bike and walking**: hold the map 1 s to drop a pin, then Route (from
+  the GPS position or a start pin); a point shared from Google Maps is routed to at once.
+  A* over the road graph, which holds car roads, cycleways, footways and paths with the
+  travel modes allowed in each direction.
 - **GPS**: follow mode and heading-up mode, GPX track replay.
 - **Debugging built in**: live console, session log, screen and camera recording with replay.
 - **Desktop tools**: `osm2nav`, `pbf_merge`, `navcheck` and the `navview` viewer, over the same
@@ -64,6 +68,7 @@ iPhone app: see [ios/README.md](ios/README.md).
 | `osm2nav` | `osm2nav <input.osm.pbf> <out_dir>`: road files + `map.dat`; prints counts, time and peak memory |
 | `pbf_merge` | `pbf_merge <out.osm.pbf> <in1.osm.pbf> <in2.osm.pbf> ...`: joins neighbouring extracts into one (border objects written once) |
 | `navsearch` | `navsearch <out_dir> <text> [<lat> <lon>]`: searches the address index (`search.db`) like the app, prints results and the query time |
+| `navroute` | `navroute <out_dir> <lat> <lon> <lat> <lon> [car\|bike\|foot]`: route between two points like the app, prints length, time and search time |
 | `navcheck` | `navcheck <out_dir>` (exit 0 = all PASS) - `navcheck <out_dir> --dump-way <osm_way_id>` |
 | `navview` | `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--rotate <deg>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--tile-borders] [--screenshot <file.bmp>]` (screenshot: renders 3 frames, saves the last, exits) |
 | iPhone app | `ios/`: UIKit + OpenGL ES 3.0, same map code as navview; download, merge and convert on the phone; see [ios/README.md](ios/README.md) |
@@ -195,7 +200,7 @@ has time and speed sliders. Example: `navview <bourgogne_dir> --gpx drive.gpx --
 
 </details>
 
-## File format (v2)
+## File format (v4)
 
 <details>
 <summary>Show</summary>
@@ -213,8 +218,10 @@ refuses mixed sets. Layout is in `src/format.h`; the loader is `src/nav_files.h`
 | `map.dat` `NAVMAP` | areas (water, land use, buildings - a building whose min-area rectangle is at most 1.25x its area is stored as that rectangle) with earcut triangles, and lines; built by `src/osm_map_layers.h`, cut into z/x/y tiles at runtime by `src/map_tiles.h` |
 
 Coord = int32 lat/lon in 1e-7 deg. A segment is an undirected road piece between two vertices, stored in
-OSM way order (a -> b). Two-way = 2 arcs, oneway = 1 arc. For `oneway=-1` the single arc runs b -> a with
-bit31 set.
+OSM way order (a -> b). Each direction that any travel mode may use is one arc; the top 3 bits of the arc
+weight say which modes (car, bike, foot), the bits below are the car time in deciseconds. Car oneways have
+one car arc (`kSegOneway`); walkers use both directions. The arc running b -> a has bit31 of its segment set.
+Version 3 files (car only, no mode bits) still open; the app routes cars on them.
 
 Additions beyond the original spec:
 - `BBOX` section in `graph.dat`: the extent of **all nodes in the source file**. The PBF header bbox is

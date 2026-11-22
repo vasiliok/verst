@@ -245,6 +245,10 @@ constexpr Vrst_class_def kClasses[] = {
     {"living_street", RoadClass::LivingStreet, 10, false},
     {"service", RoadClass::Service, 15, false},
     {"", RoadClass::Ferry, 10, false},
+    {"pedestrian", RoadClass::Pedestrian, 5, false},
+    {"footway", RoadClass::Footway, 5, false},
+    {"cycleway", RoadClass::Cycleway, 15, false},
+    {"track", RoadClass::Track, 10, false},
 };
 static_assert(std::size(kClasses) == kRoadClassCount);
 static_assert([] {
@@ -255,9 +259,12 @@ static_assert([] {
 
 /// Profile row for a highway=* value.
 /// @param highway Tag value.
-/// @return Copy of the row in kClasses, or nothing when the value is empty or not a car road.
+/// @return Copy of the row in kClasses, or nothing when the value is empty or not a way
+///         anyone travels on (path, steps and bridleway count as footways).
 std::optional<Vrst_class_def> find_class(std::string_view highway) {
   if (highway.empty()) return std::nullopt;
+  if (highway == "path" || highway == "steps" || highway == "bridleway")
+    return kClasses[static_cast<int>(RoadClass::Footway)];
   for (const Vrst_class_def& c : kClasses)
     if (c.highway == highway) return c;
   return std::nullopt;
@@ -286,10 +293,10 @@ Vrst_uint8 parse_maxspeed(std::string_view v) {
   return static_cast<Vrst_uint8>(std::clamp(std::lround(value), 1L, 255L));
 }
 
-/// Which ways a car may drive along an OSM way, relative to its node order.
-/// Both: two arcs per segment. Fwd: oneway along the node order (oneway=yes,
-/// roundabouts, motorways). Bwd: oneway against it (oneway=-1). Resolved once per
-/// way so the arc builder only has to read this, not the tags.
+/// Which ways one travel mode may go along an OSM way, relative to its node order.
+/// Both: both directions. Fwd: along the node order (oneway=yes, roundabouts,
+/// motorways). Bwd: against it (oneway=-1). Resolved once per way so the arc builder
+/// only has to read the mode masks, not the tags.
 enum class Dir : Vrst_uint8 { Both, Fwd, Bwd };
 
 /// Converter-side summary of one road way after pass 1: the result of classify().
@@ -304,9 +311,10 @@ struct Vrst_way_info {
   Vrst_uint32 ref_id;
   /// Road class from the profile table.
   RoadClass cls;
-  /// Allowed direction after resolving oneway, implied oneway (roundabout, motorway)
-  /// and explicit oneway=no. Decides 1 or 2 arcs per segment, and which way.
-  Dir dir;
+  /// TravelModes that may go along the node order (a -> b arcs).
+  Vrst_uint8 fwd_modes;
+  /// TravelModes that may go against it (b -> a arcs).
+  Vrst_uint8 bwd_modes;
   /// Parsed maxspeed in km/h, 0 = unknown.
   Vrst_uint8 maxspeed_kmh;
   /// SegFlags derived from tags.
@@ -322,24 +330,59 @@ bool is_yes(std::string_view v) { return v == "yes" || v == "designated"; }
 /// @return true for any value except "" and "no".
 bool is_set(std::string_view v) { return !v.empty() && v != "no"; }
 
-/// Applies the car profile to one way: road class, access, flags, speed and direction.
+/// Direction of a oneway=* style value.
+/// @param v Tag value.
+/// @return Fwd, Bwd, Both for an explicit "no", or nullopt when the value says nothing.
+std::optional<Dir> oneway_dir(std::string_view v) {
+  if (v == "yes" || v == "true" || v == "1") return Dir::Fwd;
+  if (v == "-1" || v == "reverse") return Dir::Bwd;
+  if (v == "no" || v == "false" || v == "0") return Dir::Both;
+  return std::nullopt;
+}
+
+/// Whether a mode may use a way: its own tag decides when it says yes or no, otherwise
+/// the class default, which access=no/private turns off.
+/// @param own The mode's tag value (bicycle=*, foot=*), may be empty.
+/// @param by_class The class allows the mode by default.
+/// @param closed access=no or access=private.
+/// @return Allowed.
+bool mode_allowed(std::string_view own, bool by_class, bool closed) {
+  if (is_yes(own) || own == "permissive" || own == "destination") return true;
+  if (own == "no" || own == "private" || own == "use_sidepath") return false;
+  return by_class && !closed;
+}
+
+/// Applies the profiles to one way: road class, who may use it (car, bike, foot) in
+/// which direction, flags and car speed. The car rules are the car-only rules of
+/// format 3, unchanged.
 /// @param w Way from pass 1.
-/// @return The way summary, or nullopt when the way is not a car road. name_id and
+/// @return The way summary, or nullopt when no mode may use the way. name_id and
 ///         ref_id are left 0 for the caller to fill.
 std::optional<Vrst_way_info> classify(const Vrst_osm_way& w) {
   std::optional<Vrst_class_def> cd = find_class(w.tag("highway"));
   const std::string_view mc = w.tag("motorcar");
   const std::string_view mv = w.tag("motor_vehicle");
   const std::string_view car = !mc.empty() ? mc : mv;  // most specific wins
-
-  if (!cd) {
-    if (w.tag("route") != "ferry" || !is_yes(car)) return std::nullopt;
-    cd = kClasses[static_cast<int>(RoadClass::Ferry)];
-  }
-  if (w.tag("area") == "yes") return std::nullopt;
-  if (car == "no") return std::nullopt;
+  const bool ferry = !cd && w.tag("route") == "ferry";
+  if (ferry) cd = kClasses[static_cast<int>(RoadClass::Ferry)];
+  if (!cd || w.tag("area") == "yes") return std::nullopt;
+  const RoadClass cls = cd->cls;
   const std::string_view access = w.tag("access");
-  if ((access == "no" || access == "private") && !is_yes(car)) return std::nullopt;
+  const bool closed = access == "no" || access == "private";
+
+  const bool car_road = cls < RoadClass::Ferry;  // the classes before Ferry are car roads
+  const bool car_ok = ferry ? is_yes(car) : car_road && car != "no" && !(closed && !is_yes(car));
+  const bool fast = cls == RoadClass::Motorway || cls == RoadClass::MotorwayLink || cls == RoadClass::Trunk ||
+                    cls == RoadClass::TrunkLink;
+  const std::string_view highway = w.tag("highway");
+  const bool bike_class = !ferry && !fast && cls != RoadClass::Pedestrian &&
+                          !(cls == RoadClass::Footway && highway != "path");
+  const std::string_view bicycle = !w.tag("bicycle").empty() ? w.tag("bicycle") : w.tag("vehicle");
+  const bool bike_ok = mode_allowed(bicycle, bike_class, closed);
+  const bool foot_class = cls != RoadClass::Motorway && cls != RoadClass::MotorwayLink &&
+                          !((cls == RoadClass::Trunk || cls == RoadClass::TrunkLink) && w.tag("motorroad") == "yes");
+  const bool foot_ok = mode_allowed(w.tag("foot"), foot_class, closed && !ferry);
+  if (!car_ok && !bike_ok && !foot_ok) return std::nullopt;
 
   Vrst_way_info info{};
   info.osm_id = w.id();
@@ -355,17 +398,28 @@ std::optional<Vrst_way_info> classify(const Vrst_osm_way& w) {
   if (is_set(w.tag("bridge"))) info.flags |= kSegBridge;
   if (cd->cls == RoadClass::Ferry) info.flags |= kSegFerry;
 
-  const std::string_view oneway = w.tag("oneway");
-  if (oneway == "yes" || oneway == "true" || oneway == "1")
-    info.dir = Dir::Fwd;
-  else if (oneway == "-1" || oneway == "reverse")
-    info.dir = Dir::Bwd;
-  else if (oneway == "no" || oneway == "false" || oneway == "0")
-    info.dir = Dir::Both;
-  else
-    info.dir = (roundabout || cd->cls == RoadClass::Motorway) ? Dir::Fwd : Dir::Both;
-  if (info.dir != Dir::Both) info.flags |= kSegOneway;
-  if (info.dir == Dir::Bwd) info.flags |= kSegOnewayReverse;
+  // Cars: oneway=*, else implied by roundabouts and motorways. Cyclists follow it unless
+  // their own oneway:bicycle or a contraflow cycleway says otherwise. Walkers ignore it.
+  const Dir car_dir = oneway_dir(w.tag("oneway"))
+                          .value_or((roundabout || cd->cls == RoadClass::Motorway) ? Dir::Fwd : Dir::Both);
+  const auto contraflow = [&w] {
+    for (const std::string_view k : {"cycleway", "cycleway:left", "cycleway:right", "cycleway:both"})
+      if (w.tag(k).starts_with("opposite")) return true;
+    return false;
+  };
+  const Dir bike_dir = oneway_dir(w.tag("oneway:bicycle")).value_or(contraflow() ? Dir::Both : car_dir);
+  const Dir foot_dir = oneway_dir(w.tag("oneway:foot")).value_or(Dir::Both);
+  const auto add = [&info](bool ok, Dir d, Vrst_uint8 mode) {
+    if (!ok) return;
+    if (d != Dir::Bwd) info.fwd_modes |= mode;
+    if (d != Dir::Fwd) info.bwd_modes |= mode;
+  };
+  add(car_ok, car_dir, kModeCar);
+  add(bike_ok, bike_dir, kModeBike);
+  add(foot_ok, foot_dir, kModeFoot);
+  if (car_ok && car_dir != Dir::Both) info.flags |= kSegOneway;
+  if (car_ok && car_dir == Dir::Bwd) info.flags |= kSegOnewayReverse;
+  info.flags |= static_cast<Vrst_uint16>((info.fwd_modes | info.bwd_modes) << kSegModeShift);
   return info;
 }
 
@@ -816,11 +870,12 @@ void convert_roads(const std::string& input, const fs::path& dir, Vrst_uint64 bu
     seg_attr[s] = {t.length_dm, w.name_id, w.ref_id, static_cast<Vrst_uint8>(w.cls), w.maxspeed_kmh, w.flags};
     seg_vertices[s] = {a, b};
     seg_osm_way[s] = w.osm_id;
-    const Vrst_uint32 weight =
-        std::max<Vrst_uint32>(1, static_cast<Vrst_uint32>(std::llround(t.length_dm * 3.6 / speed_kmh(w))));
-    if (w.dir != Dir::Bwd) arcs.push_back({a, b, weight, s});
-    if (w.dir != Dir::Fwd) arcs.push_back({b, a, weight, s | kSegReversed});
-    st.oneway_segments += w.dir != Dir::Both;
+    const Vrst_uint32 weight = std::min<Vrst_uint32>(
+        kArcTimeMask, std::max<Vrst_uint32>(1, static_cast<Vrst_uint32>(std::llround(t.length_dm * 3.6 / speed_kmh(w)))));
+    // The modes allowed in each direction ride in the top bits of the weight.
+    if (w.fwd_modes) arcs.push_back({a, b, weight | (Vrst_uint32{w.fwd_modes} << kArcModeShift), s});
+    if (w.bwd_modes) arcs.push_back({b, a, weight | (Vrst_uint32{w.bwd_modes} << kArcModeShift), s | kSegReversed});
+    st.oneway_segments += (w.flags & kSegOneway) != 0;
   }
   std::vector<Vrst_seg_tmp>().swap(segs);
   const Vrst_uint32 A = static_cast<Vrst_uint32>(arcs.size());

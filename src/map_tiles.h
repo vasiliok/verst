@@ -128,12 +128,17 @@ constexpr Vrst_uint32 classes_down_to(RoadClass last) {
   return ((2u << static_cast<int>(last)) - 1) | bit(RoadClass::Ferry);
 }
 
+/// Ways only walkers and cyclists use: drawn at the finest level only.
+inline constexpr Vrst_uint32 kPathClasses =
+    bit(RoadClass::Pedestrian) | bit(RoadClass::Footway) | bit(RoadClass::Cycleway) | bit(RoadClass::Track);
+
 /// The tile pyramid, finest first. z14 holds everything at full detail; each
 /// coarser level drops minor roads and small areas and simplifies the rest, so a
 /// zoomed-out view draws about as much as a zoomed-in one.
 inline constexpr Vrst_tile_level kTileLevels[] = {
     {14, 6, kAllClasses, 0, 0, true, true, true},
-    {12, 24, kAllClasses & ~(bit(RoadClass::Service) | bit(RoadClass::LivingStreet)), 6, 60, true, false, false},
+    {12, 24, kAllClasses & ~kPathClasses & ~(bit(RoadClass::Service) | bit(RoadClass::LivingStreet)), 6, 60, true,
+     false, false},
     {10, 96, classes_down_to(RoadClass::TertiaryLink), 24, 250, false, false, false},
     {8, 1e30, classes_down_to(RoadClass::SecondaryLink), 96, 1000, false, false, false},
 };

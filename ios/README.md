@@ -37,6 +37,7 @@ Launch arguments for development:
 | `--record <s>` / `--scenario <file>` | record for s seconds / play a scenario |
 | `--console` | open the console at start |
 | `--search <text>` / `--search-pick <text>` | open the search screen with that text / show its first result with the pin |
+| `--share <text>` | as if the text (coordinates or a map link) was shared from Google Maps: pin and route to it |
 | `--log-dir <dir>` | where the session log goes |
 
 ## Run on an iPhone
@@ -90,6 +91,7 @@ whose spacing follows the zoom. A region without a `.poly` still opens, with no 
 | Log | full-screen console (see below) |
 | red record button (round, right) | start recording what you do with the map; tap again (stop square) to stop and save |
 | green play button (above it) | play a GPS track (a GPX in the app's tracks folder, or "Open GPX file..." from Files, iCloud Drive or AirDrop: copied in and played) or a saved recording (Play or Share...). While a track is loaded: Pause / Resume, speed x1 / x5 / x10 / x30, Follow track, Other track..., Close track. The replayed track is the GPS position meanwhile, so follow and heading-up behave as when driving. While a recording plays, tap (stop square) to stop |
+| hold the map 1 s | drops a pin; its card names the nearest road and offers Car / Bike / Walk (remembered), **Start here** (this pin starts the next route, green) and **Route** (from the start pin, or the GPS position; a replayed track counts). The route is drawn in blue, fitted on screen, with its length and time; x clears pins and route. A point shared from Google Maps is routed to at once |
 | magnifier (round, under the eye) | address search: results as you type (house number, street, place, nearest first); a tap moves the map there and puts a red pin; "Clear pin" in the same screen removes it |
 | eye (round, top right) | hide or show the black info boxes (stats box and debug overlay) for a clean map; logging goes on |
 | + / - (round, bottom left) | zoom in / out 2x around the screen center, animated; taps add up |

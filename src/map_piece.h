@@ -30,25 +30,29 @@ static_assert(sizeof(Vrst_gpu_point) == 12);
 
 // --- line styles --------------------------------------------------------------
 
-/// Number of line styles: the per-style width and colour tables have this size.
-/// Styles 0..14 are the RoadClass values.
-inline constexpr int kLineStyleCount = 24;
+/// Number of line styles: the per-style width and colour tables have this size (the
+/// line shader's u_width and u_colors arrays too).
+/// Styles 0..kRoadStyleSlots-1 are the RoadClass values.
+inline constexpr int kLineStyleCount = 28;
+/// Styles kept for road classes; the line shader hides those not in u_class_mask.
+inline constexpr int kRoadStyleSlots = 20;
+static_assert(kRoadClassCount <= kRoadStyleSlots);
 /// Style of a line kind (water, rail): kStyleLineKind0 + LineKind.
-inline constexpr int kStyleLineKind0 = 16;
+inline constexpr int kStyleLineKind0 = kRoadStyleSlots;
 /// Line style of a line kind.
 /// @param k Line kind.
 /// @return kStyleLineKind0 + k.
 constexpr int line_style(LineKind k) { return kStyleLineKind0 + static_cast<int>(k); }
 /// Style of building outlines.
-inline constexpr int kStyleBuildingEdge = 20;
+inline constexpr int kStyleBuildingEdge = kStyleLineKind0 + 4;
 /// Style of the debug piece borders (navview key T).
-inline constexpr int kStyleTileBorder = 21;
+inline constexpr int kStyleTileBorder = kStyleLineKind0 + 5;
 /// Line styles bottom to top within a layer: building outlines, water, railways,
 /// then roads from minor to major so major roads stay on top at junctions and at
 /// piece borders.
 inline constexpr Vrst_uint8 kLineStyleOrder[] = {
     kStyleBuildingEdge, line_style(LineKind::Stream), line_style(LineKind::River), line_style(LineKind::MinorRail),
-    line_style(LineKind::Rail), 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
+    line_style(LineKind::Rail), 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
 
 /// Draw layers of lines: tunnels below everything, bridges above everything.
 enum TileLayer : int {

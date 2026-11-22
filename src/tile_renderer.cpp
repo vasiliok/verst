@@ -212,8 +212,8 @@ std::array<Vrst_float32, kLineStyleCount> Vrst_tile_renderer::line_widths(Vrst_f
                                                                           Vrst_float64 px_ratio) {
   std::array<Vrst_float32, kLineStyleCount> out{};
   // Widths in points at 3 m/pt, by RoadClass (links narrower than their road).
-  static constexpr Vrst_float32 kRoadPt[kRoadClassCount] = {5.0f, 3.2f, 4.6f, 3.0f, 4.2f, 2.8f, 3.8f, 2.6f,
-                                                            3.2f, 2.2f, 2.4f, 2.0f, 1.6f, 1.2f, 1.6f};
+  static constexpr Vrst_float32 kRoadPt[kRoadClassCount] = {5.0f, 3.2f, 4.6f, 3.0f, 4.2f, 2.8f, 3.8f, 2.6f, 3.2f, 2.2f,
+                                                            2.4f, 2.0f, 1.6f, 1.2f, 1.6f, 1.6f, 0.9f, 1.1f, 1.0f};
   const Vrst_float64 f = std::clamp(std::sqrt(3.0 / std::max(ground_mpp, 1e-3)), 0.35, 2.6);
   for (int c = 0; c < kRoadClassCount; ++c) out[c] = static_cast<Vrst_float32>(kRoadPt[c] * f * px_ratio);
   out[line_style(LineKind::Stream)] = static_cast<Vrst_float32>(1.2 * std::min(f, 1.4) * px_ratio);

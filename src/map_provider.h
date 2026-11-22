@@ -28,6 +28,7 @@
 #include "geo.h"
 #include "map_kinds.h"
 #include "map_piece.h"
+#include "route_result.h"
 #include "search_result.h"
 #include "vrst_types.h"
 
@@ -178,6 +179,24 @@ class Vrst_map_provider {
   /// @return Results, best first; empty without an index or a word.
   virtual std::vector<Vrst_search_result> search(std::string_view text, std::optional<Vrst_latlon> near,
                                                  Vrst_size max) const = 0;
+
+  /// Whether the map can route for a travel mode (maps made before the walk and bike
+  /// ways were added route cars only).
+  /// @param mode Who travels.
+  /// @return true when route() can work for it.
+  virtual bool can_route(Vrst_travel_mode mode) const = 0;
+  /// Shortest route by travel time. Takes up to a few hundred milliseconds on a big
+  /// region: call it off the main thread (it is safe to call from any thread).
+  /// @param from Start.
+  /// @param to Destination.
+  /// @param mode Who travels.
+  /// @return The route, or found = false with the reason.
+  virtual Vrst_route route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode) const = 0;
+  /// The nearest road a mode may use, for naming a dropped pin.
+  /// @param p Point.
+  /// @param mode Who travels.
+  /// @return The road, or nullopt when none is near.
+  virtual std::optional<Vrst_road_at> road_at(Vrst_latlon p, Vrst_travel_mode mode) const = 0;
 };
 
 /// Settings a client may give when opening a map; none of them is about storage.

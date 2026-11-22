@@ -23,8 +23,8 @@ namespace nav {
 /// @return Mask with only that class's bit set.
 constexpr Vrst_uint32 bit(RoadClass c) { return 1u << static_cast<int>(c); }
 
-/// Number of road class groups the UIs toggle (keys 1..9 in navview).
-inline constexpr int kClassGroupCount = 9;
+/// Number of road class groups the UIs toggle (keys 1..9 and 0 in navview).
+inline constexpr int kClassGroupCount = 10;
 /// Classes toggled together: a road class and its link ramps, residential with
 /// living_street.
 constexpr Vrst_uint32 kClassGroups[kClassGroupCount] = {
@@ -37,10 +37,11 @@ constexpr Vrst_uint32 kClassGroups[kClassGroupCount] = {
     bit(RoadClass::Residential) | bit(RoadClass::LivingStreet),
     bit(RoadClass::Service),
     bit(RoadClass::Ferry),
+    bit(RoadClass::Pedestrian) | bit(RoadClass::Footway) | bit(RoadClass::Cycleway) | bit(RoadClass::Track),
 };
 /// Label of each kClassGroups entry, for panels, menus and the console.
 constexpr std::array<std::string_view, kClassGroupCount> kGroupNames = {
-    "motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential", "service", "ferry"};
+    "motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential", "service", "ferry", "paths"};
 /// Mask with every road class visible.
 inline constexpr Vrst_uint32 kAllClasses = (1u << kRoadClassCount) - 1;
 
@@ -56,6 +57,10 @@ constexpr Vrst_float32 kClassColors[kRoadClassCount][3] = {
     {0.45f, 0.62f, 0.52f},                         // living_street
     {0.40f, 0.42f, 0.47f},                         // service
     {0.35f, 0.60f, 0.95f},                         // ferry
+    {0.62f, 0.60f, 0.68f},                         // pedestrian
+    {0.86f, 0.56f, 0.50f},                         // footway, path, steps
+    {0.38f, 0.58f, 0.98f},                         // cycleway
+    {0.62f, 0.50f, 0.36f},                         // track
 };
 /// Default start view when none is given: this point (central Dijon, 47.322, 5.041) at
 /// street zoom. start_view() falls back to the whole map when it is outside the data.

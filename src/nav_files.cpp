@@ -12,7 +12,7 @@ void Vrst_nav_file::open(const std::string& path, FileType type) {
   std::memcpy(&m_header, m_file.bytes().data(), sizeof m_header);
   const Vrst_file_header& h = m_header;
   if (std::string_view(h.magic, 8) != magic_for(type)) fail("bad magic");
-  if (h.format_version != kFormatVersion)
+  if (h.format_version < kMinFormatVersion || h.format_version > kFormatVersion)
     fail("unsupported format_version " + std::to_string(h.format_version));
   if (h.file_type != static_cast<Vrst_uint32>(type)) fail("bad file_type");
 

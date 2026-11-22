@@ -131,6 +131,7 @@ add_library(vrst_core STATIC
   src/map_provider.cpp
   src/nav_map_provider.cpp
   src/region_outline.cpp
+  src/router.cpp
   src/geo_link.cpp
   src/gpx_track.cpp
   src/scenario.cpp
@@ -140,6 +141,9 @@ add_library(vrst_core STATIC
   src/search_text.cpp
   src/session_log.cpp)
 target_include_directories(vrst_core PUBLIC src)
+# The router runs on the phone, where Debug builds are -O0: optimized always, or a route
+# over a big region takes several times longer.
+set_property(SOURCE src/router.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
 target_include_directories(vrst_core SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
 target_link_libraries(vrst_core PUBLIC vrst_types Threads::Threads PRIVATE vrst_sqlite)
 nav_warnings(vrst_core)
@@ -218,6 +222,11 @@ endif()
 add_executable(navsearch src/navsearch.cpp)
 target_link_libraries(navsearch PRIVATE vrst_core)
 nav_warnings(navsearch)
+
+# --- navroute: a route between two points of a converted region -----------------
+add_executable(navroute src/navroute.cpp)
+target_link_libraries(navroute PRIVATE vrst_core)
+nav_warnings(navroute)
 
 # --- navcheck --------------------------------------------------------------
 add_executable(navcheck src/navcheck.cpp)

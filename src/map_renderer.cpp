@@ -147,7 +147,47 @@ void Vrst_map_renderer::draw_position(const Vrst_view& v, int fb_w, int fb_h, Vr
   draw_point(pos, px, 0.10f, 0.50f, 1.0f);
 }
 
-void Vrst_map_renderer::draw_pin(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px) {
+void Vrst_map_renderer::draw_route(const Vrst_view& v, int fb_w, int fb_h, Vrst_float32 px) {
+  if (m_route.size() < 2) return;
+  if (!m_route_vao) m_route_vao = make_vao({}, m_route_vbo);
+  const std::array<Vrst_float32, 9> m = view_matrix(v, fb_w, fb_h);
+  glUseProgram(m_overlay_prog);
+  glUniformMatrix3fv(m_u_overlay_view, 1, GL_FALSE, m.data());
+  glUniform1i(m_u_overlay_round, 0);
+  glBindVertexArray(m_route_vao);
+  glBindBuffer(GL_ARRAY_BUFFER, m_route_vbo);
+  std::vector<Vrst_gpu_point> verts;
+  verts.reserve(m_route.size() * 6);
+  // Two passes: the casing, then the line on top. Each piece is a quad lengthened by
+  // half the width at both ends, so the corners have no gaps.
+  constexpr Vrst_float32 kCasingPx = 3;
+  for (const auto& [width, r, g, b] : {std::array<Vrst_float32, 4>{px + kCasingPx, 0.05f, 0.18f, 0.45f},
+                                       std::array<Vrst_float32, 4>{px, 0.20f, 0.55f, 1.0f}}) {
+    const Vrst_float64 h = width / 2.0 / v.scale;  // world units
+    verts.clear();
+    for (Vrst_size i = 0; i + 1 < m_route.size(); ++i) {
+      const Vrst_vec2d p0 = m_route[i], p1 = m_route[i + 1];
+      const Vrst_float64 len = std::hypot(p1.x - p0.x, p1.y - p0.y);
+      if (len <= 0) continue;
+      const Vrst_vec2d d{(p1.x - p0.x) / len * h, (p1.y - p0.y) / len * h}, n{-d.y, d.x};
+      const auto at = [](Vrst_float64 x, Vrst_float64 y) {
+        return Vrst_gpu_point{static_cast<Vrst_float32>(x), static_cast<Vrst_float32>(y), 0};
+      };
+      const Vrst_gpu_point a0 = at(p0.x - d.x + n.x, p0.y - d.y + n.y), a1 = at(p0.x - d.x - n.x, p0.y - d.y - n.y);
+      const Vrst_gpu_point b0 = at(p1.x + d.x + n.x, p1.y + d.y + n.y), b1 = at(p1.x + d.x - n.x, p1.y + d.y - n.y);
+      verts.insert(verts.end(), {a0, a1, b0, a1, b1, b0});
+    }
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(Vrst_gpu_point)), verts.data(),
+                 GL_STREAM_DRAW);
+    glUniform4f(m_u_overlay_color, r, g, b, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(verts.size()));
+  }
+  glBindVertexArray(0);
+  check_error("draw_route");
+}
+
+void Vrst_map_renderer::draw_pin(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px,
+                                 Vrst_float32 r, Vrst_float32 g, Vrst_float32 b) {
   constexpr Vrst_float32 kDot = 0.62f;  // red dot diameter, of the white disc
   if (!m_marker_vao) {
     m_marker_vao = make_vao({{0, 0, 0}}, m_marker_vbo);
@@ -157,7 +197,7 @@ void Vrst_map_renderer::draw_pin(const Vrst_view& v, int fb_w, int fb_h, Vrst_ve
   glUseProgram(m_overlay_prog);
   glUniformMatrix3fv(m_u_overlay_view, 1, GL_FALSE, m.data());
   draw_point(pos, px, 1.0f, 1.0f, 1.0f);
-  draw_point(pos, kDot * px, 0.90f, 0.12f, 0.10f);
+  draw_point(pos, kDot * px, r, g, b);
 }
 
 void Vrst_map_renderer::draw_point(Vrst_vec2d pos, Vrst_float32 px, Vrst_float32 r, Vrst_float32 g,
@@ -235,6 +275,9 @@ void Vrst_map_renderer::destroy() {
   glDeleteProgram(m_overlay_prog);
   m_track_vbo = m_marker_vbo = m_track_vao = m_marker_vao = m_overlay_prog = 0;
   m_track_count = 0;
+  glDeleteBuffers(1, &m_route_vbo);
+  glDeleteVertexArrays(1, &m_route_vao);
+  m_route_vbo = m_route_vao = 0;
   glDeleteBuffers(1, &m_text_vbo);
   glDeleteVertexArrays(1, &m_text_vao);
   glDeleteTextures(1, &m_atlas_tex);

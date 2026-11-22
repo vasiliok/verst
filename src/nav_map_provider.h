@@ -45,6 +45,9 @@ class Vrst_nav_map_provider final : public Vrst_map_provider {
   Vrst_route route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode) const override {
     return m_router.route(from, to, mode);
   }
+  Vrst_route_pair route_pair(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode) const override {
+    return m_router.route_pair(from, to, mode);
+  }
   std::optional<Vrst_road_at> road_at(Vrst_latlon p, Vrst_travel_mode mode) const override {
     return m_router.road_at(p, mode);
   }

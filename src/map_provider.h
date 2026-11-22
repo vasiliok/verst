@@ -192,6 +192,13 @@ class Vrst_map_provider {
   /// @param mode Who travels.
   /// @return The route, or found = false with the reason.
   virtual Vrst_route route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode) const = 0;
+  /// A route and its way back, which keeps to the outbound roads in reverse wherever the
+  /// mode may and detours only where it must (a oneway). Same threading as route().
+  /// @param from Start.
+  /// @param to Destination.
+  /// @param mode Who travels.
+  /// @return Both routes.
+  virtual Vrst_route_pair route_pair(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode) const = 0;
   /// The nearest road a mode may use, for naming a dropped pin.
   /// @param p Point.
   /// @param mode Who travels.

@@ -26,8 +26,16 @@ struct Vrst_route {
   Vrst_float64 length_m = 0;        ///< Length.
   Vrst_float64 time_s = 0;          ///< Travel time for the mode.
   std::string error;                ///< Why there is no route ("no road near the start").
+  Vrst_float64 shared_m = 0;        ///< Way back: metres on the outbound roads (0 for an outbound route).
   Vrst_size settled = 0;            ///< Graph vertices the search settled (for the log).
   Vrst_float64 ms = 0;              ///< Time the search took (for the log).
+};
+
+/// A route and its way back, computed together: the way back keeps to the outbound roads
+/// wherever the mode may use them backwards and leaves them only where it must (a oneway).
+struct Vrst_route_pair {
+  Vrst_route there;  ///< From the start to the destination.
+  Vrst_route back;   ///< From the destination back to the start; found = false when there is none.
 };
 
 /// The nearest road a mode may use at a point.

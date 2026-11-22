@@ -1,9 +1,10 @@
 /// @file
 /// `navroute <dir> <lat> <lon> <lat> <lon> [car|bike|foot]`
 ///
-/// Routes between two points of a converted region through the map provider, the same
-/// call the app makes (Vrst_map_provider::route()), and prints the length, the time,
-/// the settled vertices and the search time, with the roads at both ends.
+/// Routes between two points of a converted region and back through the map provider,
+/// the same call the app makes (Vrst_map_provider::route_pair()), and prints the length,
+/// the time, the settled vertices and the search time of both, how much of the way back
+/// is on the outbound roads, and the roads at both ends.
 /// For development, like navsearch.
 
 #include <cstdio>
@@ -40,13 +41,21 @@ int main(int argc, char** argv) {
       if (const auto r = map->road_at(p, mode))
         std::printf("road at %.6f, %.6f: %s (%.0f m away)\n", p.lat, p.lon, r->name.empty() ? "(no name)" : r->name.c_str(),
                     r->distance_m);
-    const Vrst_route r = map->route(from, to, mode);
+    const Vrst_route_pair pair = map->route_pair(from, to, mode);
+    const Vrst_route& r = pair.there;
     if (!r.found) {
       std::printf("no route: %s (%zu settled, %.1f ms)\n", r.error.c_str(), r.settled, r.ms);
       return 1;
     }
     std::printf("%s: %.2f km, %.0f min, %zu points, %zu settled, %.1f ms\n", std::string(m).c_str(), r.length_m / 1000,
                 r.time_s / 60, r.points.size(), r.settled, r.ms);
+    const Vrst_route& b = pair.back;
+    if (!b.found) {
+      std::printf("back: none (%s)\n", b.error.c_str());
+    } else {
+      std::printf("back: %.2f km, %.0f min, %.0f%% on the outbound roads, %zu settled, %.1f ms\n", b.length_m / 1000,
+                  b.time_s / 60, b.length_m > 0 ? 100 * b.shared_m / b.length_m : 0.0, b.settled, b.ms);
+    }
     return 0;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "navroute: %s\n", e.what());

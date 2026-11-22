@@ -13,6 +13,10 @@
   UISegmentedControl* _modes;
   /// Start here button.
   UIButton* _start;
+  /// Route button.
+  UIButton* _route;
+  /// Way back button.
+  UIButton* _back;
 }
 
 /// A rounded dark card: title and close button on top, the detail line, then the mode
@@ -50,10 +54,17 @@
   route.layer.cornerRadius = 8;
   route.contentEdgeInsets = UIEdgeInsetsMake(6, 18, 6, 18);
   [route addTarget:self action:@selector(onRoute) forControlEvents:UIControlEventTouchUpInside];
+  _route = route;
+  _back = [UIButton buttonWithType:UIButtonTypeSystem];
+  [_back setImage:[UIImage systemImageNamed:@"arrow.uturn.backward"] forState:UIControlStateNormal];
+  [_back setTitle:@" Way back" forState:UIControlStateNormal];
+  _back.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeading;
+  [_back addTarget:self action:@selector(onBack) forControlEvents:UIControlEventTouchUpInside];
+  _back.hidden = YES;
   UIStackView* bottom = [[UIStackView alloc] initWithArrangedSubviews:@[ _modes, _start, route ]];
   bottom.spacing = 10;
   bottom.alignment = UIStackViewAlignmentCenter;
-  UIStackView* stack = [[UIStackView alloc] initWithArrangedSubviews:@[ top, _detailLabel, bottom ]];
+  UIStackView* stack = [[UIStackView alloc] initWithArrangedSubviews:@[ top, _detailLabel, _back, bottom ]];
   stack.axis = UILayoutConstraintAxisVertical;
   stack.spacing = 8;
   stack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -98,6 +109,36 @@
 
 - (void)setStartOffered:(BOOL)startOffered {
   _start.hidden = !startOffered;
+}
+
+- (BOOL)routeOffered {
+  return !_route.hidden;
+}
+
+- (void)setRouteOffered:(BOOL)routeOffered {
+  _route.hidden = !routeOffered;
+  _modes.hidden = !routeOffered;
+}
+
+- (BOOL)backOffered {
+  return !_back.hidden;
+}
+
+- (void)setBackOffered:(BOOL)backOffered {
+  _back.hidden = !backOffered;
+}
+
+- (NSString*)backTitle {
+  return [[_back titleForState:UIControlStateNormal] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+}
+
+- (void)setBackTitle:(NSString*)backTitle {
+  [_back setTitle:[@" " stringByAppendingString:backTitle] forState:UIControlStateNormal];
+}
+
+/// Way back button.
+- (void)onBack {
+  if (self.backHandler) self.backHandler();
 }
 
 /// Route button.

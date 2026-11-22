@@ -133,6 +133,9 @@ static constexpr Vrst_size kMaxStuckDumps = 20;
 static constexpr Vrst_geo_box kWorldBox{{-60.0, -170.0}, {75.0, 170.0}};
 /// NSUserDefaults key of the travel mode ("who I am": car, bike, walk).
 static NSString* const kTravelModeKey = @"travel_mode";
+/// NSUserDefaults key start of the saved way back of a region ("way_back.<region id>").
+static NSString* const kWayBackKey = @"way_back.";
+
 /// Seconds a finger must rest on the map to drop a pin.
 static constexpr double kHoldSeconds = 1.0;
 
@@ -347,6 +350,14 @@ static constexpr double kConsoleSeconds = 0.25;
   Vrst_uint64 _routeRequest;
   /// A route waits for the first GPS fix (Route, or a shared point, before GPS knew where we are).
   BOOL _routeWhenFix;
+  /// Way back of the last route, kept (saved per region) and drawn only on request; empty = none.
+  std::vector<Vrst_latlon> _back;
+  /// Card line of the way back ("45.1 km - 29 min (car)").
+  NSString* _backSummary;
+  /// Card line of the outbound route.
+  NSString* _thereSummary;
+  /// The way back is drawn instead of the outbound route.
+  BOOL _showingBack;
   /// `--search <text>`: open the search screen with this text after the first frame.
   NSString* _launchSearch;
   /// `--search-pick <text>`: show the first result of this text after the first frame.
@@ -536,6 +547,7 @@ static constexpr double kConsoleSeconds = 0.25;
   }
   _region = r;
   if (r) _store.activeId = r.regionId;
+  [self loadWayBack];  // the way back of the last route here, offered on the card
   // Camera: launch arguments, else the region's saved camera, else the whole region.
   VrstRegionCamera cam{};
   if (_launchView) {
@@ -663,6 +675,7 @@ static constexpr double kConsoleSeconds = 0.25;
 - (void)clearPin {
   _log.record("ui", [self now]).text("event", "search_clear_pin");
   [self clearRoutePins];
+  [self forgetWayBack];
   [self redraw];
 }
 
@@ -677,9 +690,13 @@ static constexpr double kConsoleSeconds = 0.25;
   _hasPin = YES;
   _route.clear();
   _renderer.set_route({});
+  _showingBack = NO;
   _card.title = title;
   _card.detail = detail;
   _card.startOffered = YES;
+  _card.routeOffered = YES;
+  _card.backOffered = !_back.empty();
+  _card.backTitle = @"Way back";
   [self showCard:YES];
   [self redraw];
 }
@@ -699,9 +716,99 @@ static constexpr double kConsoleSeconds = 0.25;
   _hasStart = NO;
   _routeWhenFix = NO;
   _route.clear();
+  _back.clear();  // in memory only: the saved way back stays (forgetWayBack removes it)
+  _showingBack = NO;
   _renderer.set_route({});
   ++_routeRequest;  // a route still being computed is not shown
   [self showCard:NO];
+}
+
+/// Saves the way back of the shown region (kWayBackKey), so it survives closing the app.
+- (void)saveWayBack {
+  if (!_region) return;
+  NSMutableData* pts = [NSMutableData dataWithCapacity:_back.size() * sizeof(Vrst_latlon)];
+  for (const Vrst_latlon& p : _back) [pts appendBytes:&p length:sizeof p];
+  [NSUserDefaults.standardUserDefaults setObject:@{@"points" : pts, @"summary" : _backSummary ?: @""}
+                                          forKey:[kWayBackKey stringByAppendingString:_region.regionId]];
+}
+
+/// Removes the saved way back of the shown region.
+- (void)forgetWayBack {
+  _back.clear();
+  if (_region) [NSUserDefaults.standardUserDefaults removeObjectForKey:[kWayBackKey stringByAppendingString:_region.regionId]];
+}
+
+/// Reads the saved way back of the shown region; when there is one, the card offers it.
+- (void)loadWayBack {
+  if (!_region) return;
+  NSDictionary* saved = [NSUserDefaults.standardUserDefaults dictionaryForKey:[kWayBackKey stringByAppendingString:_region.regionId]];
+  NSData* pts = [saved[@"points"] isKindOfClass:NSData.class] ? saved[@"points"] : nil;
+  if (pts.length < 2 * sizeof(Vrst_latlon)) return;
+  _back.resize(pts.length / sizeof(Vrst_latlon));
+  [pts getBytes:_back.data() length:_back.size() * sizeof(Vrst_latlon)];
+  _backSummary = [saved[@"summary"] isKindOfClass:NSString.class] ? saved[@"summary"] : @"";
+  [self offerWayBack];
+}
+
+/// The card offers the saved way back (after the app or the region opens).
+- (void)offerWayBack {
+  if (!_card || _back.empty()) return;  // at launch the card is built after the first region opens
+  _card.title = @"Way back saved";
+  _card.detail = _backSummary;
+  _card.startOffered = NO;
+  _card.routeOffered = NO;
+  _card.backOffered = YES;
+  _card.backTitle = @"Way back";
+  [self showCard:YES];
+}
+
+/// Way back button: draws the way back instead of the outbound route, or the outbound
+/// route again ("There").
+- (void)onWayBack {
+  if (_back.empty()) return;
+  const BOOL back = !_showingBack || _route.empty();
+  _showingBack = back;
+  _log.record("ui", [self now]).text("event", back ? "way_back_shown" : "way_there_shown");
+  [self drawRouteLine:back ? _back : _route];
+  _card.detail = back ? [@"Way back: " stringByAppendingString:_backSummary ?: @""] : (_thereSummary ?: @"");
+  _card.backTitle = back && !_route.empty() ? @"There" : @"Way back";
+}
+
+/// Card line of a route: "12.4 km - 14 min (car)".
+/// @param r Route.
+/// @return Text.
+- (NSString*)summaryOf:(const Vrst_route&)r {
+  static const char* const kModes[] = {"car", "bike", "walk"};
+  const int minutes = static_cast<int>(std::lround(r.time_s / 60));
+  NSString* time = minutes < 60 ? [NSString stringWithFormat:@"%d min", minutes]
+                                : [NSString stringWithFormat:@"%d h %02d", minutes / 60, minutes % 60];
+  return [NSString stringWithFormat:@"%.1f km - %@ (%s)", r.length_m / 1000, time, kModes[static_cast<int>(_mode)]];
+}
+
+/// Draws a route line and fits it in the part of the screen above the card, north up.
+/// @param pts Route points.
+- (void)drawRouteLine:(const std::vector<Vrst_latlon>&)pts {
+  std::vector<Vrst_vec2d> world;
+  world.reserve(pts.size());
+  Vrst_vec2d lo{INFINITY, INFINITY}, hi{-INFINITY, -INFINITY};
+  for (const Vrst_latlon& p : pts) {
+    const Vrst_vec2d w = _mapFrame.to_world(p);
+    world.push_back(w);
+    lo = {std::min(lo.x, w.x), std::min(lo.y, w.y)};
+    hi = {std::max(hi.x, w.x), std::max(hi.y, w.y)};
+  }
+  _renderer.set_route(std::move(world));
+  if (pts.empty()) return;
+  [self setFollow:Vrst_follow::Off];
+  const double px = [self pxPerPoint];
+  const double w = [self fbWidth], h = [self fbHeight];
+  const double card = (_card.bounds.size.height + 24) * px, top = 60 * px;
+  const double sx = (w * 0.85) / std::max(hi.x - lo.x, 1.0), sy = ((h - card - top) * 0.85) / std::max(hi.y - lo.y, 1.0);
+  _view.scale = std::min({sx, sy, 2000.0});
+  _view.angle = 0;
+  _angleTarget = NAN;
+  _view.center = {(lo.x + hi.x) / 2, (lo.y + hi.y) / 2 - (card - top) / 2 / _view.scale};
+  [self redraw];
 }
 
 /// Long press of kHoldSeconds: a pin drops under the finger, its card opens and the
@@ -786,16 +893,19 @@ static constexpr double kConsoleSeconds = 0.25;
   const Vrst_latlon a = *from, b = _pin;
   __weak VrstMapController* weak = self;
   dispatch_async(_routeQueue, ^{
-    const Vrst_route r = map->route(a, b, mode);
+    const Vrst_route_pair r = map->route_pair(a, b, mode);  // the way back too, kept for later
     dispatch_async(dispatch_get_main_queue(), ^{ [weak routeFound:r request:request from:a]; });
   });
 }
 
-/// A route was computed: drawn, fitted on screen above the card, summed up on the card.
-/// @param r Route.
+/// A route was computed: drawn, fitted on screen above the card, summed up on the card;
+/// its way back is kept and saved, not drawn (the card's Way back button).
+/// @param pair Route and way back.
 /// @param request Its request number; an older one than the newest is dropped.
 /// @param from Its start.
-- (void)routeFound:(const Vrst_route&)r request:(Vrst_uint64)request from:(Vrst_latlon)from {
+- (void)routeFound:(const Vrst_route_pair&)pair request:(Vrst_uint64)request from:(Vrst_latlon)from {
+  const Vrst_route& r = pair.there;
+  const Vrst_route& b = pair.back;
   static const char* const kModes[] = {"car", "bike", "walk"};
   const char* mode = kModes[static_cast<int>(_mode)];
   Vrst_log_record rec = _log.record("route", [self now]);
@@ -809,7 +919,12 @@ static constexpr double kConsoleSeconds = 0.25;
       .num("min", r.time_s / 60, 1)
       .count("settled", r.settled)
       .num("ms", r.ms, 1)
-      .flag("stale", request != _routeRequest);
+      .flag("stale", request != _routeRequest)
+      .flag("back_found", b.found)
+      .num("back_km", b.length_m / 1000, 2)
+      .num("back_min", b.time_s / 60, 1)
+      .num("back_shared", b.length_m > 0 ? b.shared_m / b.length_m : 0.0, 2)
+      .num("back_ms", b.ms, 1);
   if (!r.found) rec.text("error", r.error);
   if (request != _routeRequest || !_hasPin) return;
   if (!r.found) {
@@ -817,31 +932,19 @@ static constexpr double kConsoleSeconds = 0.25;
     return;
   }
   _route = r.points;
-  std::vector<Vrst_vec2d> world;
-  world.reserve(_route.size());
-  Vrst_vec2d lo{INFINITY, INFINITY}, hi{-INFINITY, -INFINITY};
-  for (const Vrst_latlon& p : _route) {
-    const Vrst_vec2d w = _mapFrame.to_world(p);
-    world.push_back(w);
-    lo = {std::min(lo.x, w.x), std::min(lo.y, w.y)};
-    hi = {std::max(hi.x, w.x), std::max(hi.y, w.y)};
+  _showingBack = NO;
+  _thereSummary = [self summaryOf:r];
+  _card.detail = _thereSummary;
+  if (b.found) {  // replaces the way back saved before
+    _back = b.points;
+    _backSummary = [self summaryOf:b];
+    [self saveWayBack];
+  } else {
+    [self forgetWayBack];
   }
-  _renderer.set_route(std::move(world));
-  const int minutes = static_cast<int>(std::lround(r.time_s / 60));
-  NSString* time = minutes < 60 ? [NSString stringWithFormat:@"%d min", minutes]
-                                : [NSString stringWithFormat:@"%d h %02d", minutes / 60, minutes % 60];
-  _card.detail = [NSString stringWithFormat:@"%.1f km - %@ (%s)", r.length_m / 1000, time, mode];
-  // Fit the route in the part of the screen above the card, north up.
-  [self setFollow:Vrst_follow::Off];
-  const double px = [self pxPerPoint];
-  const double w = [self fbWidth], h = [self fbHeight];
-  const double card = (_card.bounds.size.height + 24) * px, top = 60 * px;
-  const double sx = (w * 0.85) / std::max(hi.x - lo.x, 1.0), sy = ((h - card - top) * 0.85) / std::max(hi.y - lo.y, 1.0);
-  _view.scale = std::min({sx, sy, 2000.0});
-  _view.angle = 0;
-  _angleTarget = NAN;
-  _view.center = {(lo.x + hi.x) / 2, (lo.y + hi.y) / 2 - (card - top) / 2 / _view.scale};
-  [self redraw];
+  _card.backOffered = !_back.empty();
+  _card.backTitle = @"Way back";
+  [self drawRouteLine:_route];
 }
 
 /// `--download <id>[,<id>...]`: queues those Geofabrik extracts as one region, like the
@@ -924,6 +1027,7 @@ static constexpr double kConsoleSeconds = 0.25;
 /// phone opens (or none is left: the grid only).
 /// @param regionId Region folder name.
 - (void)regionDeleted:(NSString*)regionId {
+  [NSUserDefaults.standardUserDefaults removeObjectForKey:[kWayBackKey stringByAppendingString:regionId]];
   _log.record("region", [self now])
       .text("event", "deleted")
       .text("id", regionId.UTF8String)
@@ -1375,6 +1479,7 @@ static constexpr double kConsoleSeconds = 0.25;
   _card.mode = static_cast<VrstCardMode>(_mode);
   _card.routeHandler = ^{ [weak routeToPin]; };
   _card.startHandler = ^{ [weak onStartHere]; };
+  _card.backHandler = ^{ [weak onWayBack]; };
   _card.closeHandler = ^{ [weak clearPin]; };
   _card.modeHandler = ^(VrstCardMode m) { [weak onCardMode:m]; };
   [self.view addSubview:_card];
@@ -1428,6 +1533,7 @@ static constexpr double kConsoleSeconds = 0.25;
     [_playButton.bottomAnchor constraintEqualToAnchor:_recordButton.topAnchor constant:-12],
   ]];
   [self updateToggles];
+  [self offerWayBack];  // a way back loaded with the first region, before the card existed
   [self updateStats];
 }
 

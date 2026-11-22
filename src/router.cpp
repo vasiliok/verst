@@ -179,20 +179,67 @@ std::optional<Vrst_road_at> Vrst_router::road_at(Vrst_latlon p, Vrst_travel_mode
 }
 
 Vrst_route Vrst_router::route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode) const {
+  return search(from, to, mode, {}).route;
+}
+
+Vrst_route_pair Vrst_router::route_pair(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode) const {
+  Vrst_found there = search(from, to, mode, {});
+  if (!there.route.found) return {std::move(there.route), {}};
+  const std::vector<Vrst_uint32> prefer = twin_segments(there.segs);
+  return {std::move(there.route), search(to, from, mode, prefer).route};
+}
+
+std::vector<Vrst_uint32> Vrst_router::twin_segments(std::span<const Vrst_uint32> segs) const {
+  const std::span<const Vrst_seg_attr> attr = m_data.edges().attr();
+  std::vector<Vrst_uint32> out(segs.begin(), segs.end());
+  // Names and numbers of the route's roads, and the tiles it crosses.
+  std::vector<Vrst_uint32> names, refs;
+  std::vector<Vrst_uint64> tiles;
+  for (const Vrst_uint32 s : segs) {
+    if (attr[s].name_id) names.push_back(attr[s].name_id);
+    if (attr[s].ref_id) refs.push_back(attr[s].ref_id);
+    for (const Vrst_coord c : m_data.geom().segment_points(s)) tiles.push_back(tile_key(tile_at(kSnapZoom, mercator(degrees(c)))));
+  }
+  const auto sort_unique = [](auto& v) {
+    std::ranges::sort(v);
+    v.erase(std::ranges::unique(v).begin(), v.end());
+  };
+  sort_unique(names);
+  sort_unique(refs);
+  sort_unique(tiles);
+  for (const Vrst_uint64 k : tiles) {
+    const Vrst_tile_id t = tile_of_key(k);
+    if (!m_index.contains(t)) continue;
+    for (const Vrst_uint32 c : m_index.find(t).segs)
+      if ((attr[c].ref_id && std::ranges::binary_search(refs, attr[c].ref_id)) ||
+          (attr[c].name_id && std::ranges::binary_search(names, attr[c].name_id)))
+        out.push_back(c);
+  }
+  sort_unique(out);
+  return out;
+}
+
+Vrst_router::Vrst_found Vrst_router::search(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode,
+                                            std::span<const Vrst_uint32> preferred) const {
   const auto t0 = std::chrono::steady_clock::now();
-  Vrst_route out;
+  Vrst_found found;
+  Vrst_route& out = found.route;
   const Vrst_uint32 mb = mode_bit(mode);
   const std::optional<Vrst_snap> s = snap(from, mb), t = snap(to, mb);
   if (!s || !t) {
     out.error = !s ? "no road near the start" : "no road near the destination";
-    return out;
+    return found;
   }
   const Vrst_graph& g = m_data.graph();
   const Vrst_edges& e = m_data.edges();
   const std::span<const Vrst_fwd_arc> arcs = g.fwd_arcs();
   const Vrst_float64 inf = std::numeric_limits<Vrst_float64>::infinity();
   const Vrst_float64 speed = top_speed(mode);
-  // Seconds per metre along a segment in one direction, or nullopt when the mode may not.
+  // Search cost of real seconds on a segment: raised off the preferred roads.
+  const auto off = [&](Vrst_uint32 seg) {
+    return !preferred.empty() && !std::ranges::binary_search(preferred, seg) ? kOffRouteFactor : 1.0;
+  };
+  // Real seconds per metre along a segment in one direction, or nullopt when the mode may not.
   const auto per_metre = [&](const Vrst_snap& sn, bool reversed) -> std::optional<Vrst_float64> {
     const std::optional<Vrst_uint32> a = seg_arc(sn.seg, reversed, mb);
     if (!a) return std::nullopt;
@@ -213,17 +260,18 @@ Vrst_route Vrst_router::route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode
     pred[v] = via;
     open.push({d + h(v), v});
   };
-  if (s_fwd) reach(sv.b, (s->length - s->from_a) * *s_fwd, kFromStartFwd);
-  if (s_rev) reach(sv.a, s->from_a * *s_rev, kFromStartRev);
+  const Vrst_float64 s_off = off(s->seg), t_off = off(t->seg);
+  if (s_fwd) reach(sv.b, (s->length - s->from_a) * *s_fwd * s_off, kFromStartFwd);
+  if (s_rev) reach(sv.a, s->from_a * *s_rev * s_off, kFromStartRev);
 
   // The best way to the destination point so far: straight along a shared segment, or
   // from one end of the destination segment.
   Vrst_float64 best = inf;
   enum class Vrst_end { None, Direct, ViaA, ViaB } end = Vrst_end::None;
   if (t->seg == s->seg) {
-    if (s_fwd && t->from_a >= s->from_a) best = (t->from_a - s->from_a) * *s_fwd, end = Vrst_end::Direct;
-    if (s_rev && t->from_a <= s->from_a && (s->from_a - t->from_a) * *s_rev < best)
-      best = (s->from_a - t->from_a) * *s_rev, end = Vrst_end::Direct;
+    if (s_fwd && t->from_a >= s->from_a) best = (t->from_a - s->from_a) * *s_fwd * s_off, end = Vrst_end::Direct;
+    if (s_rev && t->from_a <= s->from_a && (s->from_a - t->from_a) * *s_rev * s_off < best)
+      best = (s->from_a - t->from_a) * *s_rev * s_off, end = Vrst_end::Direct;
   }
   while (!open.empty()) {
     const auto [f, v] = open.top();
@@ -231,22 +279,31 @@ Vrst_route Vrst_router::route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode
     if (f >= best) break;
     if (f > dist[v] + h(v) + 1e-9) continue;  // an older, longer entry
     ++out.settled;
-    if (v == tv.a && t_fwd && dist[v] + t->from_a * *t_fwd < best) best = dist[v] + t->from_a * *t_fwd, end = Vrst_end::ViaA;
-    if (v == tv.b && t_rev && dist[v] + (t->length - t->from_a) * *t_rev < best)
-      best = dist[v] + (t->length - t->from_a) * *t_rev, end = Vrst_end::ViaB;
+    if (v == tv.a && t_fwd && dist[v] + t->from_a * *t_fwd * t_off < best)
+      best = dist[v] + t->from_a * *t_fwd * t_off, end = Vrst_end::ViaA;
+    if (v == tv.b && t_rev && dist[v] + (t->length - t->from_a) * *t_rev * t_off < best)
+      best = dist[v] + (t->length - t->from_a) * *t_rev * t_off, end = Vrst_end::ViaB;
     const Vrst_uint32 first = g.fwd_first_out()[v];
     const std::span<const Vrst_fwd_arc> out_arcs = g.out_arcs(v);
     for (Vrst_uint32 i = 0; i < out_arcs.size(); ++i) {
       const Vrst_fwd_arc& a = out_arcs[i];
       if (!(arc_modes(a.weight) & mb)) continue;
-      reach(a.head, dist[v] + arc_seconds(a.weight, a.seg & kSegIdMask, mode), first + i);
+      const Vrst_uint32 seg = a.seg & kSegIdMask;
+      reach(a.head, dist[v] + arc_seconds(a.weight, seg, mode) * off(seg), first + i);
     }
   }
   if (end == Vrst_end::None) {
     out.error = "no route between these points";
     out.ms = std::chrono::duration<Vrst_float64, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    return out;
+    return found;
   }
+  // Real time and the metres on preferred roads, piece by piece as the path is unpacked.
+  Vrst_float64 real = 0;
+  const auto piece = [&](Vrst_uint32 seg, Vrst_float64 seconds, Vrst_float64 m) {
+    real += seconds;
+    if (!preferred.empty() && off(seg) == 1.0) out.shared_m += m;
+    if (found.segs.empty() || found.segs.back() != seg) found.segs.push_back(seg);
+  };
 
   // Unpack: start piece, the arcs, end piece; shape points in travel order.
   std::vector<Vrst_latlon>& pts = out.points;
@@ -257,6 +314,8 @@ Vrst_route Vrst_router::route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode
   pts.push_back(s->pos);
   if (end == Vrst_end::Direct) {
     const std::span<const Vrst_coord> sh = shape(s->seg);
+    const Vrst_float64 m = std::abs(t->from_a - s->from_a);
+    piece(s->seg, m * (t->from_a >= s->from_a ? *s_fwd : *s_rev), m);
     if (t->from_a >= s->from_a) {
       for (Vrst_size i = s->piece + 1; i <= t->piece; ++i) add(degrees(sh[i]));
     } else {
@@ -273,13 +332,17 @@ Vrst_route Vrst_router::route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode
       v = (arcs[arc].seg & kSegReversed) ? av.b : av.a;  // the arc's tail
     }
     const std::span<const Vrst_coord> ss = shape(s->seg);
-    if (pred[v] == kFromStartFwd) {
+    const bool start_fwd = pred[v] == kFromStartFwd;
+    const Vrst_float64 sm = start_fwd ? s->length - s->from_a : s->from_a;
+    piece(s->seg, sm * (start_fwd ? *s_fwd : *s_rev), sm);
+    if (start_fwd) {
       for (Vrst_size i = s->piece + 1; i < ss.size(); ++i) add(degrees(ss[i]));
     } else {
       for (Vrst_size i = s->piece + 1; i-- > 0;) add(degrees(ss[i]));
     }
     for (auto it = path.rbegin(); it != path.rend(); ++it) {
       const Vrst_uint32 seg = arcs[*it].seg & kSegIdMask;
+      piece(seg, arc_seconds(arcs[*it].weight, seg, mode), e.attr()[seg].length_dm / 10.0);
       const std::span<const Vrst_coord> sh = shape(seg);
       if (arcs[*it].seg & kSegReversed) {
         for (Vrst_size i = sh.size(); i-- > 0;) add(degrees(sh[i]));
@@ -288,6 +351,8 @@ Vrst_route Vrst_router::route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode
       }
     }
     const std::span<const Vrst_coord> ts = shape(t->seg);
+    const Vrst_float64 tm = end == Vrst_end::ViaA ? t->from_a : t->length - t->from_a;
+    piece(t->seg, tm * (end == Vrst_end::ViaA ? *t_fwd : *t_rev), tm);
     if (end == Vrst_end::ViaA) {
       for (Vrst_size i = 0; i <= t->piece; ++i) add(degrees(ts[i]));
     } else {
@@ -296,10 +361,10 @@ Vrst_route Vrst_router::route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode
   }
   add(t->pos);
   for (Vrst_size i = 1; i < pts.size(); ++i) out.length_m += metres(pts[i - 1], pts[i]);
-  out.time_s = best;
+  out.time_s = real;
   out.found = true;
   out.ms = std::chrono::duration<Vrst_float64, std::milli>(std::chrono::steady_clock::now() - t0).count();
-  return out;
+  return found;
 }
 
 }  // namespace nav

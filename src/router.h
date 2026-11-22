@@ -40,6 +40,21 @@ class Vrst_router {
   /// @return The route, or found = false with the reason.
   Vrst_route route(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode) const;
 
+  /// A route and its way back. The way back is searched with every road that is not on
+  /// the outbound route kOffRouteFactor times more costly, so it follows the outbound
+  /// roads in reverse wherever the mode may, and detours only where it must; its time and
+  /// length are the real ones. A road with the same name or number next to an outbound
+  /// road (the other carriageway of a motorway or a boulevard, mapped as two oneways)
+  /// counts as an outbound road (twin_segments()).
+  /// @param from Start.
+  /// @param to Destination.
+  /// @param mode Who travels.
+  /// @return Both routes; back.found = false when there is no way back.
+  Vrst_route_pair route_pair(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode) const;
+
+  /// Cost factor of a road that is not on the outbound route, for the way back.
+  static constexpr Vrst_float64 kOffRouteFactor = 3;
+
   /// The nearest road a mode may use.
   /// @param p Point.
   /// @param mode Who travels.
@@ -56,6 +71,27 @@ class Vrst_router {
     Vrst_float64 length = 0;       ///< Shape length of the whole segment, metres.
     Vrst_float64 distance_m = 0;   ///< From the asked point to pos.
   };
+
+  /// A found route and the segments it runs on, in order.
+  struct Vrst_found {
+    Vrst_route route;                ///< The route.
+    std::vector<Vrst_uint32> segs;   ///< Its segment ids, start to end.
+  };
+
+  /// A* from a point to a point; see the file comment.
+  /// @param from Start.
+  /// @param to Destination.
+  /// @param mode Who travels.
+  /// @param preferred Sorted segment ids that cost their real time; every other one costs
+  ///        kOffRouteFactor times more. Empty = no preference.
+  /// @return The route and its segments.
+  Vrst_found search(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode, std::span<const Vrst_uint32> preferred) const;
+
+  /// The segments of a route and, in the z14 tiles they cross, the segments with the
+  /// same name or road number (the other carriageway of divided roads).
+  /// @param segs Segments of the outbound route.
+  /// @return Sorted unique segment ids.
+  std::vector<Vrst_uint32> twin_segments(std::span<const Vrst_uint32> segs) const;
 
   /// Nearest point of a segment the mode may use.
   /// @param p Point.

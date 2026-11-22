@@ -33,6 +33,7 @@ enum class Vrst_convert_phase : int {
   AreaNodes,   ///< Locations of those nodes.
   Areas,       ///< Areas assembled, triangulated; lines.
   WriteMap,    ///< map.dat.
+  WriteSearch, ///< Address search database (search.db).
   Done,        ///< Finished.
 };
 /// Number of phases.
@@ -44,7 +45,7 @@ inline constexpr int kConvertPhaseCount = static_cast<int>(Vrst_convert_phase::D
 inline const char* phase_name(Vrst_convert_phase p) {
   static constexpr const char* kNames[] = {"idle",      "merge",     "ways",       "node table", "nodes",
                                            "segments",  "graph",     "write roads", "relations", "area ways",
-                                           "area nodes", "areas",    "write map",  "done"};
+                                           "area nodes", "areas",    "write map",  "write search", "done"};
   static_assert(std::size(kNames) == kConvertPhaseCount);
   return kNames[static_cast<int>(p)];
 }

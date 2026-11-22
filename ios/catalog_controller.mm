@@ -58,14 +58,21 @@ static NSString* const kCellId = @"extract";
   if (!data) return NO;
   NSDictionary* root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
   if (![root isKindOfClass:NSDictionary.class]) return NO;
+  // A value only when it is a string: JSON null (NSNull, e.g. "parent": null of the
+  // continents) or another type counts as missing.
+  const auto text = [](id v) -> NSString* { return [v isKindOfClass:NSString.class] ? v : nil; };
+  NSArray* features = [root[@"features"] isKindOfClass:NSArray.class] ? root[@"features"] : @[];
   NSMutableArray* out = [NSMutableArray array];
-  for (NSDictionary* f in root[@"features"]) {
+  for (NSDictionary* f in features) {
     NSDictionary* p = [f isKindOfClass:NSDictionary.class] ? f[@"properties"] : nil;
-    NSString* pbf = p[@"urls"][@"pbf"];
-    if (![p[@"id"] isKindOfClass:NSString.class] || ![pbf isKindOfClass:NSString.class]) continue;
+    if (![p isKindOfClass:NSDictionary.class]) continue;
+    NSDictionary* urls = [p[@"urls"] isKindOfClass:NSDictionary.class] ? p[@"urls"] : nil;
+    NSString* rid = text(p[@"id"]);
+    NSString* pbf = text(urls[@"pbf"]);
+    if (!rid || !pbf) continue;
     NSString* poly = [pbf stringByReplacingOccurrencesOfString:@"-latest.osm.pbf" withString:@".poly"];
-    [out addObject:@{@"id" : p[@"id"], @"parent" : p[@"parent"] ?: @"", @"name" : p[@"name"] ?: p[@"id"], @"pbf" : pbf,
-                     @"poly" : poly}];
+    [out addObject:@{@"id" : rid, @"parent" : text(p[@"parent"]) ?: @"", @"name" : text(p[@"name"]) ?: rid,
+                     @"pbf" : pbf, @"poly" : poly}];
   }
   if (out.count == 0) return NO;
   _entries = out;

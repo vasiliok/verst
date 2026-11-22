@@ -39,6 +39,7 @@ enum Vrst_maps_section : NSInteger { kSectionJobs, kSectionRegions, kSectionMore
   [super viewDidLoad];
   self.navigationItem.rightBarButtonItem =
       [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(onDone)];
+  self.navigationItem.leftBarButtonItem = self.editButtonItem;  // Edit: a delete control on every region
   [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload)
                                              name:VrstDownloadsChangedNotification object:nil];
   [self reload];
@@ -97,7 +98,8 @@ enum Vrst_maps_section : NSInteger { kSectionJobs, kSectionRegions, kSectionMore
   switch (section) {
     case kSectionJobs: return _jobs.count ? @"Tap a row to pause, resume or cancel it." : nil;
     case kSectionRegions:
-      return _regions.count == 0 ? @"No map yet." : @"Tap a region to show it. Swipe left to delete one.";
+      return _regions.count == 0 ? @"No map yet."
+                                 : @"Tap a region to show it. Edit (top left) or swipe left to delete one.";
     default: return @"Downloaded, merged and converted on this phone.";
   }
 }
@@ -215,32 +217,90 @@ enum Vrst_maps_section : NSInteger { kSectionJobs, kSectionRegions, kSectionMore
   [self presentViewController:menu animated:YES completion:nil];
 }
 
-/// Swipe to delete, for every region except the one shown.
+/// Only regions can be deleted (Edit mode and swipe).
+/// @param tableView Table.
+/// @param indexPath Row.
+/// @return YES for a region row.
+- (BOOL)tableView:(UITableView*)tableView canEditRowAtIndexPath:(NSIndexPath*)indexPath {
+  (void)tableView;
+  return indexPath.section == kSectionRegions;
+}
+
+/// Swipe to delete a region, after a confirmation.
 /// @param tableView Table.
 /// @param indexPath Row.
 /// @return Swipe actions, or nil.
 - (UISwipeActionsConfiguration*)tableView:(UITableView*)tableView
     trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath {
-  (void)tableView;
   if (indexPath.section != kSectionRegions) return nil;
   VrstRegion* r = _regions[static_cast<NSUInteger>(indexPath.row)];
-  if ([r.regionId isEqualToString:_store.activeId ?: @""]) return nil;  // switch to another region first
   __weak VrstMapsController* weak = self;
+  UIView* source = [tableView cellForRowAtIndexPath:indexPath];
   UIContextualAction* del = [UIContextualAction
       contextualActionWithStyle:UIContextualActionStyleDestructive
                           title:@"Delete"
-                        handler:^(UIContextualAction*, UIView*, void (^done)(BOOL)) { done([weak deleteRegion:r]); }];
+                        handler:^(UIContextualAction*, UIView*, void (^done)(BOOL)) {
+                          [weak confirmDelete:r from:source done:done];
+                        }];
   return [UISwipeActionsConfiguration configurationWithActions:@[ del ]];
 }
 
-/// Deletes a region and refreshes the list.
+/// The red delete control of Edit mode: delete after a confirmation.
+/// @param tableView Table.
+/// @param style Always delete here.
+/// @param indexPath Row.
+- (void)tableView:(UITableView*)tableView
+    commitEditingStyle:(UITableViewCellEditingStyle)style
+     forRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (style != UITableViewCellEditingStyleDelete || indexPath.section != kSectionRegions) return;
+  [self confirmDelete:_regions[static_cast<NSUInteger>(indexPath.row)]
+                 from:[tableView cellForRowAtIndexPath:indexPath]
+                 done:nil];
+}
+
+/// Asks before deleting: the region is gone until it is downloaded again.
+/// @param r Region.
+/// @param source Row, for the popover on an iPad.
+/// @param done Called with YES when it was deleted, NO when not; may be nil.
+- (void)confirmDelete:(VrstRegion*)r from:(UIView*)source done:(nullable void (^)(BOOL))done {
+  const BOOL shown = [r.regionId isEqualToString:_store.activeId ?: @""];
+  NSString* message = [NSString stringWithFormat:@"Frees %.0f MB. %@To use it again, download it again.", r.bytes / 1e6,
+                                                 shown ? @"It is the map on screen: another one opens. " : @""];
+  UIAlertController* ask = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Delete %@?", r.name]
+                                                               message:message
+                                                        preferredStyle:UIAlertControllerStyleActionSheet];
+  __weak VrstMapsController* weak = self;
+  [ask addAction:[UIAlertAction actionWithTitle:@"Delete"
+                                          style:UIAlertActionStyleDestructive
+                                        handler:^(UIAlertAction*) {
+                                          const BOOL ok = [weak deleteRegion:r];
+                                          if (done) done(ok);
+                                        }]];
+  [ask addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                          style:UIAlertActionStyleCancel
+                                        handler:^(UIAlertAction*) {
+                                          if (done) done(NO);
+                                        }]];
+  ask.popoverPresentationController.sourceView = source;
+  [self presentViewController:ask animated:YES completion:nil];
+}
+
+/// Deletes a region (closing it first when it is shown) and refreshes the list.
 /// @param r Region.
 /// @return YES when it was deleted.
 - (BOOL)deleteRegion:(VrstRegion*)r {
+  if (self.releaseHandler) self.releaseHandler(r.regionId);
   NSError* error = nil;
   const BOOL ok = [_store deleteRegion:r.regionId error:&error];
-  if (ok && self.deleteHandler) self.deleteHandler(r.regionId);
+  if (self.deleteHandler) self.deleteHandler(r.regionId);
   [self reload];
+  if (!ok) {
+    UIAlertController* fail = [UIAlertController alertControllerWithTitle:@"Not deleted"
+                                                                  message:error.localizedDescription
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    [fail addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:fail animated:YES completion:nil];
+  }
   return ok;
 }
 

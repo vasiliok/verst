@@ -29,6 +29,7 @@
 #include "gl_api.h"  // OpenGL ES 3.0; before GLKit so the ES3 header wins
 
 #import <CoreLocation/CoreLocation.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <GLKit/GLKit.h>
 #import <UIKit/UIKit.h>
 
@@ -39,6 +40,7 @@
 #import "maps_controller.h"
 #import "region_store.h"
 #import "root_controller.h"
+#import "search_controller.h"
 
 #include <sys/utsname.h>
 
@@ -81,6 +83,31 @@ static constexpr double kFollowSeconds = 0.3;
 static constexpr double kHeadingDotY = 0.7;
 /// GPS course is used only above this speed, m/s; slower, the last heading stays.
 static constexpr double kMinCourseSpeed = 1.5;
+/// Between two GPS fixes the position moves on along the course for at most this long, s.
+static constexpr double kMaxPredictSeconds = 2;
+/// Metres per degree of latitude.
+static constexpr double kMetresPerDegree = 111320;
+
+/// Course from one point to another.
+/// @param a Start.
+/// @param b End.
+/// @return Degrees clockwise from north; NAN when the points are equal.
+static double bearing_deg(Vrst_latlon a, Vrst_latlon b) {
+  const double dy = b.lat - a.lat, dx = (b.lon - a.lon) * std::cos(a.lat * kPi / 180);
+  if (dx == 0 && dy == 0) return NAN;
+  return std::fmod(std::atan2(dx, dy) * 180 / kPi + 360, 360);
+}
+
+/// A point moved along a course (flat earth, fine over the few metres of a prediction).
+/// @param p Start.
+/// @param course_deg Degrees clockwise from north.
+/// @param metres Distance.
+/// @return Moved point.
+static Vrst_latlon moved(Vrst_latlon p, double course_deg, double metres) {
+  const double c = course_deg * kPi / 180;
+  return {p.lat + metres * std::cos(c) / kMetresPerDegree,
+          p.lon + metres * std::sin(c) / (kMetresPerDegree * std::cos(p.lat * kPi / 180))};
+}
 /// Seconds for a zoom button step to cover most (63%) of its zoom.
 static constexpr double kZoomButtonSeconds = 0.08;
 /// Build configuration, for the launch record (Debug code runs several times slower).
@@ -110,7 +137,8 @@ static constexpr double kConsoleSeconds = 0.25;
 
 /// Map controller (whole screen, or below the console in Split). Owns the shared C++ map state and turns UIKit touch
 /// gestures into camera changes; draws only when something changed.
-@interface VrstMapController : GLKViewController <UIGestureRecognizerDelegate, CLLocationManagerDelegate>
+@interface VrstMapController
+    : GLKViewController <UIGestureRecognizerDelegate, CLLocationManagerDelegate, UIDocumentPickerDelegate>
 /// Debug console with the provider status and the session log ("Log" button); placed
 /// by VrstRootController, fed by this controller. Set before the view loads.
 @property(nonatomic, strong) VrstDebugConsole* console;
@@ -264,10 +292,33 @@ static constexpr double kConsoleSeconds = 0.25;
   double _course;
   /// A course was seen while moving fast enough (kMinCourseSpeed).
   BOOL _hasCourse;
+  /// Ground speed of the last fix, m/s on screen time (a replayed track: times its speed).
+  double _speed;
+  /// [self now] when _fix arrived; the position moves on from there (predictedFix).
+  double _fixTime;
+  /// Follow mode was turned on by the first fix once; later fixes leave the mode alone.
+  BOOL _autoFollowed;
+  /// World point the follow camera keeps at its screen place (followDotY); eases toward
+  /// the position. Valid when _anchorSet.
+  Vrst_vec2d _followAnchor;
+  /// _followAnchor is set; cleared when the follow mode changes.
+  BOOL _anchorSet;
   /// Map rotation to ease toward once (north up after Heading mode); NAN = none.
   double _angleTarget;
   /// Round eye button: hides or shows the info boxes (stats and debug overlay).
   UIButton* _boxesButton;
+  /// Round magnifier button under the eye: the address search screen.
+  UIButton* _searchButton;
+  /// A search result is pinned on the map (_pin).
+  BOOL _hasPin;
+  /// Position of the pinned search result.
+  Vrst_latlon _pin;
+  /// Text of the last search, shown again when the search screen reopens.
+  NSString* _lastQuery;
+  /// `--search <text>`: open the search screen with this text after the first frame.
+  NSString* _launchSearch;
+  /// `--search-pick <text>`: show the first result of this text after the first frame.
+  NSString* _launchSearchPick;
   /// Zoom still to apply from the zoom buttons, natural log of the factor (0 = none).
   double _pendingZoomLog;
   /// `--follow on|heading`: follow mode to start with.
@@ -276,8 +327,6 @@ static constexpr double kConsoleSeconds = 0.25;
   UIButton* _recordButton;
   /// Round play button: pick a recording to play, or stop playing.
   UIButton* _playButton;
-  /// The camera follows the marker; a drag turns it off, the menu turns it on.
-  BOOL _trackFollow;
   /// Track file named by `--gpx`, loaded and played after the map is ready; nil = none.
   NSString* _launchGpx;
   /// `t` of the last banner update of the playing track.
@@ -378,6 +427,7 @@ static constexpr double kConsoleSeconds = 0.25;
   }
   _mapStatus = {};
   _stuckDumped.clear();
+  _hasPin = NO;  // the pin belongs to the region it was found in
   _region = nil;
 }
 
@@ -480,6 +530,7 @@ static constexpr double kConsoleSeconds = 0.25;
   VrstMapsController* maps = [[VrstMapsController alloc] initWithStore:_store manager:_downloads];
   __weak VrstMapController* weak = self;
   maps.chooseHandler = ^(NSString* rid) { [weak switchToRegion:rid]; };
+  maps.releaseHandler = ^(NSString* rid) { [weak releaseRegion:rid]; };
   maps.deleteHandler = ^(NSString* rid) { [weak regionDeleted:rid]; };
   UINavigationController* nav = [[UINavigationController alloc] initWithRootViewController:maps];
   [self presentViewController:nav animated:YES completion:nil];
@@ -494,6 +545,80 @@ static constexpr double kConsoleSeconds = 0.25;
       .text("from", _region ? _region.regionId.UTF8String : "")
       .text("to", regionId.UTF8String);
   [self openRegion:[_store regionWithId:regionId]];
+}
+
+// --- address search ---------------------------------------------------------------
+
+/// Magnifier button: the search screen over the shown region, nearest to the screen
+/// center first.
+- (void)onSearch {
+  _log.record("ui", [self now]).text("event", "button_search");
+  VrstSearchController* s = [[VrstSearchController alloc] initWithQuery:_lastQuery ?: @""
+                                                                hasIndex:_map && _map->has_search()
+                                                                  hasPin:_hasPin];
+  __weak VrstMapController* weak = self;
+  s.searchHandler = ^NSArray<VrstSearchHit*>*(NSString* text) { return [weak searchFor:text]; };
+  s.pickHandler = ^(VrstSearchHit* hit) { [weak showHit:hit]; };
+  s.clearPinHandler = ^{ [weak clearPin]; };
+  UINavigationController* nav = [[UINavigationController alloc] initWithRootViewController:s];
+  [self presentViewController:nav animated:YES completion:nil];
+}
+
+/// Searches the shown region and logs the query with its time.
+/// @param text What the user typed.
+/// @return Results, best first.
+- (NSArray<VrstSearchHit*>*)searchFor:(NSString*)text {
+  constexpr Vrst_size kMaxResults = 30;
+  _lastQuery = [text copy];
+  NSMutableArray<VrstSearchHit*>* out = [NSMutableArray array];
+  if (!_map) return out;
+  const CFTimeInterval t = CACurrentMediaTime();
+  std::optional<Vrst_latlon> near;
+  if (_viewSet) near = _mapFrame.to_latlon(_view.center);
+  const std::vector<Vrst_search_result> results = _map->search(text.UTF8String ?: "", near, kMaxResults);
+  _log.record("search", [self now])
+      .text("query", text.UTF8String ?: "")
+      .count("results", results.size())
+      .num("ms", (CACurrentMediaTime() - t) * 1000, 2);
+  static NSString* const kKinds[] = {@"place", @"street", @"address", @"point"};
+  for (const Vrst_search_result& r : results) {
+    VrstSearchHit* h = [[VrstSearchHit alloc] init];
+    h.title = @(r.title.c_str()) ?: @"";
+    h.detail = @(r.detail.c_str()) ?: @"";
+    h.kind = kKinds[static_cast<int>(r.kind)];
+    h.lat = r.pos.lat;
+    h.lon = r.pos.lon;
+    h.metresPerPoint = r.metres_per_point;
+    [out addObject:h];
+  }
+  return out;
+}
+
+/// Picked result: the camera goes there, north up, at the result's zoom, and a pin
+/// marks it. Follow modes stop: the user looks elsewhere.
+/// @param hit Result.
+- (void)showHit:(VrstSearchHit*)hit {
+  _log.record("ui", [self now])
+      .text("event", "search_pick")
+      .text("kind", hit.kind.UTF8String)
+      .text("title", hit.title.UTF8String ?: "")
+      .num("lat", hit.lat, 7)
+      .num("lon", hit.lon, 7);
+  [self setFollow:Vrst_follow::Off];
+  _pin = {hit.lat, hit.lon};
+  _hasPin = YES;
+  _pendingZoomLog = 0;
+  _angleTarget = NAN;
+  _view = _mapFrame.start_view(_pin, hit.metresPerPoint, [self pxPerPoint], [self fbWidth], [self fbHeight]);
+  _view.angle = 0;
+  [self redraw];
+}
+
+/// Removes the pin.
+- (void)clearPin {
+  _log.record("ui", [self now]).text("event", "search_clear_pin");
+  _hasPin = NO;
+  [self redraw];
 }
 
 /// `--download <id>[,<id>...]`: queues those Geofabrik extracts as one region, like the
@@ -565,10 +690,22 @@ static constexpr double kConsoleSeconds = 0.25;
   }
 }
 
-/// Maps screen: a region was deleted.
+/// Maps screen: a region is about to be deleted; the shown one is closed first, since
+/// its files are open.
+/// @param regionId Region folder name.
+- (void)releaseRegion:(NSString*)regionId {
+  if ([regionId isEqualToString:_region.regionId ?: @""]) [self openRegion:nil];
+}
+
+/// Maps screen: a region was deleted. With no map open any more, another region on the
+/// phone opens (or none is left: the grid only).
 /// @param regionId Region folder name.
 - (void)regionDeleted:(NSString*)regionId {
-  _log.record("region", [self now]).text("event", "deleted").text("id", regionId.UTF8String);
+  _log.record("region", [self now])
+      .text("event", "deleted")
+      .text("id", regionId.UTF8String)
+      .flag("ok", [_store regionWithId:regionId] == nil);
+  if (!_region) [self openRegion:[self startRegion]];
 }
 
 /// With no map on the phone, the Maps screen opens by itself once, after launch.
@@ -710,6 +847,12 @@ static constexpr double kConsoleSeconds = 0.25;
       if (!_importFolders) _importFolders = [NSMutableArray array];
       [_importFolders addObject:a[i + 1]];
       ++i;
+    } else if ([a[i] isEqualToString:@"--search"] && i + 1 < a.count) {
+      _launchSearch = a[i + 1];
+      ++i;
+    } else if ([a[i] isEqualToString:@"--search-pick"] && i + 1 < a.count) {
+      _launchSearchPick = a[i + 1];
+      ++i;
     } else if ([a[i] isEqualToString:@"--console"]) {
       _launchConsole = YES;
     } else if ([a[i] isEqualToString:@"--scenario"] && i + 1 < a.count) {
@@ -798,8 +941,9 @@ static constexpr double kConsoleSeconds = 0.25;
   const Vrst_vec2d abs_center{_mapFrame.center().x + _view.center.x, _mapFrame.center().y + _view.center.y};
   _renderer.draw_region(_view, w, h, _mapFrame.center(), std::cos(inverse_mercator(abs_center).lat * kPi / 180));
   [self drawTrackWidth:w height:h];
+  if (_hasPin) _renderer.draw_pin(_view, w, h, _mapFrame.to_world(_pin), Vrst_float32(22 * px));
   const double tiles_ms = phase();
-  if (_hasFix) _renderer.draw_position(_view, w, h, _mapFrame.to_world(_fix), Vrst_float32(16 * px));
+  if (_hasFix) _renderer.draw_position(_view, w, h, _mapFrame.to_world([self predictedFixAhead:0]), Vrst_float32(16 * px));
   const double position_ms = phase();
   if (_showLabels)
     _renderer.draw_labels(_labels.layout(_view, w, h, [self pxPerPoint], _atlas), w, h,
@@ -824,6 +968,16 @@ static constexpr double kConsoleSeconds = 0.25;
   if (_launchConsole) {
     _launchConsole = NO;
     [self onConsole];
+  }
+  if (_launchSearchPick) {
+    NSArray<VrstSearchHit*>* hits = [self searchFor:_launchSearchPick];
+    _launchSearchPick = nil;
+    if (hits.count) [self showHit:hits.firstObject];
+  }
+  if (_launchSearch) {
+    _lastQuery = _launchSearch;
+    _launchSearch = nil;
+    [self onSearch];
   }
   if (_launchFollow != Vrst_follow::Off) {
     [self setFollow:_launchFollow];
@@ -885,6 +1039,13 @@ static constexpr double kConsoleSeconds = 0.25;
     if (_lastTouchAt > 0) r.num("touch", _lastTouchAt - _t0, 4);
     if (_lastMoveAt > 0) r.num("move", _lastMoveAt - _t0, 4);
     if (_trackPlaying) r.num("track_t", _trackTime, 1);
+    if (_hasFix && _follow != Vrst_follow::Off && _viewSet) {
+      // Where the dot is drawn against where follow mode keeps it, in points.
+      const int w = [self fbWidth], h = [self fbHeight];
+      const Vrst_vec2d s = world_to_screen(_view, w, h, _mapFrame.to_world([self predictedFixAhead:0]));
+      const double pt = [self pxPerPoint];
+      r.num("dot_dx", (s.x - w / 2.0) / pt, 1).num("dot_dy", (s.y - h * [self followDotY]) / pt, 1);
+    }
   }  // the frame record is appended here, before its tiles
   _queuedAt = 0;
   for (const Vrst_tile_upload& u : tf.uploads)
@@ -968,6 +1129,7 @@ static constexpr double kConsoleSeconds = 0.25;
   UIButton* locate = [self roundButton:@"location" color:UIColor.systemBlueColor action:@selector(onLocate)];
   _locateButton = locate;
   _boxesButton = [self roundButton:@"eye" color:UIColor.whiteColor action:@selector(onBoxes)];
+  _searchButton = [self roundButton:@"magnifyingglass" color:UIColor.whiteColor action:@selector(onSearch)];
   UIButton* zoomOut = [self roundButton:@"minus" color:UIColor.whiteColor action:@selector(onZoomOut)];
   UIButton* zoomIn = [self roundButton:@"plus" color:UIColor.whiteColor action:@selector(onZoomIn)];
   _recordButton = [self roundButton:@"record.circle" color:UIColor.systemRedColor action:@selector(onRecordButton)];
@@ -977,7 +1139,7 @@ static constexpr double kConsoleSeconds = 0.25;
   // and per-touch records. All: everything.
   _console.filters = @[
     [VrstConsoleFilter filterNamed:@"Map" only:[NSSet setWithArray:@[ @"build", @"queue", @"load", @"map", @"error" ]]],
-    [VrstConsoleFilter filterNamed:@"User" only:[NSSet setWithArray:@[ @"touch", @"gesture", @"ui" ]]],
+    [VrstConsoleFilter filterNamed:@"User" only:[NSSet setWithArray:@[ @"touch", @"gesture", @"ui", @"search" ]]],
     [VrstConsoleFilter filterNamed:@"Events" except:[NSSet setWithArray:@[ @"frame", @"tile", @"touch", @"queue" ]]],
     [VrstConsoleFilter filterNamed:@"All" except:[NSSet set]],
   ];
@@ -1000,6 +1162,8 @@ static constexpr double kConsoleSeconds = 0.25;
     [locate.bottomAnchor constraintEqualToAnchor:bar.topAnchor constant:-12],
     [_boxesButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-12],
     [_boxesButton.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],
+    [_searchButton.trailingAnchor constraintEqualToAnchor:_boxesButton.trailingAnchor],
+    [_searchButton.topAnchor constraintEqualToAnchor:_boxesButton.bottomAnchor constant:12],
     [zoomOut.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:12],
     [zoomOut.bottomAnchor constraintEqualToAnchor:bar.topAnchor constant:-12],
     [zoomIn.leadingAnchor constraintEqualToAnchor:zoomOut.leadingAnchor],
@@ -1166,11 +1330,9 @@ static constexpr double kConsoleSeconds = 0.25;
 
 /// Location button, like a phone map app: off -> Follow (the map keeps the position
 /// in the center) -> Heading (also turns the map so the direction of travel points up)
-/// -> Follow again (back to north up). Stops following a replayed track, which would
-/// pull the camera elsewhere.
+/// -> Follow again (back to north up). While a track replays, its marker is the position.
 - (void)onLocate {
   const Vrst_follow next = _follow == Vrst_follow::Follow ? Vrst_follow::Heading : Vrst_follow::Follow;
-  _trackFollow = NO;
   [self setFollow:next];
   if (!_hasFix) [_debug showGesture:@"BUTTON Locate: GPS waiting"];
 }
@@ -1185,6 +1347,7 @@ static constexpr double kConsoleSeconds = 0.25;
   if (_follow == Vrst_follow::Heading && mode == Vrst_follow::Follow) _angleTarget = 0;  // north up again
   if (mode != Vrst_follow::Follow) _angleTarget = NAN;
   _follow = mode;
+  _anchorSet = NO;  // the next tick starts from what is at the dot's place now
   const auto i = static_cast<int>(mode);
   [_locateButton setImage:[UIImage systemImageNamed:kIcons[i]] forState:UIControlStateNormal];
   [_debug showGesture:kShown[i]];
@@ -1194,9 +1357,30 @@ static constexpr double kConsoleSeconds = 0.25;
   [self redraw];
 }
 
+/// The position now: the last fix moved on along its course at its speed for the time
+/// since it arrived (at most kMaxPredictSeconds), so the dot moves smoothly between 1 Hz
+/// GPS updates. Standing still (below kMinCourseSpeed) it is the fix itself. A replayed
+/// track sets the exact position on every tick: nothing to predict between fixes.
+/// @param ahead Extra seconds to look ahead (the follow camera's lag).
+/// @return Position.
+- (Vrst_latlon)predictedFixAhead:(double)ahead {
+  if (!_hasCourse || _speed < kMinCourseSpeed) return _fix;
+  const double since = _trackPlaying ? 0.0 : std::clamp([self now] - _fixTime, 0.0, kMaxPredictSeconds);
+  const double t = since + ahead;
+  return moved(_fix, _course, _speed * t);
+}
+
+/// Where the followed position should be on screen: the center, or lower in Heading mode.
+/// @return Fraction of the screen height (0 top, 1 bottom).
+- (double)followDotY {
+  return _follow == Vrst_follow::Heading ? kHeadingDotY : 0.5;
+}
+
 /// Moves the camera part of the way to the followed GPS position (and in Heading mode
-/// to the course), so the 1 Hz GPS updates look like smooth motion. Called on every
-/// display tick; redraws only when the camera moved.
+/// to the course), so the 1 Hz GPS updates look like smooth motion. The target is where
+/// the position will be kFollowSeconds later: the easing lags by that much, so while
+/// moving steadily the dot stays exactly at its place instead of trailing behind it.
+/// Called on every display tick; redraws only when the camera moved.
 /// @param dt Seconds since the last tick.
 - (void)followFor:(double)dt {
   if (_follow == Vrst_follow::Off || !_hasFix || !_viewSet || (_scenario && _scenario->running())) return;
@@ -1204,24 +1388,29 @@ static constexpr double kConsoleSeconds = 0.25;
   if (_follow == Vrst_follow::Heading && _hasCourse) angle = _course * kPi / 180;  // course clockwise = map turned counter-clockwise
   if (_follow == Vrst_follow::Follow && !std::isnan(_angleTarget)) angle = _angleTarget;
   const int w = [self fbWidth], h = [self fbHeight];
-  const Vrst_vec2d fix = _mapFrame.to_world(_fix);
-  Vrst_vec2d target = fix;
-  if (_follow == Vrst_follow::Heading) {
-    // Put the position at kHeadingDotY of the screen height: shift the center by the
-    // offset between that screen point and the center, for the target rotation.
-    const Vrst_vec2d at = screen_to_world({fix, _view.scale, angle}, w, h, w / 2.0, h * kHeadingDotY);
-    target = {fix.x - (at.x - fix.x), fix.y - (at.y - fix.y)};
+  const Vrst_vec2d fix = _mapFrame.to_world([self predictedFixAhead:kFollowSeconds]);
+  const double dot_y = h * [self followDotY];
+  if (!_anchorSet) {
+    _followAnchor = screen_to_world(_view, w, h, w / 2.0, dot_y);
+    _anchorSet = YES;
   }
+  // The anchor eases toward the position and the rotation toward the course; the camera is
+  // then placed so the anchor sits at the dot's place for the rotation of this frame, so a
+  // turning map does not swing the dot away from it.
   const double k = 1 - std::exp(-std::max(dt, 0.0) / kFollowSeconds);
-  const Vrst_vec2d dc{(target.x - _view.center.x) * k, (target.y - _view.center.y) * k};
+  const Vrst_vec2d da_w{(fix.x - _followAnchor.x) * k, (fix.y - _followAnchor.y) * k};
   const double da = std::remainder(angle - _view.angle, 2 * kPi) * k;  // the short way round
-  const double px = std::hypot(dc.x, dc.y) * _view.scale;  // framebuffer px moved
+  _followAnchor = {_followAnchor.x + da_w.x, _followAnchor.y + da_w.y};
+  const double new_angle = _view.angle + da;
+  const Vrst_vec2d at = screen_to_world({_followAnchor, _view.scale, new_angle}, w, h, w / 2.0, dot_y);
+  const Vrst_vec2d center{_followAnchor.x - (at.x - _followAnchor.x), _followAnchor.y - (at.y - _followAnchor.y)};
+  const double px = std::hypot(center.x - _view.center.x, center.y - _view.center.y) * _view.scale;  // px moved
   if (px < 0.05 && std::abs(da) < 1e-4) {
-    if (!std::isnan(_angleTarget) && std::abs(da) < 1e-4) _angleTarget = NAN;  // north reached
+    if (!std::isnan(_angleTarget)) _angleTarget = NAN;  // north reached
     return;
   }
-  _view.center = {_view.center.x + dc.x, _view.center.y + dc.y};
-  _view.angle += da;
+  _view.center = center;
+  _view.angle = new_angle;
   [self redraw];
 }
 
@@ -1387,21 +1576,6 @@ static constexpr double kConsoleSeconds = 0.25;
                                                style:UIAlertActionStyleDefault
                                              handler:^(UIAlertAction*) { [weak startScenario:name]; }]];
   }
-  if (_trackPlaying) {
-    [menu addAction:[UIAlertAction actionWithTitle:@"Stop track" style:UIAlertActionStyleDefault
-                                           handler:^(UIAlertAction*) { [weak stopTrack]; }]];
-  } else if (!_track.empty()) {
-    [menu addAction:[UIAlertAction actionWithTitle:[@"Resume track: " stringByAppendingString:_trackName]
-                                             style:UIAlertActionStyleDefault
-                                           handler:^(UIAlertAction*) { [weak resumeTrack]; }]];
-  }
-  if (!_track.empty() && !_trackFollow)
-    [menu addAction:[UIAlertAction actionWithTitle:@"Follow track" style:UIAlertActionStyleDefault
-                                           handler:^(UIAlertAction*) { [weak followTrack]; }]];
-  for (NSString* name in [self trackNames])
-    [menu addAction:[UIAlertAction actionWithTitle:[@"Play track: " stringByAppendingString:name]
-                                             style:UIAlertActionStyleDefault
-                                           handler:^(UIAlertAction*) { [weak loadTrack:name]; }]];
   [menu addAction:[UIAlertAction actionWithTitle:@"Delete older sessions" style:UIAlertActionStyleDestructive
                                          handler:^(UIAlertAction*) { [weak deleteOldLogs]; }]];
   [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
@@ -1448,8 +1622,8 @@ static constexpr double kConsoleSeconds = 0.25;
   _trackDirty = YES;
   _trackTime = 0;
   _trackPlaying = YES;
-  _trackFollow = YES;
   _trackBannerAt = 0;
+  if (_follow == Vrst_follow::Off) [self setFollow:Vrst_follow::Follow];  // replay = driving: follow it
   _startCenter = _track.points().front();  // used by the first draw's start view
   _view.center = _mapFrame.to_world(_track.points().front());
   _log.record("track", [self now])
@@ -1463,12 +1637,26 @@ static constexpr double kConsoleSeconds = 0.25;
   [self redraw];
 }
 
-/// Advances playback by real time and moves the camera to the marker while following.
+/// Advances playback by real time. The replayed position is the GPS position while the
+/// track plays (real fixes are ignored): fix, course and speed come from the track, and
+/// the follow modes move the camera exactly as when driving.
 /// @param seconds Real seconds since the previous display tick.
 - (void)playTrackFor:(double)seconds {
+  // A slow frame advances the track by at most 0.25 s of real time, so on screen it runs
+  // at rate x _trackSpeed (rate < 1 only then).
+  const double rate = seconds > 0 ? std::min(seconds, 0.25) / seconds : 1.0;
   _trackTime = std::min(_trackTime + std::min(seconds, 0.25) * _trackSpeed, _track.duration());
   const Vrst_track_sample ts = _track.sample(_trackTime);
-  if (_trackFollow) _view.center = _mapFrame.to_world(ts.pos);
+  const double course = bearing_deg(ts.pos, _track.sample(std::min(_trackTime + 1, _track.duration())).pos);
+  _fix = ts.pos;
+  _fixTime = [self now];
+  _fixAccuracy = 5;
+  _hasFix = YES;
+  _speed = ts.speed_kmh / 3.6 * _trackSpeed * rate;  // metres per second of screen time
+  if (!std::isnan(course) && ts.speed_kmh / 3.6 >= kMinCourseSpeed) {
+    _course = course;
+    _hasCourse = YES;
+  }
   const double t = [self now];
   if (t - _trackBannerAt > 1) {
     _trackBannerAt = t;
@@ -1478,6 +1666,7 @@ static constexpr double kConsoleSeconds = 0.25;
   }
   if (_trackTime >= _track.duration()) {
     _trackPlaying = NO;
+    _speed = 0;
     _log.record("track", t).text("event", "finished").text("name", _trackName.UTF8String);
     [_debug showGesture:@"TRACK finished"];
   }
@@ -1504,6 +1693,7 @@ static constexpr double kConsoleSeconds = 0.25;
 /// Menu: pauses playback.
 - (void)stopTrack {
   _trackPlaying = NO;
+  _speed = 0;  // the dot stops where the track stopped
   _log.record("track", [self now]).text("event", "stopped").num("track_t", _trackTime, 1);
   [_debug showGesture:@"TRACK paused"];
 }
@@ -1518,9 +1708,8 @@ static constexpr double kConsoleSeconds = 0.25;
 
 /// Menu: the camera follows the marker again.
 - (void)followTrack {
-  _trackFollow = YES;
   _log.record("track", [self now]).text("event", "follow_on");
-  [self redraw];
+  [self setFollow:Vrst_follow::Follow];
 }
 
 // --- test scenarios ----------------------------------------------------------------
@@ -1603,7 +1792,7 @@ static constexpr double kConsoleSeconds = 0.25;
 /// play, or stop playing. Cheap when nothing changed (called on every display tick).
 - (void)updateRecordButtons {
   NSString* recIcon = _recorder.recording() ? @"stop.circle.fill" : @"record.circle";
-  NSString* playIcon = _scenario && _scenario->running() ? @"stop.fill" : @"play.fill";
+  NSString* playIcon = _scenario && _scenario->running() ? @"stop.fill" : _trackPlaying ? @"pause.fill" : @"play.fill";
   if (![_recordButton.accessibilityIdentifier isEqualToString:recIcon]) {
     [_recordButton setImage:[UIImage systemImageNamed:recIcon] forState:UIControlStateNormal];
     _recordButton.accessibilityIdentifier = recIcon;
@@ -1623,29 +1812,126 @@ static constexpr double kConsoleSeconds = 0.25;
   }
 }
 
-/// Play button: while a recording or test plays, stops it; otherwise offers the saved
-/// recordings, newest first (each opens chooseRecording:).
+/// Play button: while a recording or test plays, stops it; while a GPS track is loaded,
+/// its controls (trackMenu); otherwise what can be played (playMenu).
 - (void)onPlayButton {
   if (_scenario && _scenario->running()) {
     [self stopScenario];
     return;
   }
-  NSMutableArray<NSString*>* recs = [NSMutableArray array];
-  for (NSString* name in [self scenarioNames].reverseObjectEnumerator)
-    if ([name hasPrefix:kRecordingPrefix]) [recs addObject:name];
-  if (recs.count == 0) {
-    [_debug showGesture:@"No recordings yet: tap the red button"];
-    return;
+  if (_track.empty()) {
+    [self playMenu];
+  } else {
+    [self trackMenu];
   }
-  UIAlertController* menu = [UIAlertController alertControllerWithTitle:@"Play recording" message:nil
+}
+
+/// What can be played: the GPX tracks on the phone, a GPX file picked from Files, and
+/// the saved recordings, newest first (each opens chooseRecording:).
+- (void)playMenu {
+  UIAlertController* menu = [UIAlertController alertControllerWithTitle:@"Play" message:nil
                                                          preferredStyle:UIAlertControllerStyleActionSheet];
   __weak VrstMapController* weak = self;
-  for (NSString* name in recs)
-    [menu addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault
-                                           handler:^(UIAlertAction*) { [weak chooseRecording:name]; }]];
+  for (NSString* name in [self trackNames])
+    [menu addAction:[UIAlertAction actionWithTitle:[@"Track: " stringByAppendingString:name]
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction*) { [weak loadTrack:name]; }]];
+  [menu addAction:[UIAlertAction actionWithTitle:@"Open GPX file..." style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction*) { [weak pickTrackFile]; }]];
+  for (NSString* name in [self scenarioNames].reverseObjectEnumerator)
+    if ([name hasPrefix:kRecordingPrefix])
+      [menu addAction:[UIAlertAction actionWithTitle:[@"Recording: " stringByAppendingString:name]
+                                               style:UIAlertActionStyleDefault
+                                             handler:^(UIAlertAction*) { [weak chooseRecording:name]; }]];
   [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
   menu.popoverPresentationController.sourceView = _playButton;
   [self presentViewController:menu animated:YES completion:nil];
+}
+
+/// Controls of the loaded GPS track: pause or resume, replay speed, follow, another
+/// track, close.
+- (void)trackMenu {
+  static constexpr double kSpeeds[] = {1, 5, 10, 30};
+  const int at = static_cast<int>(_trackTime), total = static_cast<int>(_track.duration());
+  NSString* where = [NSString stringWithFormat:@"%d:%02d / %d:%02d  x%.0f%@", at / 60, at % 60, total / 60, total % 60,
+                                               _trackSpeed, _trackPlaying ? @"" : @"  paused"];
+  UIAlertController* menu = [UIAlertController alertControllerWithTitle:_trackName message:where
+                                                         preferredStyle:UIAlertControllerStyleActionSheet];
+  __weak VrstMapController* weak = self;
+  const auto add = [&](NSString* title, UIAlertActionStyle style, void (^action)(void)) {
+    [menu addAction:[UIAlertAction actionWithTitle:title style:style handler:^(UIAlertAction*) { action(); }]];
+  };
+  if (_trackPlaying) {
+    add(@"Pause", UIAlertActionStyleDefault, ^{ [weak stopTrack]; });
+  } else {
+    add(_trackTime >= _track.duration() ? @"Play again" : @"Resume", UIAlertActionStyleDefault, ^{ [weak resumeTrack]; });
+  }
+  for (const double s : kSpeeds)
+    if (s != _trackSpeed)
+      add([NSString stringWithFormat:@"Speed x%.0f", s], UIAlertActionStyleDefault, ^{ [weak setTrackSpeed:s]; });
+  if (_follow == Vrst_follow::Off) add(@"Follow track", UIAlertActionStyleDefault, ^{ [weak followTrack]; });
+  add(@"Other track...", UIAlertActionStyleDefault, ^{ [weak playMenu]; });
+  add(@"Close track", UIAlertActionStyleDestructive, ^{ [weak closeTrack]; });
+  [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+  menu.popoverPresentationController.sourceView = _playButton;
+  [self presentViewController:menu animated:YES completion:nil];
+}
+
+/// Replay speed of the GPS track.
+/// @param speed Track seconds per real second.
+- (void)setTrackSpeed:(double)speed {
+  _trackSpeed = speed;
+  _log.record("track", [self now]).text("event", "speed").num("speed", speed, 0);
+  [_debug showGesture:[NSString stringWithFormat:@"TRACK x%.0f", speed]];
+}
+
+/// Removes the GPS track from the map; the real GPS is the position again.
+- (void)closeTrack {
+  _log.record("track", [self now]).text("event", "closed").text("name", _trackName.UTF8String ?: "");
+  _track = Vrst_gpx_track();
+  _trackName = nil;
+  _trackPlaying = NO;
+  _speed = 0;
+  _hasFix = NO;  // the replayed position is gone; the last real fix comes back below
+  if (CLLocation* l = _location.location) [self locationManager:_location didUpdateLocations:@[ l ]];
+  [_debug showGesture:@"TRACK closed"];
+  [self redraw];
+}
+
+/// The iOS file picker for a GPX file (Files, iCloud Drive, Downloads, AirDrop).
+- (void)pickTrackFile {
+  NSMutableArray<UTType*>* types = [NSMutableArray arrayWithObject:UTTypeXML];
+  if (UTType* gpx = [UTType typeWithFilenameExtension:@"gpx"]) [types insertObject:gpx atIndex:0];
+  UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types
+                                                                                                      asCopy:YES];
+  picker.delegate = self;
+  [self presentViewController:picker animated:YES completion:nil];
+}
+
+/// A GPX file was picked: copied into the track folder (replacing one of the same name)
+/// and played.
+/// @param controller The picker.
+/// @param urls The picked file (a copy the picker made).
+- (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
+  NSURL* url = urls.firstObject;
+  if (!url) return;
+  NSFileManager* fm = NSFileManager.defaultManager;
+  NSString* name = url.lastPathComponent;
+  if (![name.pathExtension.lowercaseString isEqualToString:@"gpx"]) name = [name stringByAppendingPathExtension:@"gpx"];
+  NSString* dest = [[self trackDir] stringByAppendingPathComponent:name];
+  NSError* error = nil;
+  [fm createDirectoryAtPath:[self trackDir] withIntermediateDirectories:YES attributes:nil error:nil];
+  [fm removeItemAtPath:dest error:nil];
+  const BOOL ok = [fm copyItemAtURL:url toURL:[NSURL fileURLWithPath:dest] error:&error];
+  Vrst_log_record r = _log.record("track", [self now]);
+  r.text("event", "imported").text("name", name.UTF8String ?: "").flag("ok", ok);
+  if (!ok) {
+    r.text("error", error.localizedDescription.UTF8String ?: "");
+    [_debug showGesture:@"TRACK not copied (see log)"];
+    return;
+  }
+  if (!_track.empty()) [self closeTrack];
+  [self loadTrack:name];
 }
 
 /// What to do with one recording: play it or share the file.
@@ -1861,12 +2147,19 @@ static constexpr double kConsoleSeconds = 0.25;
   (void)manager;
   CLLocation* l = locations.lastObject;
   if (!l || l.horizontalAccuracy < 0) return;  // negative accuracy = invalid fix
+  if (_trackPlaying) return;  // the replayed track is the position meanwhile
   _fix = {l.coordinate.latitude, l.coordinate.longitude};
+  _fixTime = [self now];
   _fixAccuracy = l.horizontalAccuracy;
+  _speed = std::max(l.speed, 0.0);  // -1 when unknown
   _hasFix = YES;
   if (l.course >= 0 && l.speed >= kMinCourseSpeed) {  // course is -1 when unknown
     _course = l.course;
     _hasCourse = YES;
+  }
+  if (!_autoFollowed && _follow == Vrst_follow::Off) {
+    _autoFollowed = YES;  // the first fix: the map centers on the user once by itself
+    [self setFollow:Vrst_follow::Follow];
   }
   [self redraw];
 }
@@ -1936,10 +2229,6 @@ static constexpr double kConsoleSeconds = 0.25;
   [self logGesture:"pan" recognizer:g value:std::hypot(vel.x, vel.y)];
   if (g.state == UIGestureRecognizerStateBegan) [_debug showGesture:@"PAN"];
   if (g.state == UIGestureRecognizerStateBegan) [self setFollow:Vrst_follow::Off];  // the user looks elsewhere
-  if (g.state == UIGestureRecognizerStateBegan && _trackFollow && !_track.empty()) {
-    _trackFollow = NO;  // the user looks elsewhere; the menu turns following back on
-    _log.record("track", [self now]).text("event", "follow_off");
-  }
   if (g.state == UIGestureRecognizerStateEnded)
     [_debug showGesture:[NSString stringWithFormat:@"PAN end %.0f pt/s", std::hypot(vel.x, vel.y)]];
   [self redraw];

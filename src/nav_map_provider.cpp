@@ -6,7 +6,10 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <exception>
 #include <limits>
+
+#include "search_rank.h"
 
 namespace nav {
 
@@ -69,6 +72,34 @@ Vrst_nav_map_provider::Vrst_nav_map_provider(const std::string& dir, const Vrst_
     lon0 = std::min(lon0, c.lon_e7), lon1 = std::max(lon1, c.lon_e7);
   }
   if (lat0 <= lat1) m_extent = {to_latlon({lat0, lon0}), to_latlon({lat1, lon1})};
+  // The map works without search: a missing or broken index only turns search off.
+  try {
+    m_search = open_search_index(dir);
+    if (!m_search) {
+      m_search_note = "no search index";
+    } else if (m_search->build_id() != m_data.graph().file().build_id()) {
+      m_search.reset();
+      m_search_note = "search index of another build";
+    }
+  } catch (const std::exception& e) {
+    m_search_note = std::string("search index unreadable: ") + e.what();
+  }
+}
+
+std::vector<Vrst_search_result> Vrst_nav_map_provider::search(std::string_view text, std::optional<Vrst_latlon> near,
+                                                              Vrst_size max) const {
+  if (const std::optional<Vrst_geo_link> link = parse_geo_link(text)) {
+    Vrst_search_result r = link_result(*link, near);
+    const Vrst_latlon p = link->pos;
+    if (p.lat < m_extent.south_west.lat || p.lat > m_extent.north_east.lat || p.lon < m_extent.south_west.lon ||
+        p.lon > m_extent.north_east.lon)
+      r.detail += " - outside this map";
+    return {r};
+  }
+  if (!m_search) return {};
+  if (const std::optional<std::string> address = parse_link_address(text))
+    return search_link_address(*m_search, *address, near);
+  return search_index(*m_search, text, near, max);
 }
 
 std::vector<Vrst_map_place> Vrst_nav_map_provider::places() const {
@@ -174,7 +205,7 @@ std::vector<std::string> Vrst_nav_map_provider::describe() const {
                 m_data.names().places().size(), m_data.has_map() ? "" : "  roads only (no map.dat)");
   std::snprintf(timing, sizeof timing, "open %.0f ms  index %.0f ms  %zu z14 tiles", m_open_ms, m_index_ms,
                 m_index.size(0));
-  return {sizes, content, timing};
+  return {sizes, content, timing, m_search ? "search index ok" : m_search_note};
 }
 
 std::unique_ptr<Vrst_map_provider> open_map(const std::string& location, const Vrst_map_options& options) {

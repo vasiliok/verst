@@ -20,12 +20,15 @@
 #include <array>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include <string>
 #include <vector>
 
 #include "geo.h"
 #include "map_kinds.h"
 #include "map_piece.h"
+#include "search_result.h"
 #include "vrst_types.h"
 
 namespace nav {
@@ -159,6 +162,22 @@ class Vrst_map_provider {
   /// @param worker Worker index (Vrst_provider_status::workers).
   /// @return Free-text lines "name: value"; the client logs them without reading them.
   virtual std::vector<std::string> work_dump(int worker) const = 0;
+
+  /// Whether the map has an address search index (maps made before it have none).
+  /// @return true when search() can find anything.
+  virtual bool has_search() const = 0;
+  /// Finds places, streets and house numbers ("12 rue de la liberte dijon"), or reads a
+  /// point from a map link or coordinates (a Google Maps place or coordinate link, an
+  /// OSM or geo: link, "47.32, 5.04"); a link with only a place text (a shared Google
+  /// place) is searched by its address. Short links (maps.app.goo.gl) must be opened by
+  /// the client first. Fast enough to call on every keystroke.
+  /// @param text What the user typed.
+  /// @param near Map center or GPS position: nearer results first, distances in the
+  ///        detail; nullopt = none.
+  /// @param max At most this many results.
+  /// @return Results, best first; empty without an index or a word.
+  virtual std::vector<Vrst_search_result> search(std::string_view text, std::optional<Vrst_latlon> near,
+                                                 Vrst_size max) const = 0;
 };
 
 /// Settings a client may give when opening a map; none of them is about storage.

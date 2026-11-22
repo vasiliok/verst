@@ -2,7 +2,8 @@
 /// VrstRegionStore: the map regions stored on the phone, in Documents/regions.
 ///
 /// A region is one folder Documents/regions/<id>/ with the nav files (graph, edges,
-/// geom, names, map .dat), the .poly outline of every extract it was made from, and
+/// geom, names, map .dat), the address search database (search.db), the .poly outline of
+/// every extract it was made from, and
 /// region.json (name and how it was made). The store lists the complete regions,
 /// remembers which one is shown (active.txt) and the camera of each region, imports a
 /// converted folder (`--import-region` at launch, for development) and deletes regions.
@@ -58,7 +59,7 @@ typedef struct {
 /// @return The region, or nil when there is no complete region of that id.
 - (nullable VrstRegion*)regionWithId:(NSString*)regionId;
 
-/// Copies a converted folder (the .dat files, .poly files and region.json if any) into
+/// Copies a converted folder (the .dat files, .poly files, search.db and region.json if any) into
 /// the store as region <folder name>, replacing one of the same id.
 /// @param folder Folder made by osm2nav (Simulator: a path on the Mac).
 /// @param error Set on failure.

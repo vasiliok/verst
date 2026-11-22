@@ -23,6 +23,8 @@ iPhone Simulator; the black boxes are the debug info (the eye button hides them)
 - **Region border**: outside the region, the map is dimmed and covered by a km grid that follows the zoom.
 - **Tiled vector map**: roads by class, areas, buildings, water and place names (SDF labels
   placed by priority) are drawn with OpenGL ES 3.0 on iOS and OpenGL 3.3 on desktop.
+- **Address search, offline**: house numbers, streets and places, found as you type and
+  shown with a pin; the index is built during the same conversion (`search.db`).
 - **GPS**: follow mode and heading-up mode, GPX track replay.
 - **Debugging built in**: live console, session log, screen and camera recording with replay.
 - **Desktop tools**: `osm2nav`, `pbf_merge`, `navcheck` and the `navview` viewer, over the same
@@ -61,6 +63,7 @@ iPhone app: see [ios/README.md](ios/README.md).
 |---|---|
 | `osm2nav` | `osm2nav <input.osm.pbf> <out_dir>`: road files + `map.dat`; prints counts, time and peak memory |
 | `pbf_merge` | `pbf_merge <out.osm.pbf> <in1.osm.pbf> <in2.osm.pbf> ...`: joins neighbouring extracts into one (border objects written once) |
+| `navsearch` | `navsearch <out_dir> <text> [<lat> <lon>]`: searches the address index (`search.db`) like the app, prints results and the query time |
 | `navcheck` | `navcheck <out_dir>` (exit 0 = all PASS) - `navcheck <out_dir> --dump-way <osm_way_id>` |
 | `navview` | `navview <out_dir> [--center <lat> <lon>] [--mpp <metres>] [--rotate <deg>] [--gpx <file.gpx> [--speed <x>] [--track-time <s>]] [--tile-borders] [--screenshot <file.bmp>]` (screenshot: renders 3 frames, saves the last, exits) |
 | iPhone app | `ios/`: UIKit + OpenGL ES 3.0, same map code as navview; download, merge and convert on the phone; see [ios/README.md](ios/README.md) |
@@ -76,6 +79,7 @@ Geofabrik .osm.pbf (+ .poly) --download--> [pbf_merge if several] --osm2nav--> r
 | merge | `src/pbf_merge.h` (`merge_pbf`) | streams all sorted inputs at once; small memory whatever the size |
 | convert | `src/osm_convert.h` (`convert_osm`) | road graph first and freed, then map layers using only the nodes they need; writes into `<out>.tmp` and renames at the end, so a cancelled run leaves nothing behind |
 | progress / cancel | `src/convert_progress.h` | phase + fraction, read from any thread; `cancel()` stops between input blocks |
+| address search | `src/osm_addresses.h`, `src/search_engine.h`, `src/search_rank.h` | house numbers, streets and places into `search.db`; the engine (SQLite FTS5 today, `src/search_sqlite.cpp` only) is behind two interfaces, so it can be replaced |
 | region border | `src/region_outline.h` | Geofabrik `.poly` -> filled shape + border lines; the renderer dims the outside and draws a km grid there |
 
 The desktop tools are thin `main()` functions around the same `vrst_convert` library that the

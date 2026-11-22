@@ -97,7 +97,9 @@ class Vrst_needed_locations : public osmium::handler::Handler {
 
 }  // namespace
 
-Vrst_map_layer_builder::Vrst_map_layer_builder(const std::filesystem::path& temp_dir) {
+Vrst_map_layer_builder::Vrst_map_layer_builder(const std::filesystem::path& temp_dir,
+                                               Vrst_address_collector& addresses)
+    : m_addresses(addresses) {
   for (int k = 0; k < kAreaKindCount; ++k) {
     const auto i = static_cast<Vrst_size>(k);
     m_out.area_point_files[i] = temp_dir / ("area-points-" + std::to_string(k) + ".tmp");
@@ -199,6 +201,7 @@ void Vrst_map_layer_builder::finish() {
 void Vrst_map_layer_builder::add_area(const osmium::Area& a) {
   const std::optional<AreaKind> kind = map_area_kind(a.tags());
   if (!kind) return;
+  if (*kind == AreaKind::Building) add_building_address(a);
   for (const osmium::OuterRing& outer : a.outer_rings()) {
     if (outer.size() < 4) continue;
     const osmium::Location ref = outer.front().location();
@@ -251,6 +254,26 @@ void Vrst_map_layer_builder::add_area(const osmium::Area& a) {
     m_kind_areas[k].indices.push_back(static_cast<Vrst_uint32>(indices.size()));
     m_kind_areas[k].outer_size.push_back(static_cast<Vrst_uint32>(rings[0].size()));
   }
+}
+
+void Vrst_map_layer_builder::add_building_address(const osmium::Area& a) {
+  const osmium::TagList& tags = a.tags();
+  const Vrst_address_tags t{tag_value(tags, "addr:housenumber"), tag_value(tags, "addr:street"),
+                            tag_value(tags, "addr:place"), tag_value(tags, "addr:city"),
+                            tag_value(tags, "addr:postcode")};
+  if (t.number.empty()) return;
+  const auto outer = a.outer_rings();
+  if (outer.begin() == outer.end()) return;
+  const osmium::OuterRing& ring = *outer.begin();
+  if (ring.size() < 2) return;
+  Vrst_int64 lat = 0, lon = 0;
+  const Vrst_size n = ring.size() - 1;  // the last point repeats the first
+  for (Vrst_size i = 0; i < n; ++i) {
+    lat += ring[i].location().y();
+    lon += ring[i].location().x();
+  }
+  const auto count = static_cast<Vrst_int64>(n);
+  m_addresses.add_address({static_cast<Vrst_int32>(lat / count), static_cast<Vrst_int32>(lon / count)}, t);
 }
 
 void Vrst_map_layer_builder::add_line(const osmium::Way& w) {

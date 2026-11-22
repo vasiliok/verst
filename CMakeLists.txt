@@ -107,6 +107,19 @@ set_source_files_properties(${VRST_EARCUT_SOURCES} PROPERTIES COMPILE_OPTIONS -f
 
 find_package(Threads REQUIRED)
 
+# --- SQLite: the address search engine (src/search_sqlite.cpp only) ---------------
+# The official amalgamation with FTS5, the same version on every platform. Optimized
+# even in Debug: the phone writes the search database during the conversion.
+FetchContent_Declare(sqlite
+  URL https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip
+  URL_HASH SHA256=0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9)
+FetchContent_MakeAvailable(sqlite)
+add_library(vrst_sqlite STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
+target_include_directories(vrst_sqlite SYSTEM PUBLIC ${sqlite_SOURCE_DIR})
+target_compile_definitions(vrst_sqlite PRIVATE SQLITE_ENABLE_FTS5 SQLITE_DQS=0 SQLITE_OMIT_LOAD_EXTENSION
+                                               SQLITE_DEFAULT_MEMSTATUS=0 SQLITE_THREADSAFE=1)
+set_property(SOURCE ${sqlite_SOURCE_DIR}/sqlite3.c APPEND PROPERTY COMPILE_OPTIONS -O2)
+
 # --- vrst_core: map provider (nav files, tiles), map frame, GPS tracks (no GL) ----
 # Shared by every tool, the desktop viewer and the iPhone app.
 add_library(vrst_core STATIC
@@ -118,12 +131,17 @@ add_library(vrst_core STATIC
   src/map_provider.cpp
   src/nav_map_provider.cpp
   src/region_outline.cpp
+  src/geo_link.cpp
   src/gpx_track.cpp
   src/scenario.cpp
+  src/search_engine.cpp
+  src/search_rank.cpp
+  src/search_sqlite.cpp
+  src/search_text.cpp
   src/session_log.cpp)
 target_include_directories(vrst_core PUBLIC src)
 target_include_directories(vrst_core SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
-target_link_libraries(vrst_core PUBLIC vrst_types Threads::Threads)
+target_link_libraries(vrst_core PUBLIC vrst_types Threads::Threads PRIVATE vrst_sqlite)
 nav_warnings(vrst_core)
 
 # --- vrst_render: OpenGL map drawing and labels (desktop GL 3.3, iOS GLES 3.0) ---
@@ -148,8 +166,9 @@ endif()
 # --- vrst_convert: OSM extract -> nav files (osm2nav and the iPhone app) ----------
 # The converter runs on the phone too, where Debug builds are -O0: its sources are
 # always optimized, or a conversion would take several times longer.
-add_library(vrst_convert STATIC src/osm_convert.cpp src/osm_map_layers.cpp src/pbf_merge.cpp)
-set_property(SOURCE src/osm_convert.cpp src/osm_map_layers.cpp src/pbf_merge.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
+add_library(vrst_convert STATIC src/osm_addresses.cpp src/osm_convert.cpp src/osm_map_layers.cpp src/pbf_merge.cpp)
+set_property(SOURCE src/osm_addresses.cpp src/osm_convert.cpp src/osm_map_layers.cpp src/pbf_merge.cpp
+             APPEND PROPERTY COMPILE_OPTIONS -O2)
 target_include_directories(vrst_convert SYSTEM PUBLIC
   third_party/libosmium/include
   third_party/protozero/include)
@@ -188,11 +207,17 @@ if(NAV_BUILD_TESTS)
     GIT_TAG v1.15.2
     GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(googletest)
-  add_executable(tile_test tests/tile_test.cpp tests/scenario_test.cpp tests/activity_recorder_test.cpp tests/geometry_test.cpp tests/earcut_test.cpp tests/map_provider_test.cpp)
+  add_executable(tile_test tests/tile_test.cpp tests/scenario_test.cpp tests/activity_recorder_test.cpp tests/geometry_test.cpp tests/earcut_test.cpp tests/map_provider_test.cpp
+    tests/search_text_test.cpp tests/search_index_test.cpp tests/geo_link_test.cpp)
   target_link_libraries(tile_test PRIVATE vrst_core GTest::gtest_main)
   target_include_directories(tile_test SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
   nav_warnings(tile_test)
 endif()
+
+# --- navsearch: address search of a converted region ----------------------------
+add_executable(navsearch src/navsearch.cpp)
+target_link_libraries(navsearch PRIVATE vrst_core)
+nav_warnings(navsearch)
 
 # --- navcheck --------------------------------------------------------------
 add_executable(navcheck src/navcheck.cpp)

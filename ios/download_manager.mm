@@ -465,7 +465,7 @@ NSNotificationName const VrstDownloadsChangedNotification = @"VrstDownloadsChang
   auto progress = std::make_shared<Vrst_convert_progress>();
   job->_progress = progress;
   const bool merge = inputs.size() > 1;
-  job.phaseCount = static_cast<int>(Vrst_convert_phase::WriteMap) - (merge ? 0 : 1);
+  job.phaseCount = static_cast<int>(Vrst_convert_phase::WriteSearch) - (merge ? 0 : 1);
   [self set:job state:merge ? VrstJobMerging : VrstJobConverting reason:nil];
   _poll = [NSTimer scheduledTimerWithTimeInterval:kNotifySeconds repeats:YES block:^(NSTimer*) { [self pollWork]; }];
   NSString* work = [self workDir:job];

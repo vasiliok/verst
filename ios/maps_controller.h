@@ -4,7 +4,8 @@
 ///   merging, converting, cancelled, failed); a tap offers Pause / Resume / Cancel /
 ///   Retry / Remove as they fit;
 /// - On this phone: the regions (the shown one with a checkmark); a tap switches the map
-///   to it, a swipe deletes one (not the one shown);
+///   to it; Edit (top left) or a swipe deletes one, the shown one too, after a
+///   confirmation;
 /// - Download more: the Geofabrik catalog (VrstCatalogController).
 
 #import <UIKit/UIKit.h>
@@ -25,6 +26,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Called when the user picks a region to show; the screen closes itself first.
 @property(nonatomic, copy, nullable) void (^chooseHandler)(NSString* regionId);
+
+/// Called before a region is deleted, so the map can close it when it is the one shown
+/// (its files are open).
+@property(nonatomic, copy, nullable) void (^releaseHandler)(NSString* regionId);
 
 /// Called after a region was deleted.
 @property(nonatomic, copy, nullable) void (^deleteHandler)(NSString* regionId);

@@ -19,11 +19,11 @@ set_source_files_properties(${_scenarios} PROPERTIES MACOSX_PACKAGE_LOCATION sce
 set(_assets "${CMAKE_CURRENT_SOURCE_DIR}/Assets.xcassets")
 set_source_files_properties(${_assets} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 
-add_executable(verst_ios MACOSX_BUNDLE main.mm catalog_controller.mm debug_console.mm debug_overlay.mm download_manager.mm maps_controller.mm region_store.mm root_controller.mm ${VRST_FONT_FILES} ${_scenarios}
+add_executable(verst_ios MACOSX_BUNDLE main.mm catalog_controller.mm debug_console.mm debug_overlay.mm download_manager.mm maps_controller.mm region_store.mm root_controller.mm search_controller.mm ${VRST_FONT_FILES} ${_scenarios}
   ${_assets})
 target_link_libraries(verst_ios PRIVATE vrst_render vrst_convert
   "-framework Foundation" "-framework CoreGraphics" "-framework UIKit" "-framework GLKit"
-  "-framework QuartzCore" "-framework CoreLocation")
+  "-framework QuartzCore" "-framework CoreLocation" "-framework UniformTypeIdentifiers")
 target_compile_options(verst_ios PRIVATE -fobjc-arc -Wall -Wextra)
 set_target_properties(verst_ios PROPERTIES
   OUTPUT_NAME Verst

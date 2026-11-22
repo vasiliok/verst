@@ -3,7 +3,9 @@
 /// iPhone app can run it on an extract it downloaded.
 ///
 /// convert_osm() reads one .osm.pbf in streaming passes and writes graph.dat,
-/// edges.dat, geom.dat, names.dat and map.dat. Memory is kept low for a phone: the road
+/// edges.dat, geom.dat, names.dat and map.dat, and the address search database (house
+/// numbers, streets and places gathered during the same passes, see osm_addresses.h).
+/// Memory is kept low for a phone: the road
 /// part keeps only road nodes and is freed before the map layers start; the map layers
 /// keep only the node locations that areas and lines can need, and stream area points
 /// and triangles to temporary files instead of holding them. Everything is written into
@@ -48,9 +50,12 @@ struct Vrst_convert_stats {
   Vrst_float64 road_km = 0;           ///< Total road length.
   Vrst_bbox extent{};                 ///< Extent of all nodes of the input.
   std::optional<Vrst_bbox> header_bbox;  ///< Box from the PBF header, if any.
-  Vrst_uint64 build_id = 0;           ///< Id shared by the five files.
-  /// Size of each file in bytes, at FileType - 1 (graph, edges, geom, names, map).
-  std::array<Vrst_uint64, 5> file_bytes{};
+  Vrst_size search_addresses = 0;     ///< House numbers in the search database.
+  Vrst_size search_streets = 0;       ///< Streets in it (per name and city).
+  Vrst_size search_places = 0;        ///< Places in it.
+  Vrst_uint64 build_id = 0;           ///< Id shared by the five files and the search database.
+  /// Size of each file in bytes: graph, edges, geom, names, map, search database.
+  std::array<Vrst_uint64, 6> file_bytes{};
 };
 
 /// Converts one extract.

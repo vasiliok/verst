@@ -33,7 +33,9 @@
 #include <osmium/osm/node.hpp>
 #include <osmium/osm/way.hpp>
 
+#include "osm_addresses.h"
 #include "osm_map_layers.h"
+#include "string_pool.h"
 
 namespace nav {
 
@@ -111,6 +113,8 @@ struct Vrst_osm_node {
   std::string_view name;
   /// population=* value ("" if none); orders labels of the same kind.
   std::string_view population;
+  /// addr:* values ("" if none); a node with a house number goes into the search database.
+  Vrst_address_tags address;
 };
 
 /// Abstract OSM input, read in passes: header bbox, then all ways, then all nodes.
@@ -187,7 +191,9 @@ class Vrst_osmium_source final : public Vrst_osm_source {
         };
         // The string views point into the buffer and are valid during fn only.
         fn(Vrst_osm_node{static_cast<Vrst_uint64>(n.id()), Vrst_coord{loc.y(), loc.x()}, tag("place"), tag("name"),
-                         tag("population")});
+                         tag("population"),
+                         {tag("addr:housenumber"), tag("addr:street"), tag("addr:place"), tag("addr:city"),
+                          tag("addr:postcode")}});
       }
       report_read(reader, progress);
     }
@@ -373,35 +379,6 @@ Vrst_uint32 speed_kmh(const Vrst_way_info& w) {
 // ===========================================================================
 // Helpers
 // ===========================================================================
-
-/// Interns strings to dense ids, id 0 = "".
-/// Builds names.dat: thousands of segments share a few hundred names, so each name
-/// is stored once and segments carry a 4-byte id.
-class Vrst_string_pool {
- public:
-  /// Creates the pool with the empty string as id 0.
-  Vrst_string_pool() { m_strings.emplace_back(); }
-  /// Adds a string once.
-  /// @param s String to add.
-  /// @return Its id; equal strings get the same id and "" is always 0.
-  Vrst_uint32 intern(std::string_view s) {
-    if (s.empty()) return 0;
-    auto [it, inserted] = m_ids.try_emplace(std::string(s), static_cast<Vrst_uint32>(m_strings.size()));
-    if (inserted) m_strings.emplace_back(s);
-    return it->second;
-  }
-  /// All strings, ready for names.dat.
-  /// @return Strings in id order.
-  const std::vector<std::string>& strings() const { return m_strings; }
-
- private:
-  /// String -> id for deduplication. Thousands of segments share a few names; without
-  /// it names.dat would hold one copy per way.
-  std::unordered_map<std::string, Vrst_uint32> m_ids;
-  /// Strings in id order (id 0 = ""), written as names.dat. Needed besides m_ids
-  /// because the map has no order.
-  std::vector<std::string> m_strings;
-};
 
 /// Place kind of a place=* value.
 /// @param v Tag value.
@@ -642,9 +619,10 @@ std::vector<Vrst_uint32> number_vertices(const std::vector<Vrst_seg_tmp>& segs, 
 /// @param dir Folder to write into.
 /// @param build_id Id of the run.
 /// @param[out] st Road counts and file sizes.
+/// @param addresses Receives address nodes, places and named road segments.
 /// @param progress Phases Ways .. WriteRoads.
 void convert_roads(const std::string& input, const fs::path& dir, Vrst_uint64 build_id, Vrst_convert_stats& st,
-                   Vrst_convert_progress& progress) {
+                   Vrst_address_collector& addresses, Vrst_convert_progress& progress) {
   Vrst_osmium_source source(input);
 
   // --- pass 1: ways --------------------------------------------------------
@@ -705,10 +683,13 @@ void convert_roads(const std::string& input, const fs::path& dir, Vrst_uint64 bu
       [&](const Vrst_osm_node& n) {
         ++st.nodes_read;
         if (!n.place.empty() && !n.name.empty()) {
-          if (const std::optional<PlaceKind> k = place_kind(n.place))
+          if (const std::optional<PlaceKind> k = place_kind(n.place)) {
             places.push_back(
                 {n.coord, names.intern(n.name), parse_population(n.population), static_cast<Vrst_uint8>(*k), {}});
+            addresses.add_place(n.coord, *k, n.name);
+          }
         }
+        if (!n.address.number.empty()) addresses.add_address(n.coord, n.address);
         extent.min.lat_e7 = std::min(extent.min.lat_e7, n.coord.lat_e7);
         extent.min.lon_e7 = std::min(extent.min.lon_e7, n.coord.lon_e7);
         extent.max.lat_e7 = std::max(extent.max.lat_e7, n.coord.lat_e7);
@@ -772,6 +753,8 @@ void convert_roads(const std::string& input, const fs::path& dir, Vrst_uint64 bu
       points.push_back(c);
     }
     seg_first_point.push_back(static_cast<Vrst_uint32>(points.size()));
+    if (const Vrst_uint32 name = ways[way].name_id; name != 0)
+      addresses.add_road(points[first + (points.size() - first) / 2], names.str(name));
     const Vrst_uint32 len_dm = static_cast<Vrst_uint32>(std::llround(len * 10));
     segs.push_back({nodes.front(), nodes.back(), way, len_dm});
     total_m += len;
@@ -919,10 +902,11 @@ void convert_roads(const std::string& input, const fs::path& dir, Vrst_uint64 bu
 /// @param dir Folder to write into; holds the temporary area files meanwhile.
 /// @param build_id Id of the run.
 /// @param[out] st Area and line counts, map.dat size.
+/// @param addresses Receives the addresses of buildings.
 /// @param progress Phases Relations .. WriteMap.
 void convert_map(const std::string& input, const fs::path& dir, Vrst_uint64 build_id, Vrst_convert_stats& st,
-                 Vrst_convert_progress& progress) {
-  Vrst_map_layer_builder layers(dir);
+                 Vrst_address_collector& addresses, Vrst_convert_progress& progress) {
+  Vrst_map_layer_builder layers(dir, addresses);
   layers.read(input, progress);
   progress.begin(Vrst_convert_phase::WriteMap);
   layers.finish();
@@ -960,8 +944,16 @@ Vrst_convert_stats convert_osm(const std::string& pbf, const fs::path& out_dir, 
   try {
     fs::create_directories(tmp);
     st.build_id = make_build_id(pbf);
-    convert_roads(pbf, tmp, st.build_id, st, progress);
-    convert_map(pbf, tmp, st.build_id, st, progress);
+    Vrst_address_collector addresses;
+    convert_roads(pbf, tmp, st.build_id, st, addresses, progress);
+    convert_map(pbf, tmp, st.build_id, st, addresses, progress);
+    progress.begin(Vrst_convert_phase::WriteSearch);
+    const Vrst_search_stats ss =
+        addresses.write(*make_search_writer(Vrst_search_engine::Sqlite, tmp), st.build_id);
+    st.search_addresses = ss.addresses;
+    st.search_streets = ss.streets;
+    st.search_places = ss.places;
+    st.file_bytes[5] = ss.bytes;
     st.header_bbox = Vrst_osmium_source(pbf).header_bbox();
     progress.check();
     fs::remove_all(out_dir);

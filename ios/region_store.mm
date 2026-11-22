@@ -97,7 +97,10 @@ static NSString* const kCameraKey = @"verst.camera.";
   if (![fm createDirectoryAtPath:tmp withIntermediateDirectories:YES attributes:nil error:error]) return nil;
   for (NSString* f in [fm contentsOfDirectoryAtPath:folder error:nil]) {
     NSString* ext = f.pathExtension;
-    if (![ext isEqualToString:@"dat"] && ![ext isEqualToString:@"poly"] && ![f isEqualToString:kRegionJson]) continue;
+    // Nav files, outlines, the address search database (search.db) and region.json.
+    if (![ext isEqualToString:@"dat"] && ![ext isEqualToString:@"poly"] && ![ext isEqualToString:@"db"] &&
+        ![f isEqualToString:kRegionJson])
+      continue;
     if (![fm copyItemAtPath:[folder stringByAppendingPathComponent:f] toPath:[tmp stringByAppendingPathComponent:f]
                       error:error]) {
       [fm removeItemAtPath:tmp error:nil];

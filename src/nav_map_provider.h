@@ -11,6 +11,7 @@
 #include "map_provider.h"
 #include "map_tiles.h"
 #include "nav_files.h"
+#include "search_engine.h"
 
 namespace nav {
 
@@ -34,6 +35,9 @@ class Vrst_nav_map_provider final : public Vrst_map_provider {
   std::string piece_name(Vrst_uint64 key) const override;
   std::vector<std::string> describe() const override;
   std::vector<std::string> work_dump(int worker) const override;
+  bool has_search() const override { return m_search != nullptr; }
+  std::vector<Vrst_search_result> search(std::string_view text, std::optional<Vrst_latlon> near,
+                                         Vrst_size max) const override;
 
  private:
   /// Clock of the Settled events.
@@ -54,6 +58,11 @@ class Vrst_nav_map_provider final : public Vrst_map_provider {
   Vrst_tile_builder m_builder{m_data, m_index};
   /// Box of all road shape points, the area the map covers.
   Vrst_geo_box m_extent{};
+  /// Address search database of the folder; null when there is none or it does not
+  /// belong to these nav files.
+  std::unique_ptr<Vrst_search_index> m_search;
+  /// Why the search database is not used, for describe(); empty when it is.
+  std::string m_search_note;
   /// Time to open the files and to build the index, ms (describe()).
   Vrst_float64 m_open_ms = 0;
   Vrst_float64 m_index_ms = 0;  ///< See m_open_ms.

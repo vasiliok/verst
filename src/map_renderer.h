@@ -67,6 +67,15 @@ class Vrst_map_renderer {
   /// @param px Dot diameter in framebuffer pixels.
   void draw_position(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px);
 
+  /// Draws the pin of a search result: a red dot in a white disc, the same size at every
+  /// zoom. Call after the map and the track, before the GPS position and the labels.
+  /// @param v Camera.
+  /// @param fb_w Framebuffer width in px.
+  /// @param fb_h Framebuffer height in px.
+  /// @param pos Position, world coordinates (Vrst_map_frame::to_world()).
+  /// @param px Diameter of the white disc in framebuffer pixels.
+  void draw_pin(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px);
+
   /// Draws one round marker with the overlay program, which must be in use with its
   /// view matrix set. The marker moves every frame: one point, rewritten in place.
   /// @param pos World position.

@@ -36,6 +36,7 @@ Launch arguments for development:
 | `--follow follow\|heading` | start following the position |
 | `--record <s>` / `--scenario <file>` | record for s seconds / play a scenario |
 | `--console` | open the console at start |
+| `--search <text>` / `--search-pick <text>` | open the search screen with that text / show its first result with the pin |
 | `--log-dir <dir>` | where the session log goes |
 
 ## Run on an iPhone
@@ -88,7 +89,8 @@ whose spacing follows the zoom. A region without a `.poly` still opens, with no 
 | Names | show place names |
 | Log | full-screen console (see below) |
 | red record button (round, right) | start recording what you do with the map; tap again (stop square) to stop and save |
-| green play button (above it) | pick a saved recording, then Play or Share... (AirDrop, Mail, Messages, Files); while playing, tap (stop square) to stop |
+| green play button (above it) | play a GPS track (a GPX in the app's tracks folder, or "Open GPX file..." from Files, iCloud Drive or AirDrop: copied in and played) or a saved recording (Play or Share...). While a track is loaded: Pause / Resume, speed x1 / x5 / x10 / x30, Follow track, Other track..., Close track. The replayed track is the GPS position meanwhile, so follow and heading-up behave as when driving. While a recording plays, tap (stop square) to stop |
+| magnifier (round, under the eye) | address search: results as you type (house number, street, place, nearest first); a tap moves the map there and puts a red pin; "Clear pin" in the same screen removes it |
 | eye (round, top right) | hide or show the black info boxes (stats box and debug overlay) for a clean map; logging goes on |
 | + / - (round, bottom left) | zoom in / out 2x around the screen center, animated; taps add up |
 | location arrow (round, bottom right) | tap: follow your GPS position (map keeps you centred); tap again: heading up (map turns with your direction of travel, you sit lower on screen to see ahead); tap again: follow, north up. A drag stops following; a two-finger twist leaves heading up. Stops following a replayed track |

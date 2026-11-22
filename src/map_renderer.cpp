@@ -147,6 +147,19 @@ void Vrst_map_renderer::draw_position(const Vrst_view& v, int fb_w, int fb_h, Vr
   draw_point(pos, px, 0.10f, 0.50f, 1.0f);
 }
 
+void Vrst_map_renderer::draw_pin(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px) {
+  constexpr Vrst_float32 kDot = 0.62f;  // red dot diameter, of the white disc
+  if (!m_marker_vao) {
+    m_marker_vao = make_vao({{0, 0, 0}}, m_marker_vbo);
+    glBindVertexArray(0);
+  }
+  const std::array<Vrst_float32, 9> m = view_matrix(v, fb_w, fb_h);
+  glUseProgram(m_overlay_prog);
+  glUniformMatrix3fv(m_u_overlay_view, 1, GL_FALSE, m.data());
+  draw_point(pos, px, 1.0f, 1.0f, 1.0f);
+  draw_point(pos, kDot * px, 0.90f, 0.12f, 0.10f);
+}
+
 void Vrst_map_renderer::draw_point(Vrst_vec2d pos, Vrst_float32 px, Vrst_float32 r, Vrst_float32 g,
                                    Vrst_float32 b) const {
   const Vrst_gpu_point p{static_cast<Vrst_float32>(pos.x), static_cast<Vrst_float32>(pos.y), 0};

@@ -1,8 +1,8 @@
 /// @file
 /// `osm2nav <input.osm.pbf> <out_dir>`
 ///
-/// Converts OSM car roads into graph.dat / edges.dat / geom.dat / names.dat and the
-/// drawing-only layers into map.dat, with convert_osm() (osm_convert.h, the same code
+/// Converts OSM car roads into graph.dat / edges.dat / geom.dat / names.dat, the
+/// drawing-only layers into map.dat and the addresses into search.db, with convert_osm() (osm_convert.h, the same code
 /// the iPhone app runs). Prints each phase with its time and the peak memory so far,
 /// then the counts.
 
@@ -66,6 +66,8 @@ void print_stats(const Vrst_convert_stats& st, Vrst_float64 total_ms) {
   std::printf("area triangles       %12zu\n", st.triangles);
   std::printf("area nodes kept      %12zu\n", st.area_nodes);
   std::printf("lines L              %12zu  (%zu points)\n", st.lines, st.line_points);
+  std::printf("search               %12zu  addresses, %zu streets, %zu places\n", st.search_addresses,
+              st.search_streets, st.search_places);
   std::printf("road length          %12.1f km\n", st.road_km);
   std::printf("node extent          lat [%.7f, %.7f] lon [%.7f, %.7f]\n", st.extent.min.lat_e7 * 1e-7,
               st.extent.max.lat_e7 * 1e-7, st.extent.min.lon_e7 * 1e-7, st.extent.max.lon_e7 * 1e-7);
@@ -74,7 +76,8 @@ void print_stats(const Vrst_convert_stats& st, Vrst_float64 total_ms) {
                 st.header_bbox->max.lat_e7 * 1e-7, st.header_bbox->min.lon_e7 * 1e-7,
                 st.header_bbox->max.lon_e7 * 1e-7);
   std::printf("build_id             %016llx\n", ull(st.build_id));
-  static constexpr const char* kFiles[] = {"graph.dat", "edges.dat", "geom.dat", "names.dat", "map.dat"};
+  static constexpr const char* kFiles[] = {"graph.dat", "edges.dat", "geom.dat", "names.dat", "map.dat",
+                                                  "search.db"};
   for (Vrst_size i = 0; i < st.file_bytes.size(); ++i)
     std::printf("%-20s %12.1f KiB\n", kFiles[i], kib(st.file_bytes[i]));
   std::printf("total time           %12.1f ms\n", total_ms);

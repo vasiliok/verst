@@ -27,6 +27,7 @@
 
 #include "convert_progress.h"
 #include "format.h"
+#include "osm_addresses.h"
 
 namespace nav {
 
@@ -100,8 +101,9 @@ class Vrst_map_layer_builder {
 
   /// Starts a builder that keeps area points and triangles in temporary files.
   /// @param temp_dir Existing folder for them (the conversion's .tmp folder).
+  /// @param addresses Receives the address of every building that has a house number.
   /// @throws std::runtime_error when a file cannot be created.
-  explicit Vrst_map_layer_builder(const std::filesystem::path& temp_dir);
+  Vrst_map_layer_builder(const std::filesystem::path& temp_dir, Vrst_address_collector& addresses);
   ~Vrst_map_layer_builder() = default;                                         ///< Closes the files.
   Vrst_map_layer_builder(const Vrst_map_layer_builder&) = delete;             ///< Owns files: not copyable.
   Vrst_map_layer_builder& operator=(const Vrst_map_layer_builder&) = delete;  ///< Owns files: not copyable.
@@ -198,12 +200,19 @@ class Vrst_map_layer_builder {
   /// @param a Area from the assembler.
   void add_area(const osmium::Area& a);
 
+  /// Gives a building with a house number to the address collector, at the middle of
+  /// its first outer ring (all points, before simplification).
+  /// @param a Assembled building.
+  void add_building_address(const osmium::Area& a);
+
   /// Adds one river or railway way, simplified.
   /// @param w Way with node locations.
   void add_line(const osmium::Way& w);
 
   /// Output arrays: lines as they are read, area tables after finish().
   Vrst_map_layer_data m_out;
+  /// Receives building addresses.
+  Vrst_address_collector& m_addresses;
   /// Open per-kind files of AREA_POINTS.
   std::array<std::ofstream, kAreaKindCount> m_point_files;
   /// Open per-kind files of AREA_INDICES.

@@ -1,5 +1,7 @@
 # verst: tiled map rendering (intention)
 
+[verst](../../README.md) > [docs](../../README.md#documentation-map) > tiling
+
 > **Status: intention, not started.** This is the plan to cut the map into square tiles and
 > draw only the tiles on screen. It is for our own OpenGL / OpenGL ES renderer on `main`.
 > Nothing below is implemented yet.

@@ -1,5 +1,7 @@
 # render
 
+[verst](../../README.md) > [src](../README.md) > render
+
 The OpenGL map renderer shared by the desktop viewer (OpenGL 3.3 core) and the iOS app
 (OpenGL ES 3.0). Built as `vrst_render`.
 

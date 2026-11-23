@@ -1,5 +1,7 @@
 # convert
 
+[verst](../../README.md) > [src](../README.md) > convert
+
 OSM extract -> nav files, as a library (`vrst_convert`) so both the desktop tools and
 the iPhone app can run it on an extract they downloaded.
 

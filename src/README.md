@@ -1,5 +1,7 @@
 # src - the shared C++ core
 
+[verst](../README.md) > src
+
 Everything the desktop tools and the iOS app share. One directory per part; each has
 its own README.
 

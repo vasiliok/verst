@@ -1,5 +1,7 @@
 # geometry
 
+[verst](../../README.md) > [src](../README.md) > geometry
+
 Coordinates and plane geometry. No dependencies inside `src/` except the scalar types.
 
 | File | What |

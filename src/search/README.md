@@ -1,5 +1,7 @@
 # search
 
+[verst](../../README.md) > [src](../README.md) > search
+
 Offline address search (places, streets, house numbers) and points from map links.
 The database engine sits behind an interface, so SQLite FTS5 can be replaced without
 touching the converter, the ranking or the app.

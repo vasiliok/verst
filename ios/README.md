@@ -1,5 +1,7 @@
 # verst for iPhone
 
+[verst](../README.md) > ios
+
 A thin UIKit app around the shared C++ core. It draws the same map as the desktop
 viewer with the same code (`src/provider/map_scene.h`, `src/render/map_renderer.h`), using OpenGL ES 3.0
 through a `GLKView`. Apple has deprecated OpenGL ES, but it still works on iOS 18 and

@@ -1,5 +1,7 @@
 # session
 
+[verst](../../README.md) > [src](../README.md) > session
+
 What happens during an app run: logs, scripted test motion, recorded user motion, GPS
 tracks. Platform independent; the desktop viewer and the iOS app use the same code.
 

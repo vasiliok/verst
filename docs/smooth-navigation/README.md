@@ -1,5 +1,7 @@
 # verst: smooth zoom and scroll on the phone (intention)
 
+[verst](../../README.md) > [docs](../../README.md#documentation-map) > smooth-navigation
+
 > **Status: intention, not started.** This is the plan to make panning and zooming on the
 > iPhone feel like Apple Maps: 60 fps, no blank areas, no jumps, and the map keeps moving
 > after the finger leaves. It is for the tiled OpenGL ES renderer on `main`.

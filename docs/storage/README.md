@@ -1,5 +1,7 @@
 # verst: where the data lives (storage decision)
 
+[verst](../../README.md) > [docs](../../README.md#documentation-map) > storage
+
 > **Status: proposal, 2026-11-07.** The direction is agreed in discussion; the engine choice
 > for each data type is to be confirmed by the benchmark at the end, on the real iPhone.
 > Related: [challenges](../challenges/README.md), [tiling](../tiling/README.md).

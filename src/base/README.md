@@ -1,5 +1,7 @@
 # base
 
+[verst](../../README.md) > [src](../README.md) > base
+
 Small building blocks used by every other part. No dependencies inside `src/`.
 
 | File | What |

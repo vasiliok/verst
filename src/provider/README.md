@@ -1,5 +1,7 @@
 # provider
 
+[verst](../../README.md) > [src](../README.md) > provider
+
 Where a client gets map data from: one abstract `Vrst_map_provider` with a small API in
 the client's terms (opaque keys, degrees, status and events), and today's
 implementation on top of the nav files.

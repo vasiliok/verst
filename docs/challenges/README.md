@@ -1,5 +1,7 @@
 # Verst: Architectural Bottlenecks & Hard Engineering Challenges
 
+[verst](../../README.md) > [docs](../../README.md#documentation-map) > challenges
+
 This document outlines the critical technical hurdles, complex edge cases, and potential development dead ends anticipated during the evolution of **verst** from an offline vector map viewer into a fully functional turn-by-turn navigation engine.
 
 It is maintained as a reference for architectural decisions and risk assessment.

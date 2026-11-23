@@ -7,6 +7,8 @@ graph, plus a map of areas, buildings and lines. It then draws them with one sha
 core. The iPhone app needs no map prepared on a PC: it downloads Geofabrik extracts, merges
 neighbouring ones and converts them on the phone.
 
+All project documents are listed in the [Documentation map](#documentation-map).
+
 ## Screenshots
 
 | Region with border and grid | City detail | Maps screen | Console |
@@ -60,6 +62,47 @@ iPhone app: see [ios/README.md](ios/README.md).
 | `tests/` | GoogleTest unit tests |
 | `docs/` | design articles (graph, storage, tiling, shaders, smooth navigation, challenges) |
 | `third_party/` | libosmium and protozero (submodules), pre-generated glad GL loader |
+
+## Documentation map
+
+Every document in the repository, reachable from here; each one links back.
+
+**Source code** ([src/README.md](src/README.md): parts, include rule, who uses what)
+
+| Part | README |
+|---|---|
+| base: scalar types, mapped files, string pool, progress | [src/base](src/base/README.md) |
+| geometry: coordinates, plane geometry, region outlines | [src/geometry](src/geometry/README.md) |
+| storage: nav file format, tiled map | [src/storage](src/storage/README.md) |
+| provider: client API `Vrst_map_provider` | [src/provider](src/provider/README.md) |
+| route: router, way back | [src/route](src/route/README.md) |
+| search: address search, map links | [src/search](src/search/README.md) |
+| session: logs, scenarios, recording, GPX | [src/session](src/session/README.md) |
+| render: OpenGL renderer | [src/render](src/render/README.md) |
+| convert: OSM -> nav files | [src/convert](src/convert/README.md) |
+| tools: command-line programs | [src/tools](src/tools/README.md) |
+
+**iPhone app**
+
+- [ios/README.md](ios/README.md): build, signing, install, screens, share extension.
+- [ios/scenarios](ios/scenarios): test scenarios played from the debug menu (format in
+  [src/session/scenario.h](src/session/scenario.h)).
+
+**Design articles** (in [docs](docs))
+
+- [How Vrst_graph works](docs/vrst_graph.md): the routing graph and its files.
+- [Where the data lives](docs/storage/README.md): storage decision (proposal).
+- [Tiled map rendering](docs/tiling/README.md): tiles (intention).
+- [Smooth zoom and scroll](docs/smooth-navigation/README.md): phone navigation feel (intention).
+- [Shaders explained](docs/shaders/README.md): the project's shaders as a tutorial.
+- [Architectural bottlenecks and challenges](docs/challenges/README.md): risks on the way to turn-by-turn navigation.
+
+**Other**
+
+- [LICENSE](LICENSE): MIT.
+- [Doxyfile](Doxyfile): API documentation settings (see [Docs](#docs)).
+- [third_party/glad/README](third_party/glad/README): how the GL loader was generated.
+- [docs/images](docs/images): the screenshots above.
 
 ## Tools
 

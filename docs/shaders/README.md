@@ -1,5 +1,7 @@
 # verst: what a shader is, explained with the project's own shaders
 
+[verst](../../README.md) > [docs](../../README.md#documentation-map) > shaders
+
 > Reference for explaining shaders in a new session. The examples are the real shaders in
 > `src/render/shaders.h` and `src/render/tile_renderer.h`. They run on desktop OpenGL 3.3 (navview) and on
 > OpenGL ES 3.0 (iPhone app).

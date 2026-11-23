@@ -1,5 +1,7 @@
 # storage
 
+[verst](../../README.md) > [src](../README.md) > storage
+
 The nav files and the tiled map: the data side. Internal to the nav map provider;
 clients never include these files (except the shared vocabulary in `map_kinds.h` and
 `map_piece.h`, which the provider API hands out).

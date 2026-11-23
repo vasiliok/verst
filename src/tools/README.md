@@ -1,5 +1,7 @@
 # tools
 
+[verst](../../README.md) > [src](../README.md) > tools
+
 Command-line programs, one `main()` per file. Built into the build directory by
 CMakeLists.txt.
 

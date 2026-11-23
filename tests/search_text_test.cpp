@@ -2,7 +2,7 @@
 /// Tests of the address search text rules (search_text.h).
 #include <gtest/gtest.h>
 
-#include "search_text.h"
+#include "search/search_text.h"
 
 using namespace nav;
 

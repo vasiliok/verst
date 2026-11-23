@@ -26,7 +26,7 @@
 /// top (the map provider's status live and the session log as it is written), the map
 /// below, still usable; the console can also take the whole screen.
 
-#include "gl_api.h"  // OpenGL ES 3.0; before GLKit so the ES3 header wins
+#include "render/gl_api.h"  // OpenGL ES 3.0; before GLKit so the ES3 header wins
 
 #import <CoreLocation/CoreLocation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -53,17 +53,17 @@
 #include <set>
 #include <stdexcept>
 
-#include "glyph_atlas.h"
-#include "gpx_track.h"
-#include "map_labels.h"
-#include "map_renderer.h"
-#include "map_provider.h"
-#include "map_scene.h"
-#include "region_outline.h"
-#include "activity_recorder.h"
-#include "scenario.h"
-#include "session_log.h"
-#include "tile_renderer.h"
+#include "render/glyph_atlas.h"
+#include "session/gpx_track.h"
+#include "render/map_labels.h"
+#include "render/map_renderer.h"
+#include "provider/map_provider.h"
+#include "provider/map_scene.h"
+#include "geometry/region_outline.h"
+#include "session/activity_recorder.h"
+#include "session/scenario.h"
+#include "session/session_log.h"
+#include "render/tile_renderer.h"
 
 using namespace nav;
 

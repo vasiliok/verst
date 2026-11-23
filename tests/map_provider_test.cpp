@@ -12,8 +12,8 @@
 #include <unordered_set>
 #include <vector>
 
-#include "map_provider.h"
-#include "map_scene.h"
+#include "provider/map_provider.h"
+#include "provider/map_scene.h"
 
 namespace nav {
 namespace {

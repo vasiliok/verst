@@ -2,7 +2,7 @@
 /// Tests of points read from map links and coordinate text (geo_link.h).
 #include <gtest/gtest.h>
 
-#include "geo_link.h"
+#include "search/geo_link.h"
 
 using namespace nav;
 

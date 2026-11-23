@@ -1,5 +1,5 @@
 /// @file
-/// GoogleTest tests of the shared plane geometry (src/geometry.h): simplification, ring
+/// GoogleTest tests of the shared plane geometry (src/geometry/geometry.h): simplification, ring
 /// area, smallest rectangle, clipping to a box and repeated points, plus the zoom-10
 /// regression: a huge self-crossing forest outline is cut to one tile before triangulation.
 
@@ -8,7 +8,7 @@
 #include <cmath>
 #include <vector>
 
-#include "geometry.h"
+#include "geometry/geometry.h"
 
 using namespace nav;
 

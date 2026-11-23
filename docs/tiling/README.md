@@ -8,8 +8,8 @@
 > (not with verst): `~/src/tmp/verst/mockups/mock-{dijon-close,dijon,region}.png`.
 
 ## Context
-Today `Vrst_map_mesh` (`src/map_scene.h`) projects **every** shape point of the region into one
-vertex buffer. `Vrst_map_renderer::draw()` (`src/map_renderer.h`) then draws all roads with
+Today `Vrst_map_mesh` (`src/provider/map_scene.h`) projects **every** shape point of the region into one
+vertex buffer. `Vrst_map_renderer::draw()` (`src/render/map_renderer.h`) then draws all roads with
 one `glDrawElements(GL_LINES)` call every frame, whatever the camera shows.
 - Bourgogne (307k graph vertices) runs at about 23 fps on the Intel Mac, and about 15 fps with
   labels, even when the screen shows only one village.
@@ -108,7 +108,7 @@ and the graph files stay unchanged.
     at once.
 - **Street names and road numbers:**
   - **No new data.** Every road segment already has `name_id` and `ref_id` in `Vrst_seg_attr`
-    (`src/format.h`), and the strings are in names.dat.
+    (`src/storage/format.h`), and the strings are in names.dat.
   - **Chains:** a long street is many segments in the graph. When a tile is built, connected
     segments with the same `name_id` are joined into one line, so the label can run along the
     whole street.
@@ -136,7 +136,7 @@ and the graph files stay unchanged.
 - **Text and fonts:** names are **not painted into the tiles**.
   - A tile holds only where a name can go: the joined street lines (tile-relative), each
     with its `name_id`, `ref_id` and road class.
-  - The letters come from the glyph atlas we already have (`src/glyph_atlas.h`). It is built
+  - The letters come from the glyph atlas we already have (`src/render/glyph_atlas.h`). It is built
     once at start: FreeType renders DejaVu Sans and Sans Bold into one distance-field texture,
     with only the letters the names use.
     - French street names add no new letters beyond the place names, so the texture stays
@@ -192,7 +192,7 @@ and the graph files stay unchanged.
   switch on iOS.
 
 ## Steps
-1. **Tile math:** new `src/map_tiles.h`.
+1. **Tile math:** new `src/storage/map_tiles.h`.
    - `Vrst_tile_id {z, x, y}`, tile bounds, the level table, `visible_tiles()`.
    - Pure C++, tested by a small ctest: known lat/lon -> known `z/x/y`, and a rotated view lists
      the expected tiles.
@@ -226,18 +226,18 @@ and the graph files stay unchanged.
      phone.
 
 ## Critical files
-- New: `src/map_tiles.h` (grid math, level table, visible tiles, tile mesh, cache), plus a test.
+- New: `src/storage/map_tiles.h` (grid math, level table, visible tiles, tile mesh, cache), plus a test.
 - Changed:
-  - `src/map_scene.h`: `Vrst_map_mesh` becomes the source for the tiles.
-  - `src/map_renderer.h`: one VAO per tile, a draw loop per class band.
-  - `src/map_labels.h`: places and street chains come from the visible tiles; letters along
+  - `src/provider/map_scene.h`: `Vrst_map_mesh` becomes the source for the tiles.
+  - `src/render/map_renderer.h`: one VAO per tile, a draw loop per class band.
+  - `src/render/map_labels.h`: places and street chains come from the visible tiles; letters along
     lines; road-number boxes.
-  - `src/navview.cpp`: key `T`, tile statistics.
+  - `src/tools/navview.cpp`: key `T`, tile statistics.
   - `ios/main.mm`: cache budget.
   - `README.md`.
-- More layers: `src/format.h` (`FileType::Map`, new sections), `src/osm2nav.cpp`,
-  `src/nav_files.h`, `src/navcheck.cpp`, `src/shaders.h` (fill shader, dashes), CMake (earcut).
-- Optional step 8: `src/format.h`, `src/osm2nav.cpp`, `src/nav_files.h`, `src/navcheck.cpp`.
+- More layers: `src/storage/format.h` (`FileType::Map`, new sections), `src/tools/osm2nav.cpp`,
+  `src/storage/nav_files.h`, `src/tools/navcheck.cpp`, `src/render/shaders.h` (fill shader, dashes), CMake (earcut).
+- Optional step 8: `src/storage/format.h`, `src/tools/osm2nav.cpp`, `src/storage/nav_files.h`, `src/tools/navcheck.cpp`.
 
 ## Verification
 1. **Same picture:**

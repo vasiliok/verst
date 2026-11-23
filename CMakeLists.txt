@@ -38,7 +38,7 @@ elseif(NOT NAV_SANITIZE STREQUAL "OFF")
   message(FATAL_ERROR "NAV_SANITIZE must be OFF, address or thread, not '${NAV_SANITIZE}'")
 endif()
 
-# --- scalar types: src/vrst_types.h.in -> <build>/generated/vrst_types.h -------
+# --- scalar types: src/base/vrst_types.h.in -> <build>/generated/vrst_types.h -------
 set(VRST_TYPE_INT8    "std::int8_t"   CACHE STRING "C++ type for Vrst_int8")
 set(VRST_TYPE_INT16   "std::int16_t"  CACHE STRING "C++ type for Vrst_int16")
 set(VRST_TYPE_INT32   "std::int32_t"  CACHE STRING "C++ type for Vrst_int32")
@@ -50,12 +50,12 @@ set(VRST_TYPE_UINT64  "std::uint64_t" CACHE STRING "C++ type for Vrst_uint64")
 set(VRST_TYPE_FLOAT32 "float"         CACHE STRING "C++ type for Vrst_float32")
 set(VRST_TYPE_FLOAT64 "double"        CACHE STRING "C++ type for Vrst_float64")
 set(VRST_TYPE_SIZE    "std::size_t"   CACHE STRING "C++ type for Vrst_size")
-configure_file(src/vrst_types.h.in "${CMAKE_BINARY_DIR}/generated/vrst_types.h" @ONLY)
+configure_file(src/base/vrst_types.h.in "${CMAKE_BINARY_DIR}/generated/vrst_types.h" @ONLY)
 add_library(vrst_types INTERFACE)
 target_include_directories(vrst_types INTERFACE "${CMAKE_BINARY_DIR}/generated")
 
 # --- text: FreeType + label font, shared by navview and the iOS app ---------
-# Map labels are drawn from a FreeType SDF glyph atlas (src/glyph_atlas.h). FreeType
+# Map labels are drawn from a FreeType SDF glyph atlas (src/render/glyph_atlas.h). FreeType
 # is built from source so desktop and iOS (cross-compiled) use the same version.
 if(NAV_BUILD_VIEWER OR IOS)
   include(FetchContent)
@@ -102,12 +102,12 @@ FetchContent_MakeAvailable(earcut)
 # being consistent and earcut can loop forever. arm64 compilers fuse by default: on the
 # iPhone some zoom-10 tiles never finished building (reproduced on the Mac with the
 # phone's logged rings and a fused area()). The files that include earcut never fuse.
-set(VRST_EARCUT_SOURCES src/map_tiles.cpp src/osm_map_layers.cpp src/region_outline.cpp tests/earcut_test.cpp)
+set(VRST_EARCUT_SOURCES src/storage/map_tiles.cpp src/convert/osm_map_layers.cpp src/geometry/region_outline.cpp tests/earcut_test.cpp)
 set_source_files_properties(${VRST_EARCUT_SOURCES} PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 find_package(Threads REQUIRED)
 
-# --- SQLite: the address search engine (src/search_sqlite.cpp only) ---------------
+# --- SQLite: the address search engine (src/search/search_sqlite.cpp only) ---------------
 # The official amalgamation with FTS5, the same version on every platform. Optimized
 # even in Debug: the phone writes the search database during the conversion.
 FetchContent_Declare(sqlite
@@ -123,27 +123,27 @@ set_property(SOURCE ${sqlite_SOURCE_DIR}/sqlite3.c APPEND PROPERTY COMPILE_OPTIO
 # --- vrst_core: map provider (nav files, tiles), map frame, GPS tracks (no GL) ----
 # Shared by every tool, the desktop viewer and the iPhone app.
 add_library(vrst_core STATIC
-  src/mapped_file.cpp
-  src/nav_files.cpp
-  src/map_scene.cpp
-  src/map_tiles.cpp
-  src/activity_recorder.cpp
-  src/map_provider.cpp
-  src/nav_map_provider.cpp
-  src/region_outline.cpp
-  src/router.cpp
-  src/geo_link.cpp
-  src/gpx_track.cpp
-  src/scenario.cpp
-  src/search_engine.cpp
-  src/search_rank.cpp
-  src/search_sqlite.cpp
-  src/search_text.cpp
-  src/session_log.cpp)
+  src/base/mapped_file.cpp
+  src/storage/nav_files.cpp
+  src/provider/map_scene.cpp
+  src/storage/map_tiles.cpp
+  src/session/activity_recorder.cpp
+  src/provider/map_provider.cpp
+  src/provider/nav_map_provider.cpp
+  src/geometry/region_outline.cpp
+  src/route/router.cpp
+  src/search/geo_link.cpp
+  src/session/gpx_track.cpp
+  src/session/scenario.cpp
+  src/search/search_engine.cpp
+  src/search/search_rank.cpp
+  src/search/search_sqlite.cpp
+  src/search/search_text.cpp
+  src/session/session_log.cpp)
 target_include_directories(vrst_core PUBLIC src)
 # The router runs on the phone, where Debug builds are -O0: optimized always, or a route
 # over a big region takes several times longer.
-set_property(SOURCE src/router.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
+set_property(SOURCE src/route/router.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
 target_include_directories(vrst_core SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
 target_link_libraries(vrst_core PUBLIC vrst_types Threads::Threads PRIVATE vrst_sqlite)
 nav_warnings(vrst_core)
@@ -151,10 +151,10 @@ nav_warnings(vrst_core)
 # --- vrst_render: OpenGL map drawing and labels (desktop GL 3.3, iOS GLES 3.0) ---
 if(NAV_BUILD_VIEWER OR IOS)
   add_library(vrst_render STATIC
-    src/glyph_atlas.cpp
-    src/map_labels.cpp
-    src/map_renderer.cpp
-    src/tile_renderer.cpp)
+    src/render/glyph_atlas.cpp
+    src/render/map_labels.cpp
+    src/render/map_renderer.cpp
+    src/render/tile_renderer.cpp)
   target_link_libraries(vrst_render PUBLIC vrst_core freetype)
   if(IOS)
     target_link_libraries(vrst_render PUBLIC "-framework OpenGLES")
@@ -170,8 +170,8 @@ endif()
 # --- vrst_convert: OSM extract -> nav files (osm2nav and the iPhone app) ----------
 # The converter runs on the phone too, where Debug builds are -O0: its sources are
 # always optimized, or a conversion would take several times longer.
-add_library(vrst_convert STATIC src/osm_addresses.cpp src/osm_convert.cpp src/osm_map_layers.cpp src/pbf_merge.cpp)
-set_property(SOURCE src/osm_addresses.cpp src/osm_convert.cpp src/osm_map_layers.cpp src/pbf_merge.cpp
+add_library(vrst_convert STATIC src/convert/osm_addresses.cpp src/convert/osm_convert.cpp src/convert/osm_map_layers.cpp src/convert/pbf_merge.cpp)
+set_property(SOURCE src/convert/osm_addresses.cpp src/convert/osm_convert.cpp src/convert/osm_map_layers.cpp src/convert/pbf_merge.cpp
              APPEND PROPERTY COMPILE_OPTIONS -O2)
 target_include_directories(vrst_convert SYSTEM PUBLIC
   third_party/libosmium/include
@@ -192,12 +192,12 @@ if(IOS)
 endif()
 
 # --- osm2nav ---------------------------------------------------------------
-add_executable(osm2nav src/osm2nav.cpp)
+add_executable(osm2nav src/tools/osm2nav.cpp)
 target_link_libraries(osm2nav PRIVATE vrst_convert)
 nav_warnings(osm2nav)
 
 # --- pbf_merge: several sorted extracts into one --------------------------------
-add_executable(pbf_merge src/pbf_merge_main.cpp)
+add_executable(pbf_merge src/tools/pbf_merge_main.cpp)
 target_link_libraries(pbf_merge PRIVATE vrst_convert)
 nav_warnings(pbf_merge)
 
@@ -219,17 +219,17 @@ if(NAV_BUILD_TESTS)
 endif()
 
 # --- navsearch: address search of a converted region ----------------------------
-add_executable(navsearch src/navsearch.cpp)
+add_executable(navsearch src/tools/navsearch.cpp)
 target_link_libraries(navsearch PRIVATE vrst_core)
 nav_warnings(navsearch)
 
 # --- navroute: a route between two points of a converted region -----------------
-add_executable(navroute src/navroute.cpp)
+add_executable(navroute src/tools/navroute.cpp)
 target_link_libraries(navroute PRIVATE vrst_core)
 nav_warnings(navroute)
 
 # --- navcheck --------------------------------------------------------------
-add_executable(navcheck src/navcheck.cpp)
+add_executable(navcheck src/tools/navcheck.cpp)
 target_link_libraries(navcheck PRIVATE vrst_core)
 nav_warnings(navcheck)
 
@@ -262,7 +262,7 @@ if(NAV_BUILD_VIEWER)
   target_link_libraries(imgui PUBLIC glfw)
 
   find_package(OpenGL REQUIRED)
-  add_executable(navview src/navview.cpp)
+  add_executable(navview src/tools/navview.cpp)
   target_link_libraries(navview PRIVATE vrst_render imgui OpenGL::GL)
   target_compile_definitions(navview PRIVATE VRST_FONT_DIR="${VRST_FONT_DIR}")
   nav_warnings(navview)

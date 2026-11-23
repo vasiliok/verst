@@ -1,5 +1,5 @@
 /// @file
-/// GoogleTest tests of the tiled map (src/map_tiles.h).
+/// GoogleTest tests of the tiled map (src/storage/map_tiles.h).
 ///
 /// The math tests need no data. The region tests open an imported region from the
 /// directory in the environment variable VRST_TEST_DIR (CTest sets it to the Andorra
@@ -22,8 +22,8 @@
 #include <unordered_set>
 #include <vector>
 
-#include "map_tiles.h"
-#include "nav_files.h"
+#include "storage/map_tiles.h"
+#include "storage/nav_files.h"
 
 using namespace nav;
 

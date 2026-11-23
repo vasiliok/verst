@@ -9,7 +9,7 @@
 
 #include <string>
 
-#include "geo_link.h"
+#include "search/geo_link.h"
 
 /// Longest "items" text passed to the app for its log.
 static const NSUInteger kMaxItemsText = 600;

@@ -5,8 +5,8 @@
 
 #include <filesystem>
 
-#include "search_engine.h"
-#include "search_rank.h"
+#include "search/search_engine.h"
+#include "search/search_rank.h"
 
 using namespace nav;
 

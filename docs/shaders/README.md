@@ -1,7 +1,7 @@
 # verst: what a shader is, explained with the project's own shaders
 
 > Reference for explaining shaders in a new session. The examples are the real shaders in
-> `src/shaders.h` and `src/tile_renderer.h`. They run on desktop OpenGL 3.3 (navview) and on
+> `src/render/shaders.h` and `src/render/tile_renderer.h`. They run on desktop OpenGL 3.3 (navview) and on
 > OpenGL ES 3.0 (iPhone app).
 
 ## 1. What a shader is
@@ -45,7 +45,7 @@ means nothing.
 Naming used in verst: `a_` attribute, `u_` uniform, `v_` varying, `o_` output.
 
 ## 3. The simplest example: area fills (forest, water, buildings)
-From `src/tile_renderer.h`. Every area (a lake, a forest, a house) was cut into triangles at import
+From `src/render/tile_renderer.h`. Every area (a lake, a forest, a house) was cut into triangles at import
 time. Each vertex is a `Vrst_gpu_point {x, y, attr}`: a position in metres from the tile corner,
 plus the `AreaKind` as `attr`.
 
@@ -78,7 +78,7 @@ Points to notice:
 - **Screen coordinates.** `gl_Position` uses "normalised device coordinates": x and y run from
   -1 to +1 across the window, whatever its size in pixels.
 
-The camera matrix comes from `view_matrix()` in `src/map_scene.h`. Each tile has its own origin,
+The camera matrix comes from `view_matrix()` in `src/provider/map_scene.h`. Each tile has its own origin,
 so the vertices hold small numbers that stay precise in 32-bit floats. For each tile, the C++ code
 subtracts the tile origin from the camera centre before computing that tile's matrix.
 
@@ -155,7 +155,7 @@ o_color = r2 > 0.12 ? vec4(1.0) : u_color;   // white ring around a coloured cen
 ```
 
 ## 7. Sharp text at any size: signed distance field labels
-Place names (`kTextVs`/`kTextFs` in `src/shaders.h`) use a texture, the **glyph atlas**, built with
+Place names (`kTextVs`/`kTextFs` in `src/render/shaders.h`) use a texture, the **glyph atlas**, built with
 FreeType. Each texel stores a **distance to the letter's edge** instead of a plain on/off pixel:
 0.5 is exactly on the outline, larger is inside, smaller is outside.
 
@@ -177,7 +177,7 @@ o_color = vec4(mix(u_halo_color, u_text_color, fill), alpha);
   is already on the screen.
 
 ## 8. How C++ gets a shader onto the GPU
-In `Vrst_map_renderer::compile()` / `link()` (`src/map_renderer.h`):
+In `Vrst_map_renderer::compile()` / `link()` (`src/render/map_renderer.h`):
 1. **Source:** the GLSL text lives in `std::string_view` constants.
    - It has no `#version` line. C++ prepends `kGlslHeader`: `#version 330 core` on desktop, or
      `#version 300 es` plus `precision highp float;` on iOS.
@@ -198,12 +198,12 @@ In `Vrst_map_renderer::compile()` / `link()` (`src/map_renderer.h`):
 ## 9. All shaders in the project
 | Program | File | Draws | Primitive |
 |---|---|---|---|
-| `kFillVs/Fs` | `src/tile_renderer.h` | areas: farmland ... water, buildings | triangles |
-| `kTileLineVs/Fs` | `src/tile_renderer.h` | roads, rivers, railways, building outlines, tile borders | instanced quads |
-| `kPointVs/Fs` | `src/shaders.h` | graph vertex dots, dead ends in red | points |
-| `kOverlayVs/Fs` | `src/shaders.h` | GPS track line, track marker, GPS position dot | lines / points |
-| `kTextVs/Fs` | `src/shaders.h` | place names (SDF) | triangles, textured |
-| `kLineVs/Fs` | `src/shaders.h` | old single-mesh road view (1 px lines) | `GL_LINES` |
+| `kFillVs/Fs` | `src/render/tile_renderer.h` | areas: farmland ... water, buildings | triangles |
+| `kTileLineVs/Fs` | `src/render/tile_renderer.h` | roads, rivers, railways, building outlines, tile borders | instanced quads |
+| `kPointVs/Fs` | `src/render/shaders.h` | graph vertex dots, dead ends in red | points |
+| `kOverlayVs/Fs` | `src/render/shaders.h` | GPS track line, track marker, GPS position dot | lines / points |
+| `kTextVs/Fs` | `src/render/shaders.h` | place names (SDF) | triangles, textured |
+| `kLineVs/Fs` | `src/render/shaders.h` | old single-mesh road view (1 px lines) | `GL_LINES` |
 
 ## 10. Rules of thumb this project follows
 - **Upload once, change uniforms per frame.** Geometry goes to the GPU when a tile loads, and a

@@ -1,5 +1,5 @@
 /// @file
-/// GoogleTest tests of the activity recorder (src/activity_recorder.h): a recorded
+/// GoogleTest tests of the activity recorder (src/session/activity_recorder.h): a recorded
 /// camera path is a valid scenario, and playing it ends at the recorded camera.
 
 #include <gtest/gtest.h>
@@ -7,8 +7,8 @@
 #include <cmath>
 #include <string>
 
-#include "activity_recorder.h"
-#include "scenario.h"
+#include "session/activity_recorder.h"
+#include "session/scenario.h"
 
 using namespace nav;
 

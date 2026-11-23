@@ -11,7 +11,7 @@ set(VERST_IOS_TEAM "" CACHE STRING "Apple development team id; empty = unsigned 
 # Label fonts (downloaded by the top-level CMakeLists): <app>/fonts/*.ttf.
 set_source_files_properties(${VRST_FONT_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION fonts)
 
-# Test scenarios (src/scenario.h): <app>/scenarios/*.txt, offered in the debug menu.
+# Test scenarios (src/session/scenario.h): <app>/scenarios/*.txt, offered in the debug menu.
 file(GLOB _scenarios "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/*.txt")
 set_source_files_properties(${_scenarios} PROPERTIES MACOSX_PACKAGE_LOCATION scenarios)
 
@@ -48,9 +48,9 @@ else()
 endif()
 
 # Share extension: "Verst" in the iOS share sheet (Google Maps: Share -> Verst). Reads the
-# point of a shared link or coordinates with src/geo_link.cpp and opens the app with
+# point of a shared link or coordinates with src/search/geo_link.cpp and opens the app with
 # verst://share (see ios/share/share_controller.h). Embedded in the app's PlugIns.
-add_executable(verst_share MACOSX_BUNDLE share/share_controller.mm ${CMAKE_SOURCE_DIR}/src/geo_link.cpp)
+add_executable(verst_share MACOSX_BUNDLE share/share_controller.mm ${CMAKE_SOURCE_DIR}/src/search/geo_link.cpp)
 target_include_directories(verst_share PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(verst_share PRIVATE vrst_types
   "-framework Foundation" "-framework UIKit" "-framework UniformTypeIdentifiers")

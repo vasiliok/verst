@@ -1,6 +1,6 @@
 # How Vrst_graph works
 
-`Vrst_graph` (in `src/nav_files.h`) is a read-only view of `graph.dat`. It owns no
+`Vrst_graph` (in `src/storage/nav_files.h`) is a read-only view of `graph.dat`. It owns no
 data of its own: every member is a `std::span` into the memory-mapped file, so opening
 a graph parses and copies nothing.
 

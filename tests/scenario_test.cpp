@@ -1,5 +1,5 @@
 /// @file
-/// GoogleTest tests of the scripted map motion (src/scenario.h): parsing, exact totals at
+/// GoogleTest tests of the scripted map motion (src/session/scenario.h): parsing, exact totals at
 /// any frame rate, easing, tile waits and jumps.
 
 #include <gtest/gtest.h>
@@ -7,7 +7,7 @@
 #include <cmath>
 #include <stdexcept>
 
-#include "scenario.h"
+#include "session/scenario.h"
 
 using namespace nav;
 

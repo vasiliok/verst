@@ -16,8 +16,8 @@
 #include <string>
 #include <vector>
 
-#include "osm_convert.h"
-#include "pbf_merge.h"
+#include "convert/osm_convert.h"
+#include "convert/pbf_merge.h"
 
 using namespace nav;
 

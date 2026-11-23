@@ -6,7 +6,7 @@
 > Nothing below is implemented yet.
 
 ## Context
-The phone app (`ios/main.mm`) draws the tiled map (`src/map_tiles.h`, `src/tile_renderer.h`).
+The phone app (`ios/main.mm`) draws the tiled map (`src/storage/map_tiles.h`, `src/render/tile_renderer.h`).
 It works on the iPhone SE "Bruno" (A13, 60 Hz), but moving the map is not smooth yet:
 - **The map stops dead** when the finger lifts. There is no momentum after a pan or a pinch.
 - **Double tap and two-finger tap jump** to the new zoom in one frame, with no animation.
@@ -92,7 +92,7 @@ This is shared C++ and GL, so navview uses it too, for wheel zoom and animated z
     animation or tiles still loading. When nothing moves, nothing is drawn (battery).
   - It replaces the `paused = NO` loop of the GLKViewController.
 - **Shared camera code:**
-  - Momentum and animation are plain C++ in `src/map_scene.h` (`Vrst_camera_motion`), with
+  - Momentum and animation are plain C++ in `src/provider/map_scene.h` (`Vrst_camera_motion`), with
     no UIKit in it.
   - navview gets the same smoothness with the mouse: wheel zoom animated, drag with momentum.
 
@@ -152,7 +152,7 @@ This is shared C++ and GL, so navview uses it too, for wheel zoom and animated z
    `ios/main.mm` uses it for pinch, and navview for wheel zoom.
 3. **Momentum, animated zoom and the display link:** `Vrst_camera_motion` in `map_scene.h`.
    Glides and animations run on the snapshot.
-4. **Fallback in both directions and prefetch** in `select_tiles()` (`src/tile_renderer.h`).
+4. **Fallback in both directions and prefetch** in `select_tiles()` (`src/render/tile_renderer.h`).
 5. **Hysteresis and cross-fade** at level changes.
 6. **Frame budget:** byte-limited uploads, spread deletes, uniform fields, merged draw calls,
    and the label grid.
@@ -163,13 +163,13 @@ This is shared C++ and GL, so navview uses it too, for wheel zoom and animated z
 - New: `src/map_snapshot.h` (off-screen snapshot, quad draw, refresh rules, fade).
 - Changed:
   - `ios/main.mm`: snapshot during pinch, display link, momentum, animated taps, debug stats.
-  - `src/map_scene.h`: `Vrst_camera_motion`, with momentum and zoom animation.
-  - `src/tile_renderer.h`: two-way fallback, prefetch, hysteresis, fade, upload budget, uniform fields.
-  - `src/map_tiles.h`: loader priorities (visible before prefetch), thread count.
-  - `src/map_labels.h`: place grid.
-  - `src/navview.cpp`: the same motion for mouse wheel and drag.
+  - `src/provider/map_scene.h`: `Vrst_camera_motion`, with momentum and zoom animation.
+  - `src/render/tile_renderer.h`: two-way fallback, prefetch, hysteresis, fade, upload budget, uniform fields.
+  - `src/storage/map_tiles.h`: loader priorities (visible before prefetch), thread count.
+  - `src/render/map_labels.h`: place grid.
+  - `src/tools/navview.cpp`: the same motion for mouse wheel and drag.
 - Optional:
-  - `src/osm2nav.cpp`, `src/format.h`, `src/nav_files.h` for the ready-made overview tiles.
+  - `src/tools/osm2nav.cpp`, `src/storage/format.h`, `src/storage/nav_files.h` for the ready-made overview tiles.
 
 ## Verification
 1. **Instruments on the iPhone SE:**

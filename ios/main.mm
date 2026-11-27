@@ -60,6 +60,7 @@
 #include "provider/map_provider.h"
 #include "provider/map_scene.h"
 #include "geometry/region_outline.h"
+#include "route/route_tracker.h"
 #include "session/activity_recorder.h"
 #include "session/scenario.h"
 #include "session/session_log.h"
@@ -88,6 +89,9 @@ static constexpr double kMinCourseSpeed = 1.5;
 static constexpr double kMaxPredictSeconds = 2;
 /// Metres per degree of latitude.
 static constexpr double kMetresPerDegree = 111320;
+/// Off the route again sooner than this after a reroute waits, s (no retry storm when
+/// there is no route from here).
+static constexpr double kRerouteGap = 10;
 
 /// Course from one point to another.
 /// @param a Start.
@@ -358,6 +362,11 @@ static constexpr double kConsoleSeconds = 0.25;
   NSString* _thereSummary;
   /// The way back is drawn instead of the outbound route.
   BOOL _showingBack;
+  /// Follows the GPS position along the shown route to reroute when it is left; nullopt
+  /// when no route is shown or it starts at a start pin instead of the GPS position.
+  std::optional<Vrst_route_tracker> _tracker;
+  /// Time of the last reroute request ([self now]).
+  double _rerouteAt;
   /// `--search <text>`: open the search screen with this text after the first frame.
   NSString* _launchSearch;
   /// `--search-pick <text>`: show the first result of this text after the first frame.
@@ -395,6 +404,7 @@ static constexpr double kConsoleSeconds = 0.25;
   _stuckMs = kStuckMs;
   _angleTarget = NAN;
   _routeQueue = dispatch_queue_create("verst.route", DISPATCH_QUEUE_SERIAL);
+  _rerouteAt = -INFINITY;
   _mode = static_cast<Vrst_travel_mode>(std::clamp<NSInteger>(
       [NSUserDefaults.standardUserDefaults integerForKey:kTravelModeKey], 0, static_cast<NSInteger>(Vrst_travel_mode::Foot)));
   [self parseArguments];
@@ -479,6 +489,7 @@ static constexpr double kConsoleSeconds = 0.25;
   _stuckDumped.clear();
   _hasPin = NO;  // the pin belongs to the region it was found in
   _region = nil;
+  [self updateIdleTimer];
 }
 
 /// Shows a region (or no map): opens its data, places the labels, loads its outline and
@@ -546,6 +557,7 @@ static constexpr double kConsoleSeconds = 0.25;
     }
   }
   _region = r;
+  [self updateIdleTimer];
   if (r) _store.activeId = r.regionId;
   [self loadWayBack];  // the way back of the last route here, offered on the card
   // Camera: launch arguments, else the region's saved camera, else the whole region.
@@ -689,6 +701,7 @@ static constexpr double kConsoleSeconds = 0.25;
   _pin = p;
   _hasPin = YES;
   _route.clear();
+  _tracker.reset();
   _renderer.set_route({});
   _showingBack = NO;
   _card.title = title;
@@ -716,6 +729,7 @@ static constexpr double kConsoleSeconds = 0.25;
   _hasStart = NO;
   _routeWhenFix = NO;
   _route.clear();
+  _tracker.reset();
   _back.clear();  // in memory only: the saved way back stays (forgetWayBack removes it)
   _showingBack = NO;
   _renderer.set_route({});
@@ -785,20 +799,26 @@ static constexpr double kConsoleSeconds = 0.25;
   return [NSString stringWithFormat:@"%.1f km - %@ (%s)", r.length_m / 1000, time, kModes[static_cast<int>(_mode)]];
 }
 
+/// Draws a route line; the camera stays where it is.
+/// @param pts Route points.
+- (void)setRouteLine:(const std::vector<Vrst_latlon>&)pts {
+  std::vector<Vrst_vec2d> world;
+  world.reserve(pts.size());
+  for (const Vrst_latlon& p : pts) world.push_back(_mapFrame.to_world(p));
+  _renderer.set_route(std::move(world));
+}
+
 /// Draws a route line and fits it in the part of the screen above the card, north up.
 /// @param pts Route points.
 - (void)drawRouteLine:(const std::vector<Vrst_latlon>&)pts {
-  std::vector<Vrst_vec2d> world;
-  world.reserve(pts.size());
+  [self setRouteLine:pts];
+  if (pts.empty()) return;
   Vrst_vec2d lo{INFINITY, INFINITY}, hi{-INFINITY, -INFINITY};
   for (const Vrst_latlon& p : pts) {
     const Vrst_vec2d w = _mapFrame.to_world(p);
-    world.push_back(w);
     lo = {std::min(lo.x, w.x), std::min(lo.y, w.y)};
     hi = {std::max(hi.x, w.x), std::max(hi.y, w.y)};
   }
-  _renderer.set_route(std::move(world));
-  if (pts.empty()) return;
   [self setFollow:Vrst_follow::Off];
   const double px = [self pxPerPoint];
   const double w = [self fbWidth], h = [self fbHeight];
@@ -891,10 +911,11 @@ static constexpr double kConsoleSeconds = 0.25;
   const Vrst_uint64 request = ++_routeRequest;
   const Vrst_map_provider* map = _map.get();  // valid while the route queue runs (leaveRegion waits)
   const Vrst_latlon a = *from, b = _pin;
+  const BOOL fromFix = !_hasStart;
   __weak VrstMapController* weak = self;
   dispatch_async(_routeQueue, ^{
     const Vrst_route_pair r = map->route_pair(a, b, mode);  // the way back too, kept for later
-    dispatch_async(dispatch_get_main_queue(), ^{ [weak routeFound:r request:request from:a]; });
+    dispatch_async(dispatch_get_main_queue(), ^{ [weak routeFound:r request:request from:a fromFix:fromFix]; });
   });
 }
 
@@ -903,7 +924,8 @@ static constexpr double kConsoleSeconds = 0.25;
 /// @param pair Route and way back.
 /// @param request Its request number; an older one than the newest is dropped.
 /// @param from Its start.
-- (void)routeFound:(const Vrst_route_pair&)pair request:(Vrst_uint64)request from:(Vrst_latlon)from {
+/// @param fromFix It starts at the GPS position: followed for rerouting (_tracker).
+- (void)routeFound:(const Vrst_route_pair&)pair request:(Vrst_uint64)request from:(Vrst_latlon)from fromFix:(BOOL)fromFix {
   const Vrst_route& r = pair.there;
   const Vrst_route& b = pair.back;
   static const char* const kModes[] = {"car", "bike", "walk"};
@@ -932,6 +954,11 @@ static constexpr double kConsoleSeconds = 0.25;
     return;
   }
   _route = r.points;
+  if (fromFix) {
+    _tracker.emplace(_route, _mode);
+  } else {
+    _tracker.reset();
+  }
   _showingBack = NO;
   _thereSummary = [self summaryOf:r];
   _card.detail = _thereSummary;
@@ -945,6 +972,78 @@ static constexpr double kConsoleSeconds = 0.25;
   _card.backOffered = !_back.empty();
   _card.backTitle = @"Way back";
   [self drawRouteLine:_route];
+}
+
+/// Measures the GPS position (or the replayed track) against the shown route; off it for
+/// long enough (Vrst_route_tracker), a new route is laid from here. Not while the way
+/// back is shown.
+- (void)checkRoute {
+  if (!_tracker || _showingBack || !_hasFix || !_hasPin) return;
+  const double t = [self now];
+  const Vrst_route_check c = _tracker->update(_fix, _fixAccuracy, t);
+  if (!c.off_route) return;
+  const BOOL reroute = t - _rerouteAt >= kRerouteGap;
+  _log.record("route_check", t)
+      .text("event", "off_route")
+      .num("off_m", c.off_m, 1)
+      .num("left_km", c.left_m / 1000, 2)
+      .num("accuracy", _fixAccuracy, 1)
+      .num("lat", _fix.lat, 6)
+      .num("lon", _fix.lon, 6)
+      .flag("reroute", reroute);
+  if (reroute) [self rerouteFrom:_fix];
+}
+
+/// Lays a new route from a position to the destination pin on the route queue, without
+/// moving the camera; the way back of the trip stays as it is.
+/// @param a Position.
+- (void)rerouteFrom:(Vrst_latlon)a {
+  if (!_hasPin || !_map) return;
+  _rerouteAt = [self now];
+  _card.detail = @"Off route - rerouting...";
+  const Vrst_uint64 request = ++_routeRequest;
+  const Vrst_map_provider* map = _map.get();  // valid while the route queue runs (leaveRegion waits)
+  const Vrst_latlon b = _pin;
+  const Vrst_travel_mode mode = _mode;
+  __weak VrstMapController* weak = self;
+  dispatch_async(_routeQueue, ^{
+    const Vrst_route r = map->route(a, b, mode);
+    dispatch_async(dispatch_get_main_queue(), ^{ [weak rerouteFound:r request:request from:a]; });
+  });
+}
+
+/// A reroute was computed: it replaces the shown route and its card line; the camera and
+/// the follow mode stay. None found: the old line stays and the card says so.
+/// @param r New route.
+/// @param request Its request number; an older one than the newest is dropped.
+/// @param from Its start.
+- (void)rerouteFound:(const Vrst_route&)r request:(Vrst_uint64)request from:(Vrst_latlon)from {
+  static const char* const kModes[] = {"car", "bike", "walk"};
+  Vrst_log_record rec = _log.record("route", [self now]);
+  rec.text("mode", kModes[static_cast<int>(_mode)])
+      .flag("reroute", true)
+      .num("from_lat", from.lat, 6)
+      .num("from_lon", from.lon, 6)
+      .num("to_lat", _pin.lat, 6)
+      .num("to_lon", _pin.lon, 6)
+      .flag("found", r.found)
+      .num("km", r.length_m / 1000, 2)
+      .num("min", r.time_s / 60, 1)
+      .count("settled", r.settled)
+      .num("ms", r.ms, 1)
+      .flag("stale", request != _routeRequest);
+  if (!r.found) rec.text("error", r.error);
+  if (request != _routeRequest || !_hasPin) return;
+  if (!r.found) {
+    _card.detail = [NSString stringWithFormat:@"Off route - no route from here: %s.", r.error.c_str()];
+    return;
+  }
+  _route = r.points;
+  _tracker.emplace(_route, _mode);
+  _thereSummary = [self summaryOf:r];
+  _card.detail = _thereSummary;
+  [self setRouteLine:_route];
+  [self redraw];
 }
 
 /// `--download <id>[,<id>...]`: queues those Geofabrik extracts as one region, like the
@@ -1094,6 +1193,7 @@ static constexpr double kConsoleSeconds = 0.25;
   [nc addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:nil
               usingBlock:^(NSNotification*) {
                 [weak logSystem:"foreground"];
+                [weak updateIdleTimer];
                 [weak foregroundDownloads];
               }];
   [nc addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
@@ -1109,6 +1209,12 @@ static constexpr double kConsoleSeconds = 0.25;
 /// The app is back: continues the downloads and conversions.
 - (void)foregroundDownloads {
   [_downloads foreground];
+}
+
+/// Keeps the screen on while a map is open or a test scenario plays: the map is
+/// watched, often without touching the screen, so iOS must not dim and lock it.
+- (void)updateIdleTimer {
+  UIApplication.sharedApplication.idleTimerDisabled = _region != nil || (_scenario && _scenario->running());
 }
 
 /// Logs a system event and writes the log to the file at once (the app may be
@@ -1799,7 +1905,7 @@ static constexpr double kConsoleSeconds = 0.25;
   _lastTouchAt = std::max(_lastTouchAt, t.timestamp);
   if (t.phase == UITouchPhaseBegan && _scenario && _scenario->running()) {
     _scenario->stop();  // the user takes over
-    UIApplication.sharedApplication.idleTimerDisabled = NO;
+    [self updateIdleTimer];
     _log.record("scenario", [self now]).text("event", "cancelled").text("name", _scenario->name());
     [_debug showGesture:@"TEST stopped by touch"];
   }
@@ -2017,6 +2123,8 @@ static constexpr double kConsoleSeconds = 0.25;
     _course = course;
     _hasCourse = YES;
   }
+  if (_routeWhenFix) [self routeToPin];  // the replayed position counts as the first fix
+  [self checkRoute];
   const double t = [self now];
   if (t - _trackBannerAt > 1) {
     _trackBannerAt = t;
@@ -2374,7 +2482,7 @@ static constexpr double kConsoleSeconds = 0.25;
   }
   _scenario->start([self now]);
   _loggedSteps = 0;
-  UIApplication.sharedApplication.idleTimerDisabled = YES;  // no auto-lock while the test plays
+  [self updateIdleTimer];
   _log.record("scenario", [self now])
       .text("event", "start")
       .text("name", _scenario->name())
@@ -2388,7 +2496,7 @@ static constexpr double kConsoleSeconds = 0.25;
 - (void)stopScenario {
   if (!_scenario || !_scenario->running()) return;
   _scenario->stop();
-  UIApplication.sharedApplication.idleTimerDisabled = NO;
+  [self updateIdleTimer];
   _log.record("scenario", [self now]).text("event", "stopped").text("name", _scenario->name());
   [_debug showGesture:@"TEST stopped"];
 }
@@ -2425,7 +2533,7 @@ static constexpr double kConsoleSeconds = 0.25;
   if (tick.step_changed) [self logScenarioStep];
   if (tick.finished) {
     _loggedSteps = _scenario->steps().size();
-    UIApplication.sharedApplication.idleTimerDisabled = NO;
+    [self updateIdleTimer];
     _log.record("scenario", t).text("event", "finished").text("name", _scenario->name());
     [_debug showGesture:@"TEST finished"];
   }
@@ -2522,6 +2630,7 @@ static constexpr double kConsoleSeconds = 0.25;
     [self setFollow:Vrst_follow::Follow];
   }
   if (_routeWhenFix) [self routeToPin];  // the route was waiting for this
+  [self checkRoute];
   [self redraw];
 }
 

@@ -172,6 +172,12 @@ Motion follows the clock, not frames: a slow phone shows fewer frames of the sam
   re-creating a user's video as a test.
 - **GPX as GPS:** `--gpx <file> --speed <x>` (or the play button in the app) replays a
   drive, e.g. to check follow mode and routing while "moving".
+- **Reroute test:** a destination the drive does not go to, then the drive as GPS:
+  `--share "47.6230,4.3380" --gpx <mac path>/tracks/02-Nov-2026-1401-lgns-lidl.gpx --speed 10 --log-dir <dir>`
+  (Laignes -> Chatillon drive, Montbard as destination). Expect `route`, then
+  `route_check` off_route and `route` with `"reroute":true` every ~11 s. With the drive's
+  end as destination (`--share "47.87567,4.56757"`) expect no reroute at all. The 5 s
+  off-route delay is screen time, so at x10 the car is ~10x farther off when it fires.
 
 ## 6. Bug / performance loop (summary)
 

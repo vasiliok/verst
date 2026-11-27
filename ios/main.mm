@@ -60,6 +60,7 @@
 #include "provider/map_provider.h"
 #include "provider/map_scene.h"
 #include "geometry/region_outline.h"
+#include "route/reroute_rules.h"
 #include "route/route_tracker.h"
 #include "session/activity_recorder.h"
 #include "session/scenario.h"
@@ -92,6 +93,43 @@ static constexpr double kMetresPerDegree = 111320;
 /// Off the route again sooner than this after a reroute waits, s (no retry storm when
 /// there is no route from here).
 static constexpr double kRerouteGap = 10;
+/// The direction of travel holds this long after the last course (a stop at a light), s.
+static constexpr double kCourseHoldSeconds = 10;
+
+/// Adds the situation of a route from a moving car to its log record: rule used, road
+/// type, road, speed, heading, U-turns and the events ahead ("X120 R600").
+/// @param rec Record of the route.
+/// @param r Route.
+static void add_situation(Vrst_log_record& rec, const Vrst_route& r) {
+  rec.count("uturns", r.uturns);
+  const Vrst_road_situation& s = r.situation;
+  if (!s.found) return;
+  std::string ahead;
+  for (const Vrst_road_event& e : s.ahead)
+    ahead += (ahead.empty() ? "" : " ") + std::string(1, event_code(e.kind)) + std::to_string(std::lround(e.ahead_m)) +
+             (e.uturn_ok ? "" : "!");
+  rec.text("strategy", strategy_name(r.strategy))
+      .text("road_type", road_type_name(s.type))
+      .text("road", s.road)
+      .num("kmh", s.motion.speed_kmh, 0)
+      .num("heading", s.motion.heading_deg, 0)
+      .text("ahead", ahead);
+}
+
+/// Stats line of a situation, short enough for the box (the road name is in the log):
+/// "TOWN 48 km/h X120 R600 -> no uturn".
+/// @param s Situation.
+/// @return Text.
+static NSString* situation_line(const Vrst_road_situation& s) {
+  if (!s.found) return @"ROAD none near";
+  static NSString* const kRule[] = {@"any", @"forward", @"uturn", @"no uturn"};  // by Vrst_reroute_strategy
+  NSMutableString* line =
+      [NSMutableString stringWithFormat:@"%@ %.0f km/h", @(road_type_name(s.type)).uppercaseString, s.motion.speed_kmh];
+  for (Vrst_size i = 0; i < s.ahead.size() && i < 2; ++i)
+    [line appendFormat:@" %c%.0f", event_code(s.ahead[i].kind), s.ahead[i].ahead_m];
+  [line appendFormat:@" -> %@", kRule[static_cast<int>(decide(s).strategy)]];
+  return line;
+}
 
 /// Course from one point to another.
 /// @param a Start.
@@ -311,6 +349,11 @@ static constexpr double kConsoleSeconds = 0.25;
   double _course;
   /// A course was seen while moving fast enough (kMinCourseSpeed).
   BOOL _hasCourse;
+  /// [self now] of the last course; it holds kCourseHoldSeconds (heading).
+  double _courseAt;
+  /// Real ground speed of the last fix, km/h (a replayed track: its own speed, not times
+  /// the playback speed).
+  double _travelKmh;
   /// Ground speed of the last fix, m/s on screen time (a replayed track: times its speed).
   double _speed;
   /// [self now] when _fix arrived; the position moves on from there (predictedFix).
@@ -367,6 +410,10 @@ static constexpr double kConsoleSeconds = 0.25;
   std::optional<Vrst_route_tracker> _tracker;
   /// Time of the last reroute request ([self now]).
   double _rerouteAt;
+  /// Stats line of the car's situation while a route is followed; nil = none yet.
+  NSString* _roadLine;
+  /// [self now] when _roadLine was made (once a second).
+  double _roadLineAt;
   /// `--search <text>`: open the search screen with this text after the first frame.
   NSString* _launchSearch;
   /// `--search-pick <text>`: show the first result of this text after the first frame.
@@ -912,9 +959,11 @@ static constexpr double kConsoleSeconds = 0.25;
   const Vrst_map_provider* map = _map.get();  // valid while the route queue runs (leaveRegion waits)
   const Vrst_latlon a = *from, b = _pin;
   const BOOL fromFix = !_hasStart;
+  const std::optional<Vrst_motion> motion = fromFix ? [self motion] : std::nullopt;
   __weak VrstMapController* weak = self;
   dispatch_async(_routeQueue, ^{
-    const Vrst_route_pair r = map->route_pair(a, b, mode);  // the way back too, kept for later
+    Vrst_route_pair r = map->route_pair(a, b, mode);  // the way back too, kept for later
+    if (motion) r.there = map->route_moving(*motion, b, mode);  // driving: on in the direction of travel
     dispatch_async(dispatch_get_main_queue(), ^{ [weak routeFound:r request:request from:a fromFix:fromFix]; });
   });
 }
@@ -947,6 +996,7 @@ static constexpr double kConsoleSeconds = 0.25;
       .num("back_min", b.time_s / 60, 1)
       .num("back_shared", b.length_m > 0 ? b.shared_m / b.length_m : 0.0, 2)
       .num("back_ms", b.ms, 1);
+  add_situation(rec, r);
   if (!r.found) rec.text("error", r.error);
   if (request != _routeRequest || !_hasPin) return;
   if (!r.found) {
@@ -974,17 +1024,41 @@ static constexpr double kConsoleSeconds = 0.25;
   [self drawRouteLine:_route];
 }
 
+/// The direction of travel: the GPS course while moving, held kCourseHoldSeconds after
+/// the last one (a stop at a light keeps the arrow).
+/// @return Degrees clockwise from north, or nullopt when unknown.
+- (std::optional<double>)heading {
+  if (!_hasCourse || [self now] - _courseAt > kCourseHoldSeconds) return std::nullopt;
+  return _course;
+}
+
+/// How the car moves, for a route from here (Vrst_map_provider::route_moving()): only a
+/// car that is moving with a known direction.
+/// @return Position, heading and real speed; nullopt otherwise.
+- (std::optional<Vrst_motion>)motion {
+  const std::optional<double> h = [self heading];
+  if (_mode != Vrst_travel_mode::Car || !_hasFix || !h || _travelKmh < kMovingKmh) return std::nullopt;
+  return Vrst_motion{[self predictedFixAhead:0], *h, _travelKmh};
+}
+
 /// Measures the GPS position (or the replayed track) against the shown route; off it for
 /// long enough (Vrst_route_tracker), a new route is laid from here. Not while the way
 /// back is shown.
 - (void)checkRoute {
   if (!_tracker || _showingBack || !_hasFix || !_hasPin) return;
   const double t = [self now];
-  const Vrst_route_check c = _tracker->update(_fix, _fixAccuracy, t);
+  const std::optional<double> course = _travelKmh >= kMovingKmh ? [self heading] : std::nullopt;
+  const Vrst_route_check c = _tracker->update(_fix, _fixAccuracy, t, course);
+  if (t - _roadLineAt >= 1) {  // the situation the reroute rules would read, once a second
+    _roadLineAt = t;
+    const std::optional<Vrst_motion> motion = [self motion];
+    _roadLine = motion && _map ? situation_line(_map->situation(*motion, _mode)) : nil;
+  }
   if (!c.off_route) return;
   const BOOL reroute = t - _rerouteAt >= kRerouteGap;
   _log.record("route_check", t)
       .text("event", "off_route")
+      .flag("wrong_way", c.wrong_way)
       .num("off_m", c.off_m, 1)
       .num("left_km", c.left_m / 1000, 2)
       .num("accuracy", _fixAccuracy, 1)
@@ -1005,9 +1079,10 @@ static constexpr double kConsoleSeconds = 0.25;
   const Vrst_map_provider* map = _map.get();  // valid while the route queue runs (leaveRegion waits)
   const Vrst_latlon b = _pin;
   const Vrst_travel_mode mode = _mode;
+  const std::optional<Vrst_motion> motion = [self motion];
   __weak VrstMapController* weak = self;
   dispatch_async(_routeQueue, ^{
-    const Vrst_route r = map->route(a, b, mode);
+    const Vrst_route r = motion ? map->route_moving(*motion, b, mode) : map->route(a, b, mode);
     dispatch_async(dispatch_get_main_queue(), ^{ [weak rerouteFound:r request:request from:a]; });
   });
 }
@@ -1032,6 +1107,7 @@ static constexpr double kConsoleSeconds = 0.25;
       .count("settled", r.settled)
       .num("ms", r.ms, 1)
       .flag("stale", request != _routeRequest);
+  add_situation(rec, r);
   if (!r.found) rec.text("error", r.error);
   if (request != _routeRequest || !_hasPin) return;
   if (!r.found) {
@@ -1381,7 +1457,8 @@ static constexpr double kConsoleSeconds = 0.25;
   if (_hasStart) _renderer.draw_pin(_view, w, h, _mapFrame.to_world(_startPin), Vrst_float32(22 * px), 0.15f, 0.75f, 0.30f);
   if (_hasPin) _renderer.draw_pin(_view, w, h, _mapFrame.to_world(_pin), Vrst_float32(22 * px));
   const double tiles_ms = phase();
-  if (_hasFix) _renderer.draw_position(_view, w, h, _mapFrame.to_world([self predictedFixAhead:0]), Vrst_float32(16 * px));
+  if (_hasFix)
+    _renderer.draw_position(_view, w, h, _mapFrame.to_world([self predictedFixAhead:0]), Vrst_float32(16 * px), [self heading]);
   const double position_ms = phase();
   if (_showLabels)
     _renderer.draw_labels(_labels.layout(_view, w, h, [self pxPerPoint], _atlas), w, h,
@@ -1703,9 +1780,10 @@ static constexpr double kConsoleSeconds = 0.25;
   NSString* rec = _recorder.recording()
                      ? [NSString stringWithFormat:@" REC %.0f s \n", _recorder.seconds([self now])]
                      : @"";
-  _stats.text = [NSString stringWithFormat:@"%@ %@ \n %s \n zoom %.2fx  %.2f m/pt \n%s %@ ",
+  NSString* road = _tracker && _roadLine ? [NSString stringWithFormat:@" \n %@", _roadLine] : @"";
+  _stats.text = [NSString stringWithFormat:@"%@ %@ \n %s \n zoom %.2fx  %.2f m/pt \n%s %@%@ ",
                  rec, _region.name, info.empty() ? "" : info.front().c_str(), _view.scale / _initialScale,
-                 [self pxPerPoint] * std::cos(lat) / _view.scale, work.c_str(), gps];
+                 [self pxPerPoint] * std::cos(lat) / _view.scale, work.c_str(), gps, road];
 }
 
 /// Toolbar: opens the console above the map (Split), fed from the start of the kept
@@ -2119,9 +2197,11 @@ static constexpr double kConsoleSeconds = 0.25;
   _fixAccuracy = 5;
   _hasFix = YES;
   _speed = ts.speed_kmh / 3.6 * _trackSpeed * rate;  // metres per second of screen time
+  _travelKmh = ts.speed_kmh;
   if (!std::isnan(course) && ts.speed_kmh / 3.6 >= kMinCourseSpeed) {
     _course = course;
     _hasCourse = YES;
+    _courseAt = [self now];
   }
   if (_routeWhenFix) [self routeToPin];  // the replayed position counts as the first fix
   [self checkRoute];
@@ -2135,6 +2215,7 @@ static constexpr double kConsoleSeconds = 0.25;
   if (_trackTime >= _track.duration()) {
     _trackPlaying = NO;
     _speed = 0;
+    _travelKmh = 0;
     _log.record("track", t).text("event", "finished").text("name", _trackName.UTF8String);
     [_debug showGesture:@"TRACK finished"];
   }
@@ -2162,6 +2243,7 @@ static constexpr double kConsoleSeconds = 0.25;
 - (void)stopTrack {
   _trackPlaying = NO;
   _speed = 0;  // the dot stops where the track stopped
+  _travelKmh = 0;
   _log.record("track", [self now]).text("event", "stopped").num("track_t", _trackTime, 1);
   [_debug showGesture:@"TRACK paused"];
 }
@@ -2360,6 +2442,7 @@ static constexpr double kConsoleSeconds = 0.25;
   _trackName = nil;
   _trackPlaying = NO;
   _speed = 0;
+  _travelKmh = 0;
   _hasFix = NO;  // the replayed position is gone; the last real fix comes back below
   if (CLLocation* l = _location.location) [self locationManager:_location didUpdateLocations:@[ l ]];
   [_debug showGesture:@"TRACK closed"];
@@ -2620,10 +2703,12 @@ static constexpr double kConsoleSeconds = 0.25;
   _fixTime = [self now];
   _fixAccuracy = l.horizontalAccuracy;
   _speed = std::max(l.speed, 0.0);  // -1 when unknown
+  _travelKmh = _speed * 3.6;
   _hasFix = YES;
   if (l.course >= 0 && l.speed >= kMinCourseSpeed) {  // course is -1 when unknown
     _course = l.course;
     _hasCourse = YES;
+    _courseAt = [self now];
   }
   if (!_autoFollowed && _follow == Vrst_follow::Off) {
     _autoFollowed = YES;  // the first fix: the map centers on the user once by itself

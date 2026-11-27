@@ -11,6 +11,8 @@
 /// kOffTime_s in a row is off route. Until a fix first reaches the line (a route starts
 /// on the nearest road, which may be far from a parking place) the allowed distance is
 /// that of the first fix plus the tolerance: moving away is off route, waiting is not.
+/// A fix on the line whose course runs against the route (more than kWrongWayDeg off the
+/// direction of the nearest piece) counts as off too: the car turned round on the road.
 /// Fixes worse than kMaxAccuracy_m decide nothing, and near the destination nothing is
 /// off route any more. Client types only (route_result.h, geo.h), so front ends can use it.
 #pragma once
@@ -29,6 +31,7 @@ struct Vrst_route_check {
   Vrst_float64 left_m = 0;  ///< Route length still ahead of the fix.
   bool arrived = false;     ///< Within kArrive_m of the end; nothing is off route any more.
   bool off_route = false;   ///< Off the route long enough: lay a new one now.
+  bool wrong_way = false;   ///< This fix is on the line but moving against the route.
 };
 
 /// Follows the position along one route; see the file comment.
@@ -44,8 +47,10 @@ class Vrst_route_tracker {
   /// @param fix Position.
   /// @param accuracy_m Horizontal accuracy of the fix.
   /// @param t Time of the fix, seconds (any clock that only goes forward).
+  /// @param course_deg Direction of travel while moving; nullopt when standing or unknown.
   /// @return What the fix says; the previous answer (off_route false) for a poor fix.
-  Vrst_route_check update(Vrst_latlon fix, Vrst_float64 accuracy_m, Vrst_float64 t);
+  Vrst_route_check update(Vrst_latlon fix, Vrst_float64 accuracy_m, Vrst_float64 t,
+                          std::optional<Vrst_float64> course_deg = std::nullopt);
 
   /// Distance allowed from the line before a fix counts as off.
   /// @param mode Who travels.
@@ -59,6 +64,8 @@ class Vrst_route_tracker {
   static constexpr Vrst_float64 kAccuracyFactor = 1.5;
   /// Fixes less accurate than this decide nothing, metres.
   static constexpr Vrst_float64 kMaxAccuracy_m = 60;
+  /// A course farther than this from the route's direction is the wrong way, degrees.
+  static constexpr Vrst_float64 kWrongWayDeg = 120;
   /// Off the line this long in a row is off route, seconds.
   static constexpr Vrst_float64 kOffTime_s = 5;
   /// Closer than this to the end of the route is arrival, metres: the destination is

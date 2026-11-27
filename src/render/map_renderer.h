@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -58,14 +59,17 @@ class Vrst_map_renderer {
   void draw_track(const Vrst_view& v, int fb_w, int fb_h, Vrst_size driven, Vrst_vec2d marker,
                   Vrst_float32 marker_px) const;
 
-  /// Draws the current GPS position: a blue dot with a white ring, the same size at
-  /// every zoom. Call after the map, before the labels.
+  /// Draws the current GPS position, the same size at every zoom: a blue dot, or with a
+  /// direction of travel a blue arrow with a white edge pointing that way (it turns with
+  /// the map). Call after the map, before the labels.
   /// @param v Camera.
   /// @param fb_w Framebuffer width in px.
   /// @param fb_h Framebuffer height in px.
   /// @param pos Position, world coordinates (Vrst_map_frame::to_world()).
-  /// @param px Dot diameter in framebuffer pixels.
-  void draw_position(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px);
+  /// @param px Dot diameter in framebuffer pixels (the arrow is a little larger).
+  /// @param heading_deg Direction of travel, degrees clockwise from north; nullopt = dot.
+  void draw_position(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px,
+                     std::optional<Vrst_float64> heading_deg = std::nullopt);
 
   /// Draws a pin (search result, dropped pin, route start): a colored dot in a white
   /// disc, the same size at every zoom. Call after the map, the route and the track,
@@ -206,6 +210,10 @@ class Vrst_map_renderer {
   GLuint m_marker_vbo = 0;
   /// Marker VAO: m_marker_vbo layout.
   GLuint m_marker_vao = 0;
+  /// Position arrow triangles, rewritten every draw_position() with a heading.
+  GLuint m_arrow_vbo = 0;
+  /// Arrow VAO: m_arrow_vbo layout.
+  GLuint m_arrow_vao = 0;
   /// Number of track points; 0 = no track, draw_track() does nothing.
   GLsizei m_track_count = 0;
   /// u_view of the overlay program.

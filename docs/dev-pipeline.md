@@ -178,6 +178,14 @@ Motion follows the clock, not frames: a slow phone shows fewer frames of the sam
   `route_check` off_route and `route` with `"reroute":true` every ~11 s. With the drive's
   end as destination (`--share "47.87567,4.56757"`) expect no reroute at all. The 5 s
   off-route delay is screen time, so at x10 the car is ~10x farther off when it fires.
+  Each reroute's `route` record names the rule (`strategy`), road type, speed and the
+  events ahead; the stats box shows the same line live.
+- **Wrong-way and other test drives:** navroute writes any route as a GPX
+  (`navroute <map> <lat> <lon> <lat> <lon> car gpx=tracks/x.gpx speed=70`); join two
+  (A->B, then B->A) for a car that turns round: `tracks/d965-wrong-way.gpx` with
+  `--share "47.87567,4.56757" --speed 2` gives `route_check wrong_way` and a reroute
+  that turns back at the next intersection. `navroute ... heading=<deg> speed=<kmh>`
+  prints the situation and the rule for one point (desktop data check).
 
 ## 6. Bug / performance loop (summary)
 

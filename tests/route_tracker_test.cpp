@@ -87,3 +87,25 @@ TEST(RouteTracker, ArrivedNeverOff) {
   EXPECT_TRUE(tr.update(at(5.0199, 0), 5, 0).arrived);
   for (int s = 1; s <= 10; ++s) EXPECT_FALSE(tr.update(at(5.03, 200), 5, s).off_route);
 }
+
+/// Turning round on the road: on the line but against the route, off route after the delay.
+TEST(RouteTracker, WrongWay) {
+  Vrst_route_tracker tr(east_road(), Vrst_travel_mode::Car);
+  EXPECT_FALSE(tr.update(at(5.005, 0), 5, 0, 90.0).wrong_way);  // east, along the route
+  bool off = false;
+  for (int s = 1; s <= 6; ++s) {
+    const Vrst_route_check c = tr.update(at(5.005 - s * 0.0002, 0), 5, s, 270.0);  // west
+    EXPECT_TRUE(c.wrong_way);
+    off = off || c.off_route;
+  }
+  EXPECT_TRUE(off);
+}
+
+/// A course is ignored when none is given (standing) and when it runs along the route.
+TEST(RouteTracker, CourseAlongIsFine) {
+  Vrst_route_tracker tr(east_road(), Vrst_travel_mode::Car);
+  for (int s = 0; s < 10; ++s) {
+    EXPECT_FALSE(tr.update(at(5.002 + s * 0.0005, 5), 5, s, 80.0).off_route);
+    EXPECT_FALSE(tr.update(at(5.002 + s * 0.0005, 5), 5, s + 0.5).off_route);
+  }
+}

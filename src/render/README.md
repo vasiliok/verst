@@ -10,7 +10,7 @@ The OpenGL map renderer shared by the desktop viewer (OpenGL 3.3 core) and the i
 | `gl_api.h` | picks the API: OpenGL ES 3.0 on iOS, desktop OpenGL 3.3 core through glad elsewhere |
 | `shaders.h` | map shaders for both APIs (no `#version` line; the renderer prepends it) |
 | `tile_renderer.{h,cpp}` | `Vrst_tile_renderer`: uploads the map pieces the provider delivers, keeps a byte-limited cache, draws visible tiles by layer |
-| `map_renderer.{h,cpp}` | `Vrst_map_renderer`: GL setup, overlays (GPS track, position, pins, route line, region border) and labels |
+| `map_renderer.{h,cpp}` | `Vrst_map_renderer`: GL setup, overlays (GPS track, position dot or direction arrow, pins, route line, region border) and labels |
 | `map_labels.{h,cpp}` | `Vrst_map_labels`: which place names to show at the current zoom and their glyph quads |
 | `glyph_atlas.{h,cpp}` | `Vrst_glyph_atlas`: signed-distance-field glyph atlas rendered with FreeType |
 

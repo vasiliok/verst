@@ -136,7 +136,8 @@ void Vrst_map_renderer::draw_track(const Vrst_view& v, int fb_w, int fb_h, Vrst_
   draw_point(marker, marker_px, 0.95f, 0.15f, 0.1f);
 }
 
-void Vrst_map_renderer::draw_position(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px) {
+void Vrst_map_renderer::draw_position(const Vrst_view& v, int fb_w, int fb_h, Vrst_vec2d pos, Vrst_float32 px,
+                                      std::optional<Vrst_float64> heading_deg) {
   if (!m_marker_vao) {
     m_marker_vao = make_vao({{0, 0, 0}}, m_marker_vbo);
     glBindVertexArray(0);
@@ -144,7 +145,43 @@ void Vrst_map_renderer::draw_position(const Vrst_view& v, int fb_w, int fb_h, Vr
   const std::array<Vrst_float32, 9> m = view_matrix(v, fb_w, fb_h);
   glUseProgram(m_overlay_prog);
   glUniformMatrix3fv(m_u_overlay_view, 1, GL_FALSE, m.data());
-  draw_point(pos, px, 0.10f, 0.50f, 1.0f);
+  if (!heading_deg) {
+    draw_point(pos, px, 0.10f, 0.50f, 1.0f);
+    return;
+  }
+  // A navigation arrow: tip ahead, two wings behind and a notch between them, as two
+  // triangles (tip, left wing, notch) and (tip, notch, right wing). Built in world units
+  // (pixels / scale), so the view matrix turns it with the map.
+  constexpr std::array<Vrst_vec2d, 4> kShape{{{0, 1}, {-0.8, -0.85}, {0, -0.4}, {0.8, -0.85}}};
+  constexpr Vrst_float64 kEdge = 1.35;  // white edge: the same arrow this much larger, below
+  if (!m_arrow_vao) m_arrow_vao = make_vao({}, m_arrow_vbo);
+  const Vrst_float64 hd = *heading_deg * kPi / 180, sn = std::sin(hd), cs = std::cos(hd);
+  std::array<Vrst_gpu_point, 12> verts{};
+  for (Vrst_size pass = 0; pass < 2; ++pass) {
+    const Vrst_float64 r = (pass == 0 ? kEdge : 1.0) * px * 0.75 / v.scale;  // world units per shape unit
+    const auto at = [&](const Vrst_vec2d& q) {
+      // Shape x is to the right of travel, y ahead; ahead = (sin h, cos h) in world (y north).
+      return Vrst_gpu_point{static_cast<Vrst_float32>(pos.x + (q.x * cs + q.y * sn) * r),
+                            static_cast<Vrst_float32>(pos.y + (-q.x * sn + q.y * cs) * r), 0};
+    };
+    const Vrst_size o = pass * 6;
+    verts[o + 0] = at(kShape[0]);
+    verts[o + 1] = at(kShape[1]);
+    verts[o + 2] = at(kShape[2]);
+    verts[o + 3] = at(kShape[0]);
+    verts[o + 4] = at(kShape[2]);
+    verts[o + 5] = at(kShape[3]);
+  }
+  glUniform1i(m_u_overlay_round, 0);
+  glBindVertexArray(m_arrow_vao);
+  glBindBuffer(GL_ARRAY_BUFFER, m_arrow_vbo);
+  glBufferData(GL_ARRAY_BUFFER, sizeof verts, verts.data(), GL_STREAM_DRAW);
+  glUniform4f(m_u_overlay_color, 1.0f, 1.0f, 1.0f, 1.0f);
+  glDrawArrays(GL_TRIANGLES, 0, 6);
+  glUniform4f(m_u_overlay_color, 0.10f, 0.50f, 1.0f, 1.0f);
+  glDrawArrays(GL_TRIANGLES, 6, 6);
+  glBindVertexArray(0);
+  check_error("draw_position");
 }
 
 void Vrst_map_renderer::draw_route(const Vrst_view& v, int fb_w, int fb_h, Vrst_float32 px) {

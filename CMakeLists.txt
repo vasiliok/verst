@@ -133,6 +133,7 @@ add_library(vrst_core STATIC
   src/geometry/region_outline.cpp
   src/route/router.cpp
   src/route/route_tracker.cpp
+  src/route/reroute_rules.cpp
   src/search/geo_link.cpp
   src/session/gpx_track.cpp
   src/session/scenario.cpp
@@ -214,7 +215,7 @@ if(NAV_BUILD_TESTS)
   FetchContent_MakeAvailable(googletest)
   add_executable(tile_test tests/tile_test.cpp tests/scenario_test.cpp tests/activity_recorder_test.cpp tests/geometry_test.cpp tests/earcut_test.cpp tests/map_provider_test.cpp
     tests/search_text_test.cpp tests/search_index_test.cpp tests/geo_link_test.cpp
-    tests/route_tracker_test.cpp)
+    tests/route_tracker_test.cpp tests/reroute_rules_test.cpp)
   target_link_libraries(tile_test PRIVATE vrst_core GTest::gtest_main)
   target_include_directories(tile_test SYSTEM PRIVATE ${earcut_SOURCE_DIR}/include)
   nav_warnings(tile_test)

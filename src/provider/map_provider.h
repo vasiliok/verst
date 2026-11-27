@@ -199,6 +199,23 @@ class Vrst_map_provider {
   /// @param mode Who travels.
   /// @return Both routes.
   virtual Vrst_route_pair route_pair(Vrst_latlon from, Vrst_latlon to, Vrst_travel_mode mode) const = 0;
+  /// Route from a moving car (reroute): starts on the car's road in its direction of
+  /// travel, and turns back as the car's situation allows (Vrst_reroute_strategy: on to
+  /// the next exit on a fast highway, at the roundabout or intersection ahead on other
+  /// roads, round the blocks in town). Bikes and walkers get route(). Same threading as
+  /// route().
+  /// @param m Position, heading and speed.
+  /// @param to Destination.
+  /// @param mode Who travels.
+  /// @return The route, with the situation and the strategy used.
+  virtual Vrst_route route_moving(const Vrst_motion& m, Vrst_latlon to, Vrst_travel_mode mode) const = 0;
+  /// Where a moving car is and what is ahead on its road: road type, name, and the
+  /// intersections, roundabouts, exits and dead ends of the next few km. Fast enough
+  /// for once per GPS fix; any thread.
+  /// @param m Position, heading and speed.
+  /// @param mode Who travels.
+  /// @return The situation; found = false when no road is near.
+  virtual Vrst_road_situation situation(const Vrst_motion& m, Vrst_travel_mode mode) const = 0;
   /// The nearest road a mode may use, for naming a dropped pin.
   /// @param p Point.
   /// @param mode Who travels.

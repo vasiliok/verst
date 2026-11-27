@@ -49,7 +49,8 @@ Vrst_float64 Vrst_route_tracker::tolerance_m(Vrst_travel_mode mode, Vrst_float64
   return std::max(kBase_m[static_cast<Vrst_size>(mode)], kAccuracyFactor * accuracy_m);
 }
 
-Vrst_route_check Vrst_route_tracker::update(Vrst_latlon fix, Vrst_float64 accuracy_m, Vrst_float64 t) {
+Vrst_route_check Vrst_route_tracker::update(Vrst_latlon fix, Vrst_float64 accuracy_m, Vrst_float64 t,
+                                            std::optional<Vrst_float64> course_deg) {
   if (m_points.size() < 2 || accuracy_m > kMaxAccuracy_m) {
     m_last.off_route = false;
     return m_last;
@@ -65,6 +66,7 @@ Vrst_route_check Vrst_route_tracker::update(Vrst_latlon fix, Vrst_float64 accura
   const Vrst_float64 cos_lat = std::cos(fix.lat * kPi / 180);
   Vrst_float64 best_m = std::numeric_limits<Vrst_float64>::infinity(), best_along = 0;
   Vrst_size best_piece = first;
+  Vrst_vec2d best_dir{0, 0};  // direction of the nearest piece, metres east and north
   for (Vrst_size i = first; i < last; ++i) {
     const Vrst_vec2d a = local_m(m_points[i], fix, cos_lat), b = local_m(m_points[i + 1], fix, cos_lat);
     const Vrst_vec2d ab{b.x - a.x, b.y - a.y};
@@ -75,14 +77,19 @@ Vrst_route_check Vrst_route_tracker::update(Vrst_latlon fix, Vrst_float64 accura
     if (d < best_m) {
       best_m = d;
       best_piece = i;
+      best_dir = ab;
       best_along = m_cum_m[i] + (m_cum_m[i + 1] - m_cum_m[i]) * s;
     }
   }
   if (!m_first_off_m) m_first_off_m = best_m;
   const Vrst_float64 tol = tolerance_m(m_mode, accuracy_m);
-  const bool on = best_m <= tol;
-  const bool off = m_started ? !on : best_m > *m_first_off_m + tol;
   Vrst_route_check c;
+  if (course_deg && (best_dir.x != 0 || best_dir.y != 0) && best_m <= tol) {
+    const Vrst_float64 route_deg = std::atan2(best_dir.x, best_dir.y) * 180 / kPi;
+    c.wrong_way = std::abs(std::fmod(*course_deg - route_deg + 540.0, 360.0) - 180.0) > kWrongWayDeg;
+  }
+  const bool on = best_m <= tol && !c.wrong_way;
+  const bool off = m_started ? !on : c.wrong_way || best_m > *m_first_off_m + tol;
   c.off_m = best_m;
   c.left_m = m_cum_m.back() - best_along;
   if (on) {

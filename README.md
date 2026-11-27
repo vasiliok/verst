@@ -97,6 +97,11 @@ Every document in the repository, reachable from here; each one links back.
 - [Shaders explained](docs/shaders/README.md): the project's shaders as a tutorial.
 - [Architectural bottlenecks and challenges](docs/challenges/README.md): risks on the way to turn-by-turn navigation.
 
+**Developer workflow** (in [docs](docs))
+
+- [Development pipeline](docs/dev-pipeline.md): fix, compile check, Simulator, iPhone,
+  logs and saved UI test scenarios.
+
 **Other**
 
 - [LICENSE](LICENSE): MIT.
